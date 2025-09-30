@@ -20,6 +20,7 @@ from agentscope.memory import InMemoryMemory  # type: ignore
 from agentscope.tool import Toolkit  # type: ignore
 
 from agents.npc import SimpleNPCAgent
+from agents.player import PlayerAgent
 from world.tools import WORLD, advance_time, change_relation, grant_item
 
 
@@ -76,20 +77,21 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
 
 
 async def tavern_scene():
-    # Use Kimi (Moonshot) LLM-backed NPCs
+    # Use Kimi (Moonshot) LLM-backed NPCs + a human player
     warrior = make_kimi_npc("Warrior", "勇士，直来直去，讲究承诺与荣誉。")
     mage = make_kimi_npc("Mage", "法师，好奇健谈，喜欢引用古籍。")
     blacksmith = make_kimi_npc("Blacksmith", "铁匠，务实可靠，关心物价与原料。")
+    player = PlayerAgent(name="Player", prompt="你> ")
 
     async with MsgHub(
-        participants=[warrior, mage],
+        participants=[warrior, mage, player],
         announcement=Msg(
             "Host",
-            "你们在酒馆壁炉旁相识。做个自我介绍。\n提示：如需推进剧情，可使用工具：advance_time/change_relation/grant_item。",
+            "你们在酒馆壁炉旁相识。做个自我介绍。\n提示：玩家可直接发言；如需推进剧情，NPC 可使用工具：advance_time/change_relation/grant_item。",
             "assistant",
         ),
     ) as hub:
-        await sequential_pipeline([warrior, mage])
+        await sequential_pipeline([warrior, mage, player])
 
         # Dynamic join
         hub.add(blacksmith)
@@ -100,7 +102,7 @@ async def tavern_scene():
                 "assistant",
             )
         )
-        await sequential_pipeline([blacksmith, mage, warrior])
+        await sequential_pipeline([blacksmith, mage, warrior, player])
 
         # Print world snapshot so we can see tool effects, if any
         print("[system] world:", WORLD.snapshot())
