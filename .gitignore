@@ -1,0 +1,44 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual envs
+.venv/
+.venv*/
+.env
+.env.*
+
+# Tools & IDE
+.vscode/
+.idea/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Coverage / test artifacts
+.coverage*
+htmlcov/
+.tox/
+.nox/
+
+# Builds
+build/
+dist/
+*.egg-info/
+
+# Logs / temp
+logs/
+*.log
+.tmp/
+tmp/
+
+# Node (if any tooling added later)
+node_modules/
