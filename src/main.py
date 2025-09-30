@@ -20,7 +20,7 @@ from agentscope.memory import InMemoryMemory  # type: ignore
 from agentscope.tool import Toolkit  # type: ignore
 
 from agents.npc import SimpleNPCAgent
-from world.tools import WORLD, advance_time, change_relation
+from world.tools import WORLD, advance_time, change_relation, grant_item
 
 
 def banner():
@@ -44,7 +44,11 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
 
     sys_prompt = (
         f"你是游戏中的NPC：{name}。人设：{persona}。"
-        "规则：用简短中文发言，贴合人设，不要剧透世界规则；每次只说1-2句。"
+        "规则：\n"
+        "- 用简短中文发言，每次只说1-2句，贴合人设。\n"
+        "- 当需要推进时间、调整关系或发放物品时，优先使用工具调用：\n"
+        "  advance_time(mins:int)、change_relation(a:str,b:str,delta:int,reason:str)、grant_item(target:str,item:str,n:int)。\n"
+        "- 工具调用完成后，再用一句话向对话对象说明处理结果。"
     )
 
     model = OpenAIChatModel(
@@ -55,13 +59,19 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
         generate_kwargs={"temperature": 0.7},
     )
 
+    # Equip world tools via a shared toolkit
+    toolkit = Toolkit()
+    toolkit.register_tool_function(advance_time)
+    toolkit.register_tool_function(change_relation)
+    toolkit.register_tool_function(grant_item)
+
     return ReActAgent(
         name=name,
         sys_prompt=sys_prompt,
         model=model,
         formatter=OpenAIChatFormatter(),
         memory=InMemoryMemory(),
-        toolkit=Toolkit(),
+        toolkit=toolkit,
     )
 
 
@@ -73,18 +83,26 @@ async def tavern_scene():
 
     async with MsgHub(
         participants=[warrior, mage],
-        announcement=Msg("Host", "你们在酒馆壁炉旁相识。做个自我介绍。", "assistant"),
+        announcement=Msg(
+            "Host",
+            "你们在酒馆壁炉旁相识。做个自我介绍。\n提示：如需推进剧情，可使用工具：advance_time/change_relation/grant_item。",
+            "assistant",
+        ),
     ) as hub:
         await sequential_pipeline([warrior, mage])
 
         # Dynamic join
         hub.add(blacksmith)
-        await hub.broadcast(Msg("Host", "铁匠走进酒馆，向你们打招呼。", "assistant"))
+        await hub.broadcast(
+            Msg(
+                "Host",
+                "铁匠走进酒馆，向你们打招呼。可以根据需要调用工具（例如推进时间15分钟、调整两人的关系、分发道具）。",
+                "assistant",
+            )
+        )
         await sequential_pipeline([blacksmith, mage, warrior])
 
-        # World updates (could be tool calls by Director in a full setup)
-        change_relation("Warrior", "Mage", +1, reason="合作愉快")
-        advance_time(15)
+        # Print world snapshot so we can see tool effects, if any
         print("[system] world:", WORLD.snapshot())
 
         await hub.broadcast(Msg("Host", "夜深了，大家准备告辞。", "assistant"))
