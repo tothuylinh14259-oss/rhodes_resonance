@@ -120,18 +120,46 @@ class KPAgent(AgentBase):
             {"role": "user", "content": f"玩家输入：{content}"},
         ]
         res = await self.model(messages)
-        text = res.get_text_content() if hasattr(res, "get_text_content") else None
+        # Robustly extract text from ChatResponse without relying on hasattr()
+        text = None
+        try:
+            get_text = getattr(res, "get_text_content", None)
+            if callable(get_text):
+                text = get_text()
+        except Exception:
+            # Some objects may raise non-AttributeError in __getattr__; ignore
+            text = None
+
+        if text is None:
+            # Fallbacks: try common shapes
+            content = getattr(res, "content", None)
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                # Gather text blocks
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                text = "".join(parts) if parts else None
+
         if not text:
             return {"decision": "clarify", "question": "请简要说明你的行动目标与方式。"}
         # Try parse JSON
         try:
-            return json.loads(text)
+            return json.loads(self._strip_code_fences(text))
         except Exception:
-            # Try to repair common formatting issues
-            text_stripped = text.strip()
-            if text_stripped.startswith("```) "):
-                text_stripped = text_stripped.strip("`\n ")
-            try:
-                return json.loads(text_stripped)
-            except Exception:
-                return {"decision": "clarify", "question": "请用更具体、可执行的描述表达你的行动。"}
+            return {"decision": "clarify", "question": "请用更具体、可执行的描述表达你的行动。"}
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        s = text.strip()
+        if s.startswith("```"):
+            # remove first fence line
+            if "\n" in s:
+                first, rest = s.split("\n", 1)
+                s = rest
+            s = s.strip()
+            if s.endswith("```"):
+                s = s[:-3]
+        return s.strip()
