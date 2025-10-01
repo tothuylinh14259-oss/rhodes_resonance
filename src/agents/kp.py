@@ -1,12 +1,13 @@
 """
-KPAgent: a Game Master agent that validates and normalizes the Player's input
-so it fits the world rules, and only then forwards it to others.
+KPAgent: Game Master that rewrites the Player's input to fit world/persona
+without negating the player's intent. The goal is to preserve the core intent
+and turn it into in-world dialogue or a small, executable action.
 
 Behavior:
-- If the latest Player message is acceptable, emit a sanitized Player message
-  (Msg with name='Player', role='user').
-- If ambiguous, ask a concise clarification question as KP.
-- If impossible/out-of-world, reject and suggest an alternative as KP.
+- Never negate or reject the player. No "否定/拒绝"输出。
+- Default path is ACCEPT: output a sanitized Player message
+  (Msg(name='Player', role='user')).
+- Only when表达含糊不清难以保留意愿时，CLARIFY：向玩家提出一个简短澄清问题。
 
 This agent uses Kimi (OpenAI-compatible) via Agentscope OpenAIChatModel.
 """
@@ -20,21 +21,23 @@ from agentscope.model import OpenAIChatModel  # type: ignore
 
 
 _SYSTEM_PROMPT = (
-    "你是KP（守秘人/主持人），负责校对玩家在中世纪奇幻酒馆场景中的发言与行动，使其符合世界观与常识。\n"
+    "你是KP（守秘人/主持人），负责将玩家在中世纪奇幻酒馆场景中的发言/行动，"
+    "在不改变玩家核心意愿的前提下，改写为符合世界观与角色人设的对白或可执行的小动作。\n"
     "世界规则（示例）：\n"
     "- 无现代科技（手机/枪支/无人机/电器等），没有瞬间传送。\n"
-    "- 常识一致（角色只知道自己经历；不能越权知道他人隐私或未来）。\n"
+    "- 常识一致（角色只知道自己经历；不越权知晓他人隐私或未来）。\n"
     "- 行动应具体、可执行、短小；避免一回合内完成过多复杂行动。\n"
-    "- 角色个性与动机应合理；避免违背已知设定。\n"
-    "请对玩家的最新输入进行判定，并用JSON输出：\n"
+    "- 角色个性/动机应合理；避免违背已知设定。\n"
+    "改写原则：\n"
+    "- 绝不否定玩家意愿；若表达夸张/越界，用更贴合世界观的方式表达同等意图（如‘我是神’→‘我自称神谕者/受神启示之人’）。\n"
+    "- 说人话：对白不超过1-2句；若含行动，写明具体动作（如‘举杯敬酒并自我介绍’）。\n"
+    "- 必要时才澄清，问题要短且具体，只问一个点。\n"
+    "输出严格JSON（不要markdown围栏/额外文字）：\n"
     "{\n"
-    "  \"decision\": \"accept|clarify|reject\",\n"
-    "  \"sanitized\": \"当decision=accept时，给出规范后的简短发言/行动（1-2句）。\",\n"
-    "  \"question\": \"当decision=clarify时，向玩家提出一个具体而简短的澄清问题。\",\n"
-    "  \"reason\": \"当decision=reject时，说明不符合点。\",\n"
-    "  \"suggestion\": \"当decision=reject时，给出1条可接受的替代建议。\"\n"
-    "}\n"
-    "只输出JSON，不要附加其它文字。"
+    "  \"decision\": \"accept|clarify\",\n"
+    "  \"sanitized\": \"当decision=accept时，给出改写后的玩家对白/行动（1-2句）。\",\n"
+    "  \"question\": \"当decision=clarify时，提出一个具体且简短的问题。\"\n"
+    "}"
 )
 
 
@@ -94,12 +97,12 @@ class KPAgent(AgentBase):
             await self.print(ask)
             return ask
 
-        # reject or fallback
-        reason = judged.get("reason") or "不符合世界观。"
-        suggestion = judged.get("suggestion") or "请给出更具体且合理的行动。"
-        warn = Msg(name=self.name, content=f"{reason} 建议：{suggestion}", role="assistant")
-        await self.print(warn)
-        return warn
+        # Fallback：当判定异常时，尽量保意愿接受，并提示一次澄清
+        self._last_processed_player_id = player_msg.id
+        sanitized = player_msg.get_text_content() or ""
+        final_msg = Msg(name="Player", content=sanitized, role="user")
+        await self.print(final_msg)
+        return final_msg
 
     async def handle_interrupt(self, *args, **kwargs) -> Msg:
         msg = Msg(name=self.name, content="（KP中断）", role="assistant")
