@@ -105,8 +105,8 @@ async def tavern_scene():
     ) as hub:
         # Opening: warriors/mage introduce
         await sequential_pipeline([warrior, mage])
-        # Player <-> KP handshake before others act
-        await run_player_kp_handshake(player, kp)
+        # Player <-> KP handshake before others act (isolate from others)
+        await run_player_kp_handshake(hub, player, kp)
 
         # Dynamic join
         hub.add(blacksmith)
@@ -120,7 +120,7 @@ async def tavern_scene():
         # After blacksmith joins: have blacksmith speak first
         await sequential_pipeline([blacksmith])
         # Then ensure Player input is confirmed by KP before others respond
-        await run_player_kp_handshake(player, kp)
+        await run_player_kp_handshake(hub, player, kp)
         # Finally, others react
         await sequential_pipeline([mage, warrior])
 
@@ -130,21 +130,36 @@ async def tavern_scene():
         await hub.broadcast(Msg("Host", "夜深了，大家准备告辞。", "assistant"))
 
 
-async def run_player_kp_handshake(player: PlayerAgent, kp: KPAgent, max_rounds: int = 4):
-    rounds = 0
-    # Run at least once to give Player a chance to speak
-    while True:
-        await sequential_pipeline([player, kp])
-        rounds += 1
-        # Query KP whether it still expects player reply (clarify or confirm)
-        need_more = False
-        if hasattr(kp, "wants_player_reply") and callable(getattr(kp, "wants_player_reply")):
-            try:
-                need_more = bool(kp.wants_player_reply())
-            except Exception:
-                need_more = False
-        if not need_more or rounds >= max_rounds:
-            break
+async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent, max_steps: int = 6):
+    """Run an isolated Player<->KP handshake:
+    - Temporarily disable auto broadcast so raw Player输入与KP提案不会影响其他NPC；
+    - 仅在确认“是”后，将最终改写后的 Player 发言广播给所有参与者。
+    """
+    # Temporarily disable auto broadcast so other agents won't observe raw inputs
+    hub.set_auto_broadcast(False)
+    try:
+        steps = 0
+        while steps < max_steps:
+            # 1) Player speaks (no auto broadcast)
+            out_p = await player(None)
+            # Deliver to KP only
+            await kp.observe(out_p)
+
+            # 2) KP responds (either clarification or confirmation proposal or final Player msg)
+            out_kp = await kp(None)
+
+            # If KP returned a finalized Player message, broadcast it to all and stop
+            if getattr(out_kp, "name", "") == "Player" and getattr(out_kp, "role", "") == "user":
+                await hub.broadcast(out_kp)
+                break
+
+            # Otherwise, deliver KP's assistant reply back to Player only (no broadcast)
+            await player.observe(out_kp)
+
+            steps += 1
+    finally:
+        # Re-enable auto broadcast for subsequent turns
+        hub.set_auto_broadcast(True)
 
 
 if __name__ == "__main__":
