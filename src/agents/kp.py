@@ -83,12 +83,11 @@ class KPAgent(AgentBase):
 
         # If waiting for confirmation and got player's response now
         if self._awaiting_confirm and player_msg.id != self._last_processed_player_id:
-            text = (player_msg.get_text_content() or "").strip().lower()
-            yes_words = {"是", "好", "好的", "确认", "yes", "y", "行", "嗯", "对"}
-            no_words = {"否", "不", "不是", "取消", "no", "n", "算了", "不要"}
-            if any(w in text for w in yes_words):
+            raw = (player_msg.get_text_content() or "")
+            norm = self._normalize_confirm_text(raw)
+            if self._is_yes(norm):
                 # finalize: broadcast sanitized as Player
-                final_msg = Msg(name="Player", content=self._pending_sanitized or (player_msg.get_text_content() or ""), role="user")
+                final_msg = Msg(name="Player", content=self._pending_sanitized or raw, role="user")
                 await self.print(final_msg)
                 # reset state
                 self._awaiting_confirm = False
@@ -96,16 +95,21 @@ class KPAgent(AgentBase):
                 self._pending_sanitized = None
                 self._last_processed_player_id = player_msg.id
                 return final_msg
-            if any(w in text for w in no_words):
+            if self._is_no(norm):
                 self._awaiting_confirm = False
                 self._awaiting_player = True
                 ask = Msg(name=self.name, content="那请用一句话重新描述你的意图或对白。", role="assistant")
                 await self.print(ask)
                 return ask
-            # unclear, ask to answer 是/否
-            ask2 = Msg(name=self.name, content="请以‘是/否’确认是否按此执行。", role="assistant")
-            await self.print(ask2)
-            return ask2
+            # Treat as new intent: re-judge and propose a new sanitized version
+            judged2 = await self._judge_player_input(player_msg)
+            sanitized2 = judged2.get("sanitized") or raw
+            self._pending_sanitized = sanitized2
+            self._awaiting_confirm = True
+            self._awaiting_player = True
+            confirm_new = Msg(name=self.name, content=f"我理解为：{sanitized2}。是否确认？（是/否）", role="assistant")
+            await self.print(confirm_new)
+            return confirm_new
 
         # If this player message is already processed, acknowledge
         if player_msg.id == self._last_processed_player_id:
@@ -208,3 +212,21 @@ class KPAgent(AgentBase):
             if s.endswith("```"):
                 s = s[:-3]
         return s.strip()
+
+    @staticmethod
+    def _normalize_confirm_text(text: str) -> str:
+        s = text.strip().lower()
+        # remove common punctuation/spaces
+        drop = set(" 。！!？?，,；;：:~～·… \t\r\n")
+        s = "".join(ch for ch in s if ch not in drop)
+        return s
+
+    @staticmethod
+    def _is_yes(norm: str) -> bool:
+        yes_set = {"是", "是的", "好", "好的", "确认", "yes", "y", "行", "嗯", "对", "对的"}
+        return norm in yes_set
+
+    @staticmethod
+    def _is_no(norm: str) -> bool:
+        no_set = {"否", "不是", "不", "取消", "no", "n", "算了", "不要"}
+        return norm in no_set
