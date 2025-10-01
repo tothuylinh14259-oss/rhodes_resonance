@@ -47,6 +47,9 @@ class KPAgent(AgentBase):
         self.name = name
         self.transcript: List[Msg] = []
         self._last_processed_player_id: Optional[str] = None
+        self._awaiting_player: bool = False
+        self._awaiting_confirm: bool = False
+        self._pending_sanitized: Optional[str] = None
 
         # Initialize Kimi (OpenAI-compatible) model client (non-streaming)
         import os
@@ -74,35 +77,70 @@ class KPAgent(AgentBase):
             await self.print(out)
             return out
 
+        # If waiting for confirmation and got player's response now
+        if self._awaiting_confirm and player_msg.id != self._last_processed_player_id:
+            text = (player_msg.get_text_content() or "").strip().lower()
+            yes_words = {"是", "好", "好的", "确认", "yes", "y", "行", "嗯", "对"}
+            no_words = {"否", "不", "不是", "取消", "no", "n", "算了", "不要"}
+            if any(w in text for w in yes_words):
+                # finalize: broadcast sanitized as Player
+                final_msg = Msg(name="Player", content=self._pending_sanitized or (player_msg.get_text_content() or ""), role="user")
+                await self.print(final_msg)
+                # reset state
+                self._awaiting_confirm = False
+                self._awaiting_player = False
+                self._pending_sanitized = None
+                self._last_processed_player_id = player_msg.id
+                return final_msg
+            if any(w in text for w in no_words):
+                self._awaiting_confirm = False
+                self._awaiting_player = True
+                ask = Msg(name=self.name, content="那请用一句话重新描述你的意图或对白。", role="assistant")
+                await self.print(ask)
+                return ask
+            # unclear, ask to answer 是/否
+            ask2 = Msg(name=self.name, content="请以‘是/否’确认是否按此执行。", role="assistant")
+            await self.print(ask2)
+            return ask2
+
         # If this player message is already processed, acknowledge
         if player_msg.id == self._last_processed_player_id:
             out = Msg(name=self.name, content="（已确认上一条输入）", role="assistant")
             await self.print(out)
             return out
 
-        # Call Kimi to judge the latest player input
+        # Call Kimi to rewrite/judge the latest player input
         judged = await self._judge_player_input(player_msg)
         decision = judged.get("decision")
 
         if decision == "accept":
-            self._last_processed_player_id = player_msg.id
-            sanitized = judged.get("sanitized") or player_msg.get_text_content() or ""
-            final_msg = Msg(name="Player", content=sanitized, role="user")
-            await self.print(final_msg)
-            return final_msg
+            sanitized = judged.get("sanitized") or (player_msg.get_text_content() or "")
+            self._awaiting_player = True
+            self._awaiting_confirm = True
+            self._pending_sanitized = sanitized
+            confirm = Msg(name=self.name, content=f"我理解为：{sanitized}。是否确认？（是/否）", role="assistant")
+            await self.print(confirm)
+            return confirm
 
         if decision == "clarify":
             q = judged.get("question") or "请更具体说明你的行动。"
+            self._awaiting_player = True
+            self._awaiting_confirm = False
             ask = Msg(name=self.name, content=q, role="assistant")
             await self.print(ask)
             return ask
 
         # Fallback：当判定异常时，尽量保意愿接受，并提示一次澄清
-        self._last_processed_player_id = player_msg.id
-        sanitized = player_msg.get_text_content() or ""
-        final_msg = Msg(name="Player", content=sanitized, role="user")
-        await self.print(final_msg)
-        return final_msg
+        self._awaiting_player = True
+        self._awaiting_confirm = True
+        self._pending_sanitized = player_msg.get_text_content() or ""
+        confirm2 = Msg(name=self.name, content=f"我理解为：{self._pending_sanitized}。是否确认？（是/否）", role="assistant")
+        await self.print(confirm2)
+        return confirm2
+
+    # Expose a helper for the host to know if more Player input is required
+    def wants_player_reply(self) -> bool:
+        return bool(self._awaiting_player)
 
     async def handle_interrupt(self, *args, **kwargs) -> Msg:
         msg = Msg(name=self.name, content="（KP中断）", role="assistant")
