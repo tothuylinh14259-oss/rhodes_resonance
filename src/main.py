@@ -22,6 +22,16 @@ from agentscope.tool import Toolkit  # type: ignore
 from agents.npc import SimpleNPCAgent
 from agents.player import PlayerAgent
 from agents.kp import KPAgent
+
+# --- Player persona (used by KP to rewrite tone/intent) ---
+PLAYER_PERSONA = (
+    "角色：游侠罗文（Rowan），27岁，北境林地斥候。\n"
+    "背景：曾为边境哨所侦察兵，厌恶无谓流血，偏爱智取与谈判。\n"
+    "目标（短期）：打探‘龙骸’传闻的真假，寻找失踪的向导。\n"
+    "目标（中期）：为故乡与铁匠铺清偿旧债。\n"
+    "说话风格：简短、克制，偶有冷幽默；避免夸饰。\n"
+    "禁区：不自称神/王/贵族；不知未来与他人隐私。\n"
+)
 from world.tools import WORLD, advance_time, change_relation, grant_item
 
 
@@ -83,7 +93,7 @@ async def tavern_scene():
     mage = make_kimi_npc("Mage", "法师，好奇健谈，喜欢引用古籍。")
     blacksmith = make_kimi_npc("Blacksmith", "铁匠，务实可靠，关心物价与原料。")
     player = PlayerAgent(name="Player", prompt="你> ")
-    kp = KPAgent(name="KP")
+    kp = KPAgent(name="KP", player_persona=PLAYER_PERSONA)
 
     async with MsgHub(
         participants=[warrior, mage, player, kp],

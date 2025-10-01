@@ -42,7 +42,7 @@ _SYSTEM_PROMPT = (
 
 
 class KPAgent(AgentBase):
-    def __init__(self, name: str = "KP") -> None:
+    def __init__(self, name: str = "KP", player_persona: str | None = None) -> None:
         super().__init__()
         self.name = name
         self.transcript: List[Msg] = []
@@ -50,6 +50,10 @@ class KPAgent(AgentBase):
         self._awaiting_player: bool = False
         self._awaiting_confirm: bool = False
         self._pending_sanitized: Optional[str] = None
+        # Compose system prompt with optional player persona
+        self._sys_prompt = _SYSTEM_PROMPT
+        if player_persona:
+            self._sys_prompt += "\n玩家人设（用于改写口吻与动机）：\n" + player_persona.strip() + "\n"
 
         # Initialize Kimi (OpenAI-compatible) model client (non-streaming)
         import os
@@ -157,7 +161,7 @@ class KPAgent(AgentBase):
         # Build minimal chat messages for the OpenAI-compatible API
         content = player_msg.get_text_content() or ""
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": self._sys_prompt},
             {"role": "user", "content": f"玩家输入：{content}"},
         ]
         res = await self.model(messages)
