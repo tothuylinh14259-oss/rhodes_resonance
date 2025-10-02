@@ -62,7 +62,7 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
         "  advance_time(mins:int)、change_relation(a:str,b:str,delta:int,reason:str)、grant_item(target:str,item:str,n:int)。\n"
         "- 若需要了解环境信息，优先调用 describe_world()，不要凭空臆测世界状态。\n"
         "- 工具调用完成后，再用一句话向对话对象说明处理结果。\n"
-        "- 若本回合没有新的有效信息、或沉默更合适，请直接输出：[skip]（仅此标记，无其它文字）。"
+        "- 若本回合选择不推进剧情，请输出一条“维持当前姿态/动作/观察”的简短描写（1句），不要输出 [skip]，也不要调用工具。"
     )
 
     model = OpenAIChatModel(
@@ -185,22 +185,13 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
 
 async def run_npc_round(hub: MsgHub, agents: list[ReActAgent]):
     """Run a non-blocking round for NPCs where each NPC may choose to skip.
-    - Auto-broadcast is disabled; we only broadcast non-[skip] outputs.
-    - Tool effects still execute (world updates) and messages are printed to console.
+    - Auto-broadcast is disabled; we broadcast每个NPC的一句输出。\n
+    - 工具效果照常执行（更新世界），并打印到控制台。\n
     """
     hub.set_auto_broadcast(False)
     try:
         for a in agents:
             out = await a(None)
-            # Extract text to detect skip
-            text = None
-            try:
-                text = out.get_text_content()
-            except Exception:
-                text = None
-            norm = (text or "").strip()
-            if norm == "[skip]" or norm == "(沉默)" or norm == "（沉默）" or norm == "":
-                continue  # skip broadcasting
             await hub.broadcast(out)
     finally:
         hub.set_auto_broadcast(True)
