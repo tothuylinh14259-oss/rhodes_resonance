@@ -62,6 +62,11 @@ class KPAgent(AgentBase):
             client_args={"base_url": os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")},
             generate_kwargs={"temperature": 0.2},
         )
+        # Optional director policy for dynamic encounter/foe insertion
+        self._director_policy: str = (
+            "导演策略：在不突兀的前提下，依据场景目标、时间压力与上下文冲突，酌情引入外部压力（如巡逻、敌对势力、事故），"
+            "以推动剧情向既定目标推进或制造合理阻力。避免过于频繁的插入；每次插入须给出清晰理由。"
+        )
     async def observe(self, msg: Msg | List[Msg] | None) -> None:
         if msg is None:
             return
@@ -575,3 +580,83 @@ class KPAgent(AgentBase):
                 if ttype == "text" and isinstance(t, str) and t:
                     lines.append(t)
         return lines
+
+    # ------------------- Director (Spawn) -------------------
+    async def consider_director_actions(self) -> dict:
+        """Let KP act as a lightweight director: decide whether to spawn enemies or do nothing.
+        Returns a dict (JSON-like):
+        {"decision":"none|spawn", "why":"...", "broadcast":"...",
+         "spawn":[{"name":"RI_Raider1","kind":"raider","target_pref":"Doctor",
+                    "ac":13,"hp":9,
+                    "abilities":{"STR":12,"DEX":12,"CON":12,"INT":8,"WIS":10,"CHA":8},
+                    "damage_expr":"1d6+STR","persona":"..."}]}
+        """
+        # Prepare context for the model
+        world_text = self._format_world_snapshot()
+        ctx_text = self._build_context_text(10)
+        sys = (
+            "你是KP-导演，负责根据剧情需要在合适的时机插入外部要素（敌人/巡逻/事故）。\n"
+            "输出严格JSON，不要任何多余文字/标点/markdown。\n"
+            "必须从以下决定中选择其一：\n"
+            "- decision=none（不插入）\n"
+            "- decision=spawn（插入一组敌人/巡逻）\n"
+            "规则：\n"
+            "- 插入必须服务于当前目标推进或制造合理阻力，避免突兀。\n"
+            "- 避免太频繁插入；若刚刚发生过冲突/推进，可选择none。\n"
+            "- 若选择spawn，请给出：广播文案、每个单位的name/kind/目标偏好/属性与伤害表达式/简短persona。\n"
+            "- persona用中文，风格简洁；建议敌人的attack JSON包含 damage_expr；通常伤害如1d6+STR。\n"
+        )
+        usr = (
+            f"世界快照：\n{world_text}\n\n"
+            f"最近上下文：\n{ctx_text}\n\n"
+            f"剧情偏好：{self._director_policy}\n"
+            "请仅返回JSON：{\n"
+            "  \"decision\": \"none|spawn\",\n"
+            "  \"why\": \"简要原因\",\n"
+            "  \"broadcast\": \"若spawn时，给一段入场叙述\",\n"
+            "  \"spawn\": [ { \"name\": \"?\", \"kind\": \"raider|guard|sniper|patrol\", \n"
+            "               \"target_pref\": \"Doctor|nearest|lowest_hp\", \"ac\": 13, \"hp\": 9, \n"
+            "               \"abilities\": {\"STR\":12,\"DEX\":12,\"CON\":12,\"INT\":8,\"WIS\":10,\"CHA\":8}, \n"
+            "               \"damage_expr\": \"1d6+STR\", \"persona\": \"中文人设\" } ]\n"
+            "}"
+        )
+        try:
+            res = await self.model([
+                {"role": "system", "content": sys},
+                {"role": "user", "content": usr},
+            ])
+            text = None
+            get_text = getattr(res, "get_text_content", None)
+            if callable(get_text):
+                text = get_text()
+            if not text:
+                text = getattr(res, "content", None)
+                if isinstance(text, list):
+                    parts = []
+                    for blk in text:
+                        if isinstance(blk, dict) and blk.get("type") == "text":
+                            parts.append(blk.get("text", ""))
+                    text = "".join(parts)
+                elif not isinstance(text, str):
+                    text = None
+            if not text:
+                return {"decision": "none"}
+            import json as _json
+            obj = _json.loads(self._strip_code_fences(text))
+            if not isinstance(obj, dict):
+                return {"decision": "none"}
+            # Shallow sanitize
+            dec = str(obj.get("decision", "none")).lower()
+            if dec not in ("none", "spawn"):
+                dec = "none"
+            obj["decision"] = dec
+            if dec == "spawn":
+                sp = obj.get("spawn")
+                if not isinstance(sp, list) or not sp:
+                    obj["decision"] = "none"
+            return obj
+        except Exception:
+            return {"decision": "none"}
+
+    def set_director_policy(self, text: str) -> None:
+        self._director_policy = str(text or "").strip() or self._director_policy
