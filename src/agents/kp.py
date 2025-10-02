@@ -295,3 +295,16 @@ class KPAgent(AgentBase):
         if not items:
             return "(无)"
         return "\n".join(items)
+
+    async def rewrite_skip_immediately(self) -> Msg:
+        """Rewrite a player's skip into an in-world passive stance and return
+        a finalized Player message without confirmation.
+
+        This uses the same judging pipeline but with a synthetic input.
+        """
+        synth = Msg(name="Player", content="(玩家选择跳过本回合)", role="user")
+        judged = await self._judge_player_input(synth)
+        sanitized = judged.get("sanitized") or "他轻靠壁柱，指背敲了敲杯沿，示意众人继续。"
+        final_msg = Msg(name="Player", content=sanitized, role="user")
+        await self.print(final_msg)
+        return final_msg

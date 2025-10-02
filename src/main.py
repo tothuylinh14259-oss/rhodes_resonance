@@ -161,7 +161,17 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
                         return True
                 except Exception:
                     pass
-            # Note: /skip 不再直接跳过，而是交由 KP 改写为世界化的被动描写并走确认流程
+            # /skip: 改为“直接改写并落地”，不再二次确认
+            if hasattr(player, "wants_skip") and callable(getattr(player, "wants_skip")):
+                try:
+                    if player.wants_skip():
+                        # 让 KP 直接改写为被动姿态，并返回最终 Player 消息
+                        if hasattr(kp, "rewrite_skip_immediately"):
+                            final_msg = await kp.rewrite_skip_immediately()
+                            await hub.broadcast(final_msg)
+                            return False
+                except Exception:
+                    pass
             # Deliver to KP only
             await kp.observe(out_p)
 
