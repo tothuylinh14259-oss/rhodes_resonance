@@ -32,7 +32,19 @@ PLAYER_PERSONA = (
     "说话风格：简短、克制，偶有冷幽默；避免夸饰。\n"
     "禁区：不自称神/王/贵族；不知未来与他人隐私。\n"
 )
-from world.tools import WORLD, advance_time, change_relation, grant_item, describe_world
+from world.tools import (
+    WORLD,
+    advance_time,
+    change_relation,
+    grant_item,
+    describe_world,
+    set_character,
+    get_character,
+    damage,
+    heal,
+    roll_dice,
+    skill_check,
+)
 
 
 def banner():
@@ -61,6 +73,7 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
         "- 当需要推进时间、调整关系或发放物品时，优先使用工具调用：\n"
         "  advance_time(mins:int)、change_relation(a:str,b:str,delta:int,reason:str)、grant_item(target:str,item:str,n:int)。\n"
         "- 若需要了解环境信息，优先调用 describe_world()，不要凭空臆测世界状态。\n"
+        "- 有不确定结果/对抗判定时，使用 roll_dice()/skill_check(target, modifier, advantage)。不要直接宣布结果。\n"
         "- 工具调用完成后，再用一句话向对话对象说明处理结果。\n"
         "- 若本回合选择不推进剧情，请输出一条“维持当前姿态/动作/观察”的简短描写（1句），不要输出 [skip]，也不要调用工具。"
     )
@@ -79,6 +92,12 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
     toolkit.register_tool_function(change_relation)
     toolkit.register_tool_function(grant_item)
     toolkit.register_tool_function(describe_world)
+    # Character/stat & dice tools
+    toolkit.register_tool_function(get_character)
+    toolkit.register_tool_function(damage)
+    toolkit.register_tool_function(heal)
+    toolkit.register_tool_function(roll_dice)
+    toolkit.register_tool_function(skill_check)
 
     return ReActAgent(
         name=name,
@@ -99,6 +118,12 @@ async def tavern_scene():
     kp = KPAgent(name="KP", player_persona=PLAYER_PERSONA)
     # Provide KP with a world snapshot provider so it can see the environment context
     kp.set_world_snapshot_provider(lambda: WORLD.snapshot())
+
+    # Initialize base stats (HP) for characters
+    set_character("Player", 10, 10)
+    set_character("Warrior", 14, 14)
+    set_character("Mage", 8, 8)
+    set_character("Blacksmith", 12, 12)
 
     async with MsgHub(
         participants=[warrior, mage, player, kp],
@@ -228,10 +253,22 @@ def _world_summary_text(snap: dict) -> str:
             inv_lines.append(f"{who}[" + ", ".join(f"{it}:{cnt}" for it, cnt in bag.items()) + "]")
     except Exception:
         pass
+    # Characters
+    chars = snap.get("characters", {}) or {}
+    char_lines = []
+    try:
+        for nm, st in chars.items():
+            hp = st.get("hp"); max_hp = st.get("max_hp")
+            if hp is not None and max_hp is not None:
+                char_lines.append(f"{nm}(HP {hp}/{max_hp})")
+    except Exception:
+        pass
+
     lines = [
         f"环境概要：时间 {hh:02d}:{mm:02d}，天气 {weather}",
         ("关系：" + "; ".join(rel_lines)) if rel_lines else "关系：无变动",
         ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
+        ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
     ]
     return "\n".join(lines)
 
