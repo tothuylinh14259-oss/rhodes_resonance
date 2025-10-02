@@ -74,7 +74,7 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
         "- 当需要推进时间、调整关系或发放物品时，优先使用工具调用：\n"
         "  advance_time(mins:int)、change_relation(a:str,b:str,delta:int,reason:str)、grant_item(target:str,item:str,n:int)。\n"
         "- 若需要了解环境信息，优先调用 describe_world()，不要凭空臆测世界状态。\n"
-        "- 有不确定结果/对抗判定时，使用 roll_dice()/skill_check(target, modifier, advantage)。不要直接宣布结果。\n"
+        "- 有不确定结果/对抗判定时，使用 attack_roll_dnd()/skill_check_dnd()/saving_throw_dnd()。不要直接宣布结果。\n"
         "- 工具调用完成后，再用一句话向对话对象说明处理结果。\n"
         "- 若本回合选择不推进剧情，请输出一条“维持当前姿态/动作/观察”的简短描写（1句），不要输出 [skip]，也不要调用工具。"
     )
@@ -99,6 +99,12 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
     toolkit.register_tool_function(heal)
     toolkit.register_tool_function(roll_dice)
     toolkit.register_tool_function(skill_check)
+    # D&D-like tools
+    toolkit.register_tool_function(set_dnd_character)
+    toolkit.register_tool_function(get_stat_block)
+    toolkit.register_tool_function(skill_check_dnd)
+    toolkit.register_tool_function(saving_throw_dnd)
+    toolkit.register_tool_function(attack_roll_dnd)
 
     return ReActAgent(
         name=name,
@@ -120,11 +126,43 @@ async def tavern_scene():
     # Provide KP with a world snapshot provider so it can see the environment context
     kp.set_world_snapshot_provider(lambda: WORLD.snapshot())
 
-    # Initialize base stats (HP) for characters
-    set_character("Player", 10, 10)
-    set_character("Warrior", 14, 14)
-    set_character("Mage", 8, 8)
-    set_character("Blacksmith", 12, 12)
+    # Initialize D&D-like stat blocks
+    set_dnd_character(
+        name="Player",
+        level=1,
+        ac=14,
+        abilities={"STR": 12, "DEX": 16, "CON": 14, "INT": 10, "WIS": 14, "CHA": 10},
+        max_hp=12,
+        proficient_skills=["perception", "stealth", "survival", "athletics"],
+        proficient_saves=["STR", "DEX"],
+    )
+    set_dnd_character(
+        name="Warrior",
+        level=1,
+        ac=16,
+        abilities={"STR": 16, "DEX": 12, "CON": 14, "INT": 10, "WIS": 10, "CHA": 12},
+        max_hp=14,
+        proficient_skills=["athletics", "intimidation"],
+        proficient_saves=["STR", "CON"],
+    )
+    set_dnd_character(
+        name="Mage",
+        level=1,
+        ac=12,
+        abilities={"STR": 8, "DEX": 14, "CON": 12, "INT": 16, "WIS": 12, "CHA": 10},
+        max_hp=8,
+        proficient_skills=["arcana", "history", "investigation"],
+        proficient_saves=["INT", "WIS"],
+    )
+    set_dnd_character(
+        name="Blacksmith",
+        level=1,
+        ac=12,
+        abilities={"STR": 14, "DEX": 10, "CON": 14, "INT": 10, "WIS": 12, "CHA": 10},
+        max_hp=12,
+        proficient_skills=["athletics", "history"],
+        proficient_saves=["CON", "WIS"],
+    )
 
     async with MsgHub(
         participants=[warrior, mage, player, kp],

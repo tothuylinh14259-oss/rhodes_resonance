@@ -1,7 +1,7 @@
 # Minimal world state and tools for the demo; designed to be pure and easy to test.
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Any, List
+from typing import Dict, Tuple, Any, List, Optional
 import random
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
@@ -309,3 +309,172 @@ def resolve_melee_attack(attacker: str, defender: str, atk_mod: int = 0, dc: int
         "attack": atk_res.metadata,
     }
     return ToolResponse(content=parts, metadata=out_meta)
+
+
+# ================= D&D-like stat block support =================
+ABILITIES = ["STR", "DEX", "CON", "INT", "WIS", "CHA"]
+SKILL_TO_ABILITY = {
+    "acrobatics": "DEX",
+    "animal handling": "WIS",
+    "arcana": "INT",
+    "athletics": "STR",
+    "deception": "CHA",
+    "history": "INT",
+    "insight": "WIS",
+    "intimidation": "CHA",
+    "investigation": "INT",
+    "medicine": "WIS",
+    "nature": "INT",
+    "perception": "WIS",
+    "performance": "CHA",
+    "persuasion": "CHA",
+    "religion": "INT",
+    "sleight of hand": "DEX",
+    "stealth": "DEX",
+    "survival": "WIS",
+}
+
+
+def _mod(score: int) -> int:
+    return (int(score) - 10) // 2
+
+
+def set_dnd_character(
+    name: str,
+    level: int,
+    ac: int,
+    abilities: Dict[str, int],
+    max_hp: int,
+    proficient_skills: Optional[List[str]] = None,
+    proficient_saves: Optional[List[str]] = None,
+) -> ToolResponse:
+    """Create/update a D&D-style character sheet (simplified).
+
+    abilities: dict with STR/DEX/CON/INT/WIS/CHA as keys.
+    """
+    sheet = WORLD.characters.setdefault(name, {})
+    sheet.update({
+        "level": int(level),
+        "ac": int(ac),
+        "abilities": {k.upper(): int(v) for k, v in abilities.items()},
+        "hp": int(max_hp),
+        "max_hp": int(max_hp),
+        "prof": 2 + max(0, int(level) - 1) // 4,  # L1-4:+2,5-8:+3,...
+        "proficient_skills": [s.lower() for s in (proficient_skills or [])],
+        "proficient_saves": [s.upper() for s in (proficient_saves or [])],
+    })
+    # Keep legacy keys for compatibility
+    WORLD.characters[name]["hp"] = sheet["hp"]
+    WORLD.characters[name]["max_hp"] = sheet["max_hp"]
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"设定 {name}（Lv{sheet['level']} AC {sheet['ac']} HP {sheet['hp']}/{sheet['max_hp']}）")],
+        metadata={"name": name, **sheet},
+    )
+
+
+def get_stat_block(name: str) -> ToolResponse:
+    st = WORLD.characters.get(name, {})
+    if not st:
+        return ToolResponse(content=[TextBlock(type="text", text=f"未找到 {name}")], metadata={"found": False})
+    ab = st.get("abilities", {})
+    ab_line = ", ".join(
+        f"{k} {v} ({_signed(_mod(v))})" for k, v in ab.items() if k in ABILITIES
+    )
+    txt = (
+        f"{name} Lv{st.get('level',1)} AC {st.get('ac','?')} "
+        f"HP {st.get('hp','?')}/{st.get('max_hp','?')}\n"
+        f"属性：{ab_line}\n"
+        f"熟练：+{st.get('prof',2)}"
+    )
+    return ToolResponse(content=[TextBlock(type="text", text=txt)], metadata=st)
+
+
+def skill_check_dnd(name: str, skill: str, dc: int, advantage: str = "none") -> ToolResponse:
+    st = WORLD.characters.get(name, {})
+    ab_name = SKILL_TO_ABILITY.get(skill.lower())
+    if not ab_name:
+        return ToolResponse(content=[TextBlock(type="text", text=f"未知技能 {skill}")], metadata={"success": False})
+    ab = int(st.get("abilities", {}).get(ab_name, 10))
+    mod = _mod(ab)
+    prof = int(st.get("prof", 2)) if skill.lower() in (st.get("proficient_skills") or []) else 0
+    base = mod + prof
+    base_note = f"{ab_name}修正{_signed(mod)}{' 熟练+%d'%prof if prof else ''}"
+    roll_res = skill_check(target=int(dc), modifier=base, advantage=advantage)
+    # rewrite first line to include actor name
+    out = []
+    if roll_res.content:
+        for i, blk in enumerate(roll_res.content):
+            if i == 0 and blk.get("type") == "text":
+                out.append(TextBlock(type="text", text=f"{name} 技能检定（{skill}）：{blk.get('text')}（{base_note}）"))
+            else:
+                out.append(blk)
+    return ToolResponse(content=out, metadata={"actor": name, "skill": skill, **(roll_res.metadata or {})})
+
+
+def saving_throw_dnd(name: str, ability: str, dc: int, advantage: str = "none") -> ToolResponse:
+    st = WORLD.characters.get(name, {})
+    ab_name = ability.upper()
+    ab = int(st.get("abilities", {}).get(ab_name, 10))
+    mod = _mod(ab)
+    prof = int(st.get("prof", 2)) if ab_name in (st.get("proficient_saves") or []) else 0
+    base = mod + prof
+    base_note = f"{ab_name}修正{_signed(mod)}{' 熟练+%d'%prof if prof else ''}"
+    roll_res = skill_check(target=int(dc), modifier=base, advantage=advantage)
+    out = []
+    if roll_res.content:
+        for i, blk in enumerate(roll_res.content):
+            if i == 0 and blk.get("type") == "text":
+                out.append(TextBlock(type="text", text=f"{name} 豁免检定（{ab_name}）：{blk.get('text')}（{base_note}）"))
+            else:
+                out.append(blk)
+    return ToolResponse(content=out, metadata={"actor": name, "save": ab_name, **(roll_res.metadata or {})})
+
+
+def attack_roll_dnd(
+    attacker: str,
+    defender: str,
+    ability: str = "STR",
+    proficient: bool = False,
+    target_ac: Optional[int] = None,
+    damage_expr: str = "1d4+STR",
+    advantage: str = "none",
+) -> ToolResponse:
+    """D&D-like attack roll: d20 + ability mod (+prof) vs AC, on hit apply damage.
+    damage_expr 支持 +STR/+DEX/+CON 等修正占位符。
+    """
+    atk = WORLD.characters.get(attacker, {})
+    dfd = WORLD.characters.get(defender, {})
+    ac = int(target_ac if target_ac is not None else dfd.get("ac", 10))
+    mod = _mod(int(atk.get("abilities", {}).get(ability.upper(), 10)))
+    prof = int(atk.get("prof", 2)) if proficient else 0
+    base = mod + prof
+    # Attack roll
+    atk_res = skill_check(target=int(ac), modifier=base, advantage=advantage)
+    success = bool(atk_res.metadata.get("success")) if atk_res.metadata else False
+    parts: List[TextBlock] = []
+    parts.append(TextBlock(type="text", text=f"攻击：{attacker} d20{_signed(base)} vs AC {ac} -> {'命中' if success else '未中'}"))
+    if success:
+        # Replace ability placeholders in damage expr
+        dmg_expr2 = _replace_ability_tokens(damage_expr, mod)
+        dmg_res = roll_dice(dmg_expr2)
+        total = int(dmg_res.metadata.get("total", 0)) if dmg_res.metadata else 0
+        dmg_apply = damage(defender, total)
+        parts.append(TextBlock(type="text", text=f"伤害：{dmg_expr2} -> {total}"))
+        for blk in dmg_apply.content or []:
+            if blk.get("type") == "text":
+                parts.append(blk)
+    return ToolResponse(content=parts, metadata={"attacker": attacker, "defender": defender, "hit": success, "base": base})
+
+
+def _replace_ability_tokens(expr: str, ability_mod: int) -> str:
+    # Very simple: replace any of +STR/+DEX/+CON... with the provided mod
+    s = expr
+    for ab in ABILITIES:
+        token = ab
+        if token in s:
+            s = s.replace(token, str(ability_mod))
+    return s
+
+
+def _signed(x: int) -> str:
+    return f"+{x}" if x >= 0 else str(x)
