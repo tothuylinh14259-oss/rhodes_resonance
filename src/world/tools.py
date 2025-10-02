@@ -20,6 +20,9 @@ class World:
     characters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     location: str = "罗德岛·会议室"
     objectives: List[str] = field(default_factory=list)
+    objective_status: Dict[str, str] = field(default_factory=dict)
+    objective_notes: Dict[str, str] = field(default_factory=dict)
+    events: List[Dict[str, Any]] = field(default_factory=list)
 
     def snapshot(self) -> dict:
         return {
@@ -30,6 +33,8 @@ class World:
             "characters": self.characters,
             "location": self.location,
             "objectives": list(self.objectives),
+            "objective_status": dict(self.objective_status),
+            "objective_notes": dict(self.objective_notes),
         }
 
 
@@ -48,10 +53,15 @@ def advance_time(mins: int):
     """
     WORLD.time_min += int(mins)
     res = {"ok": True, "time_min": WORLD.time_min}
-    return ToolResponse(
-        content=[TextBlock(type="text", text=f"时间推进 {int(mins)} 分钟，当前时间(分钟)={WORLD.time_min}")],
-        metadata=res,
-    )
+    blocks = [TextBlock(type="text", text=f"时间推进 {int(mins)} 分钟，当前时间(分钟)={WORLD.time_min}")]
+    # Auto process events due
+    try:
+        ev = process_events()
+        if ev and ev.content:
+            blocks.extend(ev.content)
+    except Exception:
+        pass
+    return ToolResponse(content=blocks, metadata=res)
 
 
 def change_relation(a: str, b: str, delta: int, reason: str = ""):
@@ -132,7 +142,12 @@ def describe_world(detail: bool = False):
     # Scene & objectives
     loc = snap.get("location", "未知")
     objs = snap.get("objectives", []) or []
-    obj_line = "; ".join(str(o) for o in objs) if objs else "(无)"
+    stmap = snap.get("objective_status", {}) or {}
+    def _fmt_obj(o):
+        name = o if isinstance(o, str) else str(o)
+        st = stmap.get(name)
+        return f"{name}({st})" if st else str(name)
+    obj_line = "; ".join(_fmt_obj(o) for o in objs) if objs else "(无)"
 
     # Characters summary
     chars = snap.get("characters", {}) or {}
@@ -172,19 +187,24 @@ def set_scene(location: str, objectives: Optional[List[str]] = None, append: boo
     """
     WORLD.location = str(location)
     if objectives is not None:
+        items = list(objectives)
         if append:
-            WORLD.objectives.extend(list(objectives))
+            WORLD.objectives.extend(items)
         else:
-            WORLD.objectives = list(objectives)
+            WORLD.objectives = items
+        for o in items:
+            WORLD.objective_status[str(o)] = WORLD.objective_status.get(str(o), "pending")
     text = f"设定场景：{WORLD.location}；目标：{'; '.join(WORLD.objectives) if WORLD.objectives else '(无)'}"
     return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=WORLD.snapshot())
 
 
 def add_objective(obj: str):
     """Append a single objective into the world's objectives list."""
-    WORLD.objectives.append(str(obj))
-    text = f"新增目标：{obj}"
-    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"objectives": list(WORLD.objectives)})
+    name = str(obj)
+    WORLD.objectives.append(name)
+    WORLD.objective_status[name] = WORLD.objective_status.get(name, "pending")
+    text = f"新增目标：{name}"
+    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"objectives": list(WORLD.objectives), "status": dict(WORLD.objective_status)})
 
 
 # ---- Character/stat tools ----
@@ -514,3 +534,63 @@ def _replace_ability_tokens(expr: str, ability_mod: int) -> str:
 
 def _signed(x: int) -> str:
     return f"+{x}" if x >= 0 else str(x)
+
+
+# ---- Objective status helpers ----
+def complete_objective(name: str, note: str = ""):
+    nm = str(name)
+    if nm not in WORLD.objectives:
+        WORLD.objectives.append(nm)
+    WORLD.objective_status[nm] = "done"
+    if note:
+        WORLD.objective_notes[nm] = note
+    return ToolResponse(content=[TextBlock(type="text", text=f"目标完成：{nm}")], metadata={"objectives": list(WORLD.objectives), "status": dict(WORLD.objective_status)})
+
+def block_objective(name: str, reason: str = ""):
+    nm = str(name)
+    if nm not in WORLD.objectives:
+        WORLD.objectives.append(nm)
+    WORLD.objective_status[nm] = "blocked"
+    if reason:
+        WORLD.objective_notes[nm] = reason
+    suffix = f"，原因：{reason}" if reason else ""
+    return ToolResponse(content=[TextBlock(type="text", text=f"目标受阻：{nm}{suffix}")], metadata={"objectives": list(WORLD.objectives), "status": dict(WORLD.objective_status)})
+
+# ---- Event clock ----
+def schedule_event(name: str, at_min: int, note: str = "", effects: Optional[List[Dict[str, Any]]] = None):
+    WORLD.events.append({"name": str(name), "at": int(at_min), "note": str(note), "effects": list(effects or [])})
+    WORLD.events.sort(key=lambda x: x.get("at", 0))
+    return ToolResponse(content=[TextBlock(type="text", text=f"计划事件：{name}@{int(at_min)}分钟")], metadata={"queued": len(WORLD.events)})
+
+def process_events():
+    outputs: List[TextBlock] = []
+    due = [ev for ev in WORLD.events if int(ev.get("at", 0)) <= WORLD.time_min]
+    WORLD.events = [ev for ev in WORLD.events if int(ev.get("at", 0)) > WORLD.time_min]
+    for ev in due:
+        name = ev.get("name", "(事件)")
+        note = ev.get("note", "")
+        outputs.append(TextBlock(type="text", text=f"[事件] {name}：{note}")) if note else outputs.append(TextBlock(type="text", text=f"[事件] {name}"))
+        for eff in (ev.get("effects") or []):
+            try:
+                kind = eff.get("kind")
+                if kind == "add_objective":
+                    add_objective(str(eff.get("name")))
+                elif kind == "complete_objective":
+                    complete_objective(str(eff.get("name")))
+                elif kind == "block_objective":
+                    block_objective(str(eff.get("name")), str(eff.get("reason", "")))
+                elif kind == "relation":
+                    a, b, d = eff.get("a"), eff.get("b"), int(eff.get("delta", 0))
+                    if a and b:
+                        change_relation(str(a), str(b), d, reason=str(eff.get("reason", "")))
+                elif kind == "grant":
+                    grant_item(str(eff.get("target")), str(eff.get("item")), int(eff.get("n", 1)))
+                elif kind == "damage":
+                    damage(str(eff.get("target")), int(eff.get("amount", 0)))
+                elif kind == "heal":
+                    heal(str(eff.get("target")), int(eff.get("amount", 0)))
+            except Exception:
+                outputs.append(TextBlock(type="text", text=f"[事件执行失败] {eff}"))
+    if outputs:
+        return ToolResponse(content=outputs, metadata={"fired": len(due)})
+    return ToolResponse(content=[], metadata={"fired": 0})

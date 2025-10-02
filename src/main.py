@@ -19,18 +19,15 @@ from agentscope.formatter import OpenAIChatFormatter  # type: ignore
 from agentscope.memory import InMemoryMemory  # type: ignore
 from agentscope.tool import Toolkit  # type: ignore
 
-from agents.npc import SimpleNPCAgent
 from agents.player import PlayerAgent
 from agents.kp import KPAgent
 
 # --- Player persona (used by KP to rewrite tone/intent) ---
 PLAYER_PERSONA = (
-    "角色：游侠罗文（Rowan），27岁，北境林地斥候。\n"
-    "背景：曾为边境哨所侦察兵，厌恶无谓流血，偏爱智取与谈判。\n"
-    "目标（短期）：打探‘龙骸’传闻的真假，寻找失踪的向导。\n"
-    "目标（中期）：为故乡与铁匠铺清偿旧债。\n"
-    "说话风格：简短、克制，偶有冷幽默；避免夸饰。\n"
-    "禁区：不自称神/王/贵族；不知未来与他人隐私。\n"
+    "角色：罗德岛‘博士’，战术协调与决策核心。\n"
+    "背景：在凯尔希与阿米娅的协助下进行战略研判，偏好以信息整合与资源调配达成目标。\n"
+    "说话风格：简短、理性、任务导向；避免夸饰与情绪化表达。\n"
+    "边界：不自称超自然或超现实身份；不越权知晓未公开的机密情报。\n"
 )
 from world.tools import (
     WORLD,
@@ -46,13 +43,16 @@ from world.tools import (
     heal,
     roll_dice,
     skill_check,
-    resolve_melee_attack,
     # D&D-like
     set_dnd_character,
     get_stat_block,
     skill_check_dnd,
     saving_throw_dnd,
     attack_roll_dnd,
+    # Director/event helpers
+    schedule_event,
+    complete_objective,
+    block_objective,
 )
 
 
@@ -75,17 +75,33 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
     base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
     model_name = os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
-    sys_prompt = (
-        f"你是游戏中的NPC：{name}。人设：{persona}。"
-        "规则：\n"
-        "- 用简短中文发言，每次只说1-2句，贴合人设。\n"
-        "- 当需要推进时间、调整关系或发放物品时，优先使用工具调用：\n"
-        "  advance_time(mins:int)、change_relation(a:str,b:str,delta:int,reason:str)、grant_item(target:str,item:str,n:int)。\n"
-        "- 若需要了解环境信息，优先调用 describe_world()，不要凭空臆测世界状态。\n"
-        "- 有不确定结果/对抗判定时，使用 attack_roll_dnd()/skill_check_dnd()/saving_throw_dnd()。不要直接宣布结果。\n"
-        "- 工具调用完成后，再用一句话向对话对象说明处理结果。\n"
-        "- 若本回合选择不推进剧情，请输出一条“维持当前姿态/动作/观察”的简短描写（1句），不要输出 [skip]，也不要调用工具。"
+    # Intent-only NPCs: Speak 1-2 sentences, then output a JSON intent block for KP to adjudicate.        # Intent-only NPCs: Speak 1-2 sentences, then output a JSON intent block for KP to adjudicate.
+    sys_prompt = f"你是游戏中的NPC：{name}。人设：{persona}。\n" + (
+        """对话要求：
+- 先用简短中文说1-2句对白/想法/微动作，符合人设。
+- 然后给出一个 JSON 意图（不要调用任何工具；裁决由KP执行）。
+- 若需要了解环境信息，可调用 describe_world()；除此之外不要调用其他工具。
+意图JSON格式（仅保留需要的字段）：
+{
+  "intent": "attack|talk|investigate|move|assist|use_item|skill_check|wait",
+  "target": "目标名称",
+  "skill": "perception|medicine|...",
+  "ability": "STR|DEX|CON|INT|WIS|CHA",
+  "proficient": true,
+  "dc_hint": 12,
+  "damage_expr": "1d4+STR",
+  "time_cost": 1,
+  "notes": "一句话说明意图"
+}
+输出示例：
+阿米娅看向博士，压低声音：‘要先确认辐射数据。’
+```json
+{\"intent\":\"skill_check\",\"target\":\"Amiya\",\"skill\":\"investigation\",\"dc_hint\":12,\"notes\":\"核对监测表\"}
+```
+"""
     )
+
+    model = OpenAIChatModel
 
     model = OpenAIChatModel(
         model_name=model_name,
@@ -95,81 +111,9 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
         generate_kwargs={"temperature": 0.7},
     )
 
-    # Equip world tools via a shared toolkit
+    # Equip only describe_world; all other tools are executed by KP adjudicator.
     toolkit = Toolkit()
-    toolkit.register_tool_function(advance_time)
-    toolkit.register_tool_function(change_relation)
-    toolkit.register_tool_function(grant_item)
     toolkit.register_tool_function(describe_world)
-    toolkit.register_tool_function(set_scene)
-    toolkit.register_tool_function(add_objective)
-    # Character/stat & dice tools
-    toolkit.register_tool_function(get_character)
-    toolkit.register_tool_function(damage)
-    toolkit.register_tool_function(heal)
-    toolkit.register_tool_function(roll_dice)
-    toolkit.register_tool_function(skill_check)
-    # D&D-like tools (provide manual JSON schema to avoid Pydantic issues)
-    toolkit.register_tool_function(
-        set_dnd_character,
-        json_schema={
-            "type": "function",
-            "function": {
-                "name": "set_dnd_character",
-                "description": "Create or update a D&D-style character sheet (level, AC, abilities, HP, proficiencies).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "Character name"},
-                        "level": {"type": "integer"},
-                        "ac": {"type": "integer"},
-                        "abilities": {
-                            "type": "object",
-                            "properties": {
-                                "STR": {"type": "integer"},
-                                "DEX": {"type": "integer"},
-                                "CON": {"type": "integer"},
-                                "INT": {"type": "integer"},
-                                "WIS": {"type": "integer"},
-                                "CHA": {"type": "integer"}
-                            },
-                            "required": ["STR", "DEX", "CON", "INT", "WIS", "CHA"]
-                        },
-                        "max_hp": {"type": "integer"},
-                        "proficient_skills": {"type": "array", "items": {"type": "string"}},
-                        "proficient_saves": {"type": "array", "items": {"type": "string"}}
-                    },
-                    "required": ["name", "level", "ac", "abilities", "max_hp"]
-                }
-            }
-        },
-    )
-    toolkit.register_tool_function(get_stat_block)
-    toolkit.register_tool_function(skill_check_dnd)
-    toolkit.register_tool_function(saving_throw_dnd)
-    toolkit.register_tool_function(
-        attack_roll_dnd,
-        json_schema={
-            "type": "function",
-            "function": {
-                "name": "attack_roll_dnd",
-                "description": "D&D-like attack: d20 + ability mod (+prof) vs AC; on hit deal damage (supports +STR etc).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "attacker": {"type": "string"},
-                        "defender": {"type": "string"},
-                        "ability": {"type": "string", "description": "Ability used: STR/DEX/CON/INT/WIS/CHA", "default": "STR"},
-                        "proficient": {"type": "boolean", "default": False},
-                        "target_ac": {"type": "integer", "description": "Override defender AC", "nullable": True},
-                        "damage_expr": {"type": "string", "description": "e.g. 1d8+STR", "default": "1d4+STR"},
-                        "advantage": {"type": "string", "enum": ["none", "advantage", "disadvantage"], "default": "none"}
-                    },
-                    "required": ["attacker", "defender"]
-                }
-            }
-        },
-    )
 
     return ReActAgent(
         name=name,
@@ -225,6 +169,28 @@ async def tavern_scene():
         proficient_saves=["INT", "WIS"],
     )
 
+    # Seed timed events so the world keeps moving even if players skip.
+    now = WORLD.time_min
+    schedule_event(
+        name="监测科上报初步辐射值",
+        at_min=now + 5,
+        note="伦蒂尼姆方向辐射读数偏高，需二次确认",
+        effects=[{"kind": "add_objective", "name": "确认辐射值并拟定防护预案"}],
+    )
+    schedule_event(
+        name="运输路线暴露风险上升",
+        at_min=now + 15,
+        note="敌对势力侦查迹象明确，需调整路径",
+        effects=[{"kind": "add_objective", "name": "调整运送路线以降低暴露"}],
+    )
+    schedule_event(
+        name="感染者急性发作个案",
+        at_min=now + 30,
+        note="医疗部报告一例急性发作，需隔离与紧急用药",
+        effects=[{"kind": "add_objective", "name": "处置急性发作并稳定队伍"}],
+    )
+
+
     async with MsgHub(
         participants=[amiya, kaltsit, player, kp],
         announcement=Msg(
@@ -235,27 +201,45 @@ async def tavern_scene():
     ) as hub:
         # Opening: Amiya/Kaltsit introduce
         await sequential_pipeline([amiya, kaltsit])
-        # Player <-> KP handshake before others act (isolate from others)
-        if await run_player_kp_handshake(hub, player, kp):
-            return
+        # Note: 不在开场阶段进行 Player↔KP 握手；只在回合内进行，
+        # 避免“确认后立刻又到玩家回合”的体验跳变。
 
         # Main loop: continue rounds until player quits
         round_idx = 1
         while True:
-            await hub.broadcast(Msg("Host", f"第{round_idx}回合：玩家行动（输入 /quit 退出）", "assistant"))
-            # Host broadcasts a brief environment summary each round
-            await hub.broadcast(Msg("Host", _world_summary_text(WORLD.snapshot()), "assistant"))
-            if await run_player_kp_handshake(hub, player, kp):
+            # 主持人信息也打印到控制台，避免只进入消息总线而不显示
+            _hdr = Msg("Host", f"第{round_idx}回合：玩家行动（输入 /quit 退出）", "assistant")
+            await hub.broadcast(_hdr)
+            try:
+                await kp.print(_hdr)
+            except Exception:
+                pass
+            _sum = Msg("Host", _world_summary_text(WORLD.snapshot()), "assistant")
+            await hub.broadcast(_sum)
+            try:
+                await kp.print(_sum)
+            except Exception:
+                pass
+            should_end, player_final = await run_player_kp_handshake(hub, player, kp)
+            if should_end:
                 await hub.broadcast(Msg("Host", "本次冒险暂告一段落。", "assistant"))
                 break
-            # Others react this round
-            await run_npc_round(hub, [kaltsit, amiya])
-            # Snapshot for visibility
+            # Immediately adjudicate confirmed player action
+            if player_final is not None:
+                judge_msgs = await kp.adjudicate([player_final])
+                for m in judge_msgs:
+                    await hub.broadcast(m)
+                    try:
+                        await kp.print(m)
+                    except Exception:
+                        pass
+            # NPCs act stepwise with immediate adjudication (and time advancement)
+            await run_npc_round_stepwise(hub, kp, [kaltsit, amiya])
             print("[system] world:", WORLD.snapshot())
             round_idx += 1
 
 
-async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent, max_steps: int = 8) -> bool:
+async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent, max_steps: int = 8) -> tuple[bool, Msg | None]:
     """Run an isolated Player<->KP handshake:
     - Temporarily disable auto broadcast so raw Player输入与KP提案不会影响其他NPC；
     - 仅在确认“是”后，将最终改写后的 Player 发言广播给所有参与者。
@@ -272,7 +256,7 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
                 try:
                     if player.wants_exit():
                         await hub.broadcast(out_p)
-                        return True
+                        return True, out_p
                 except Exception:
                     pass
             # /skip: 改为“直接改写并落地”，不再二次确认
@@ -283,7 +267,7 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
                         if hasattr(kp, "rewrite_skip_immediately"):
                             final_msg = await kp.rewrite_skip_immediately()
                             await hub.broadcast(final_msg)
-                            return False
+                            return False, final_msg
                 except Exception:
                     pass
             # Deliver to KP only
@@ -293,11 +277,9 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
             out_kp = await kp(None)
 
             # If KP returned a finalized Player message, broadcast it to all and stop
-            if getattr(out_kp, "name", "") == "Player" and getattr(out_kp, "role", "") == "user":
+            if getattr(out_kp, "name", "") == getattr(player, "name", "Player") and getattr(out_kp, "role", "") == "user":
                 await hub.broadcast(out_kp)
-                # Auto-resolve melee if player's action indicates a melee attack
-                await _maybe_auto_resolve_player_melee(hub, out_kp)
-                return False
+                return False, out_kp
 
             # Otherwise, deliver KP's assistant reply back to Player only (no broadcast)
             await player.observe(out_kp)
@@ -306,19 +288,24 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
     finally:
         # Re-enable auto broadcast for subsequent turns
         hub.set_auto_broadcast(True)
-    return False
+    return False, None
 
 
-async def run_npc_round(hub: MsgHub, agents: list[ReActAgent]):
-    """Run a non-blocking round for NPCs where each NPC may choose to skip.
-    - Auto-broadcast is disabled; we broadcast每个NPC的一句输出。\n
-    - 工具效果照常执行（更新世界），并打印到控制台。\n
-    """
+async def run_npc_round_stepwise(hub: MsgHub, kp: KPAgent, agents: list[ReActAgent]) -> None:
+    """NPCs act one by one; after each action, KP adjudicates immediately and
+    broadcasts results (including time advancement and events)."""
     hub.set_auto_broadcast(False)
     try:
         for a in agents:
             out = await a(None)
             await hub.broadcast(out)
+            judge_msgs = await kp.adjudicate([out])
+            for m in judge_msgs:
+                await hub.broadcast(m)
+                try:
+                    await kp.print(m)
+                except Exception:
+                    pass
     finally:
         hub.set_auto_broadcast(True)
 
@@ -332,6 +319,7 @@ def _world_summary_text(snap: dict) -> str:
     weather = snap.get("weather", "unknown")
     location = snap.get("location", "未知")
     objectives = snap.get("objectives", []) or []
+    obj_status = snap.get("objective_status", {}) or {}
     rels = snap.get("relations", {}) or {}
     try:
         rel_lines = [f"{k}:{v}" for k, v in rels.items()]
@@ -359,7 +347,7 @@ def _world_summary_text(snap: dict) -> str:
 
     lines = [
         f"环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}",
-        ("目标：" + "; ".join(map(str, objectives))) if objectives else "目标：无",
+        ("目标：" + "; ".join((f"{str(o)}({obj_status.get(str(o))})" if obj_status.get(str(o)) else str(o)) for o in objectives)) if objectives else "目标：无",
         ("关系：" + "; ".join(rel_lines)) if rel_lines else "关系：无变动",
         ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
@@ -367,44 +355,7 @@ def _world_summary_text(snap: dict) -> str:
     return "\n".join(lines)
 
 
-async def _maybe_auto_resolve_player_melee(hub: MsgHub, player_msg):
-    """Heuristic: if player's finalized message looks like a melee attack to
-    Mage/Warrior/Blacksmith, run a simple melee resolution and broadcast the
-    result as a Host message.
-    """
-    try:
-        text = player_msg.get_text_content() or ""
-    except Exception:
-        return
-    low = text.lower()
-    # Attack verbs (CN+EN)
-    hit_keywords = [
-        "拳", "打", "揍", "砸", "击", "掌", "掴", "踢", "撞", "推", "刺", "砍", "劈",
-        "punch", "hit", "strike", "kick",
-    ]
-    if not any(k in low for k in hit_keywords):
-        return
-    # Target mapping by keywords
-    target_map = {
-        "amiya": "Amiya", "阿米娅": "Amiya",
-        "kaltsit": "Kaltsit", "凯尔希": "Kaltsit",
-    }
-    target = None
-    for k, v in target_map.items():
-        if k in text:
-            target = v
-            break
-    if not target:
-        return
-    # Resolve attack with default DC and damage
-    res = resolve_melee_attack(attacker="Doctor", defender=target, atk_mod=0, dc=12, dmg_expr="1d4")
-    # Summarize ToolResponse content to a Host message
-    out_lines = []
-    for blk in res.content or []:
-        if blk.get("type") == "text":
-            out_lines.append(blk.get("text", ""))
-    if out_lines:
-        await hub.broadcast(Msg("Host", "\n".join(out_lines), "assistant"))
+# Obsolete auto-resolver removed; KP.adjudicate handles results.
 
 
 if __name__ == "__main__":
