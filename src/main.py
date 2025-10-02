@@ -94,6 +94,8 @@ async def tavern_scene():
     blacksmith = make_kimi_npc("Blacksmith", "铁匠，务实可靠，关心物价与原料。")
     player = PlayerAgent(name="Player", prompt="你> ")
     kp = KPAgent(name="KP", player_persona=PLAYER_PERSONA)
+    # Provide KP with a world snapshot provider so it can see the environment context
+    kp.set_world_snapshot_provider(lambda: WORLD.snapshot())
 
     async with MsgHub(
         participants=[warrior, mage, player, kp],

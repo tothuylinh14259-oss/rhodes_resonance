@@ -13,7 +13,7 @@ This agent uses Kimi (OpenAI-compatible) via Agentscope OpenAIChatModel.
 """
 from __future__ import annotations
 import json
-from typing import List, Optional
+from typing import List, Optional, Callable
 
 from agentscope.agent import AgentBase  # type: ignore
 from agentscope.message import Msg  # type: ignore
@@ -54,6 +54,8 @@ class KPAgent(AgentBase):
         self._sys_prompt = _SYSTEM_PROMPT
         if player_persona:
             self._sys_prompt += "\n玩家人设（用于改写口吻与动机）：\n" + player_persona.strip() + "\n"
+        # Optional world snapshot provider; set via setter to avoid hard coupling
+        self._world_snapshot_provider: Optional[Callable[[], dict]] = None
 
         # Initialize Kimi (OpenAI-compatible) model client (non-streaming)
         import os
@@ -162,12 +164,17 @@ class KPAgent(AgentBase):
         return None
 
     async def _judge_player_input(self, player_msg: Msg) -> dict:
-        # Build minimal chat messages for the OpenAI-compatible API
+        # Build chat messages for the OpenAI-compatible API with context
         content = player_msg.get_text_content() or ""
+        ctx_text = self._build_context_text(max_items=8)
+        world_text = self._format_world_snapshot()
         messages = [
             {"role": "system", "content": self._sys_prompt},
-            {"role": "user", "content": f"玩家输入：{content}"},
+            {"role": "user", "content": f"最近上下文（供参考，勿重复）：\n{ctx_text}"},
         ]
+        if world_text:
+            messages.append({"role": "user", "content": f"世界状态（摘要）：\n{world_text}"})
+        messages.append({"role": "user", "content": f"玩家输入：{content}"})
         res = await self.model(messages)
         # Robustly extract text from ChatResponse without relying on hasattr()
         text = None
@@ -230,3 +237,60 @@ class KPAgent(AgentBase):
     def _is_no(norm: str) -> bool:
         no_set = {"否", "不是", "不", "取消", "no", "n", "算了", "不要"}
         return norm in no_set
+
+    def set_world_snapshot_provider(self, provider: Callable[[], dict]) -> None:
+        """Inject a callable that returns world snapshot dict."""
+        self._world_snapshot_provider = provider
+
+    def _format_world_snapshot(self) -> str:
+        if not self._world_snapshot_provider:
+            return ""
+        try:
+            s = self._world_snapshot_provider() or {}
+        except Exception:
+            return ""
+        # Format known fields if present
+        time_min = s.get("time_min")
+        if isinstance(time_min, int):
+            hh = time_min // 60
+            mm = time_min % 60
+            time_str = f"{hh:02d}:{mm:02d}"
+        else:
+            time_str = "未知"
+        weather = s.get("weather", "未知")
+        rels = s.get("relations", {})
+        try:
+            rel_lines = [f"{k}:{v}" for k, v in rels.items()]
+        except Exception:
+            rel_lines = []
+        inv = s.get("inventory", {})
+        inv_lines = []
+        try:
+            for who, bag in inv.items():
+                bag_line = ", ".join(f"{it}:{cnt}" for it, cnt in (bag or {}).items())
+                inv_lines.append(f"{who}[{bag_line}]")
+        except Exception:
+            pass
+        lines = [
+            f"时间：{time_str}",
+            f"天气：{weather}",
+            ("关系：" + "; ".join(rel_lines)) if rel_lines else "关系：无变动",
+            ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
+        ]
+        return "\n".join(lines)
+
+    def _build_context_text(self, max_items: int = 8) -> str:
+        # Use recent transcript (last N), show as `Name: text`
+        items: List[str] = []
+        for m in reversed(self.transcript[-max_items:]):
+            try:
+                txt = m.get_text_content()
+            except Exception:
+                txt = None
+            if not txt:
+                continue
+            name = getattr(m, "name", "?")
+            items.append(f"{name}: {txt}")
+        if not items:
+            return "(无)"
+        return "\n".join(items)
