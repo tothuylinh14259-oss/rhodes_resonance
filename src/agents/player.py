@@ -16,6 +16,7 @@ class PlayerAgent(AgentBase):
         self.name = name
         self.prompt = prompt
         self.transcript: List[Msg] = []
+        self._want_exit: bool = False
 
     async def observe(self, msg: Msg | List[Msg] | None) -> None:
         if msg is None:
@@ -36,6 +37,7 @@ class PlayerAgent(AgentBase):
         # Minimal slash-commands (optional)
         #   /quit -> say goodbye
         if line.strip() == "/quit":
+            self._want_exit = True
             line = "我先告辞了，回头见。"
 
         out = Msg(name=self.name, content=line, role="user")
@@ -46,3 +48,8 @@ class PlayerAgent(AgentBase):
         msg = Msg(name=self.name, content="(玩家被中断)", role="user")
         await self.print(msg)
         return msg
+
+    def wants_exit(self) -> bool:
+        v = self._want_exit
+        self._want_exit = False
+        return v
