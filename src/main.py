@@ -161,15 +161,7 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
                         return True
                 except Exception:
                     pass
-            # Handle /skip: player chooses to skip this turn entirely
-            if hasattr(player, "wants_skip") and callable(getattr(player, "wants_skip")):
-                try:
-                    if player.wants_skip():
-                        # Optionally notify with a subtle host message
-                        await hub.broadcast(Msg("Host", "玩家选择跳过本回合。", "assistant"))
-                        return False
-                except Exception:
-                    pass
+            # Note: /skip 不再直接跳过，而是交由 KP 改写为世界化的被动描写并走确认流程
             # Deliver to KP only
             await kp.observe(out_p)
 
