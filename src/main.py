@@ -44,6 +44,7 @@ from world.tools import (
     heal,
     roll_dice,
     skill_check,
+    resolve_melee_attack,
 )
 
 
@@ -206,6 +207,8 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
             # If KP returned a finalized Player message, broadcast it to all and stop
             if getattr(out_kp, "name", "") == "Player" and getattr(out_kp, "role", "") == "user":
                 await hub.broadcast(out_kp)
+                # Auto-resolve melee if player's action indicates a melee attack
+                await _maybe_auto_resolve_player_melee(hub, out_kp)
                 return False
 
             # Otherwise, deliver KP's assistant reply back to Player only (no broadcast)
@@ -271,6 +274,47 @@ def _world_summary_text(snap: dict) -> str:
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
     ]
     return "\n".join(lines)
+
+
+async def _maybe_auto_resolve_player_melee(hub: MsgHub, player_msg):
+    """Heuristic: if player's finalized message looks like a melee attack to
+    Mage/Warrior/Blacksmith, run a simple melee resolution and broadcast the
+    result as a Host message.
+    """
+    try:
+        text = player_msg.get_text_content() or ""
+    except Exception:
+        return
+    low = text.lower()
+    # Attack verbs (CN+EN)
+    hit_keywords = [
+        "拳", "打", "揍", "砸", "击", "掌", "掴", "踢", "撞", "推", "刺", "砍", "劈",
+        "punch", "hit", "strike", "kick",
+    ]
+    if not any(k in low for k in hit_keywords):
+        return
+    # Target mapping by keywords
+    target_map = {
+        "mage": "Mage", "法师": "Mage",
+        "warrior": "Warrior", "勇士": "Warrior",
+        "blacksmith": "Blacksmith", "铁匠": "Blacksmith",
+    }
+    target = None
+    for k, v in target_map.items():
+        if k in text:
+            target = v
+            break
+    if not target:
+        return
+    # Resolve attack with default DC and damage
+    res = resolve_melee_attack(attacker="Player", defender=target, atk_mod=0, dc=12, dmg_expr="1d4")
+    # Summarize ToolResponse content to a Host message
+    out_lines = []
+    for blk in res.content or []:
+        if blk.get("type") == "text":
+            out_lines.append(blk.get("text", ""))
+    if out_lines:
+        await hub.broadcast(Msg("Host", "\n".join(out_lines), "assistant"))
 
 
 if __name__ == "__main__":

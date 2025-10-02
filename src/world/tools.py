@@ -271,3 +271,41 @@ def skill_check(target: int, modifier: int = 0, advantage: str = "none"):
         content=[TextBlock(type="text", text=text)],
         metadata={"roll": roll, "modifier": int(modifier), "total": total, "target": int(target), "success": success, "note": note},
     )
+
+
+def resolve_melee_attack(attacker: str, defender: str, atk_mod: int = 0, dc: int = 12, dmg_expr: str = "1d4", advantage: str = "none"):
+    """Resolve a simple melee attack: d20+atk_mod vs DC, on success apply damage.
+
+    Args:
+        attacker: 攻击发起者名字
+        defender: 防御者名字
+        atk_mod: 攻击加值（如力量/技巧）
+        dc: 防御难度（DC）
+        dmg_expr: 伤害骰表达式（如 1d4, 1d6+1）
+        advantage: 'none'|'advantage'|'disadvantage'
+    """
+    # Attack roll
+    atk_res = skill_check(target=int(dc), modifier=int(atk_mod), advantage=advantage)
+    success = bool(atk_res.metadata.get("success")) if atk_res.metadata else False
+    parts: list[TextBlock] = []
+    # Describe the attack roll
+    parts.append(TextBlock(type="text", text=f"攻击检定：{attacker} d20+{int(atk_mod)} vs DC {int(dc)} -> {'成功' if success else '失败'}"))
+    if success:
+        # Damage roll (reuse roll_dice)
+        dmg_res = roll_dice(dmg_expr)
+        total = int(dmg_res.metadata.get("total", 0)) if dmg_res.metadata else 0
+        # Apply damage
+        dmg_apply = damage(defender, total)
+        # Aggregate logs
+        parts.append(TextBlock(type="text", text=f"伤害掷骰 {dmg_expr} -> {total}"))
+        # Append the damage text line
+        if dmg_apply.content:
+            for blk in dmg_apply.content:
+                if blk.get("type") == "text":
+                    parts.append(blk)
+    out_meta = {
+        "attacker": attacker,
+        "defender": defender,
+        "attack": atk_res.metadata,
+    }
+    return ToolResponse(content=parts, metadata=out_meta)
