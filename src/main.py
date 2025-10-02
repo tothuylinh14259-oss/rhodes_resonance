@@ -21,6 +21,7 @@ from agentscope.tool import Toolkit  # type: ignore
 
 from agents.player import PlayerAgent
 from agents.kp import KPAgent
+from agentscope.agent import AgentBase  # type: ignore
 
 # --- Player persona (used by KP to rewrite tone/intent) ---
 PLAYER_PERSONA = (
@@ -191,6 +192,12 @@ async def tavern_scene():
     )
 
 
+    # Prepare a mutable NPC list; enemies may join later during encounters
+    npcs_list: list[ReActAgent] = [kaltsit, amiya]
+
+    # Simple encounter trigger: after a short in-world delay, enemies闯入
+    encounter_trigger_min = WORLD.time_min + 7
+
     async with MsgHub(
         participants=[amiya, kaltsit, player, kp],
         announcement=Msg(
@@ -233,8 +240,14 @@ async def tavern_scene():
                         await kp.print(m)
                     except Exception:
                         pass
-            # NPCs act stepwise with immediate adjudication (and time advancement)
-            await run_npc_round_stepwise(hub, kp, [kaltsit, amiya])
+            # Maybe trigger an encounter: enemies break in and start combat
+            if WORLD.time_min >= encounter_trigger_min:
+                await _run_simple_encounter(hub, kp, player, npcs_list)
+                # Reset trigger far in the future so it doesn't fire again
+                encounter_trigger_min = WORLD.time_min + 9999
+
+            # NPCs (non-encounter) act stepwise with immediate adjudication
+            await run_npc_round_stepwise(hub, kp, npcs_list)
             print("[system] world:", WORLD.snapshot())
             round_idx += 1
 
@@ -356,6 +369,150 @@ def _world_summary_text(snap: dict) -> str:
 
 
 # Obsolete auto-resolver removed; KP.adjudicate handles results.
+
+
+# ------------------- Encounter Helpers -------------------
+async def _run_simple_encounter(hub: MsgHub, kp: KPAgent, player: PlayerAgent, friendlies: list[ReActAgent]) -> None:
+    """Lightweight encounter mode with initiative order.
+    - Spawns a small enemy group
+    - Rolls initiative (d20+DEX mod) for all combatants
+    - Runs a turn loop until enemies are defeated or player exits
+    """
+    # 1) Spawn enemies (stat blocks + scripted agents)
+    enemies = _spawn_enemy_group()
+    await hub.broadcast(Msg("Host", "[遭遇] 通道尽头传来脚步与金属碰撞声——两名整合运动突击手破门而入！", "assistant"))
+    # 2) Build initiative
+    names = ["Doctor", "Amiya", "Kaltsit"] + [e.name for e in enemies]
+    order = _roll_initiative(names)
+    order_names = [n for n, _ in order]
+    await hub.broadcast(Msg("Host", "[先攻] 顺序：" + ", ".join(order_names), "assistant"))
+
+    # Build name->agent mapping; Player handled specially by handshake
+    name_to_agent: dict[str, AgentBase] = {
+        "Doctor": player,
+        "Amiya": next(a for a in friendlies if getattr(a, "name", "") == "Amiya"),
+        "Kaltsit": next(a for a in friendlies if getattr(a, "name", "") == "Kaltsit"),
+    }
+    for e in enemies:
+        name_to_agent[e.name] = e
+
+    # 3) Turn loop
+    i = 0
+    max_turns = 200  # hard stop safety
+    while i < max_turns:
+        # Remove defeated enemies from order
+        order = [(n, ini) for (n, ini) in order if not _is_defeated_enemy(n)]
+        if not any(n.startswith("RI_Raider") for n, _ in order):
+            await hub.broadcast(Msg("Host", "[遭遇结束] 敌人被击退/制伏。", "assistant"))
+            break
+        actor = order[i % len(order)][0]
+        # Player's turn via handshake
+        if actor == "Doctor":
+            should_end, player_final = await run_player_kp_handshake(hub, player, kp)
+            if should_end:
+                await hub.broadcast(Msg("Host", "本次冒险暂告一段落。", "assistant"))
+                return
+            if player_final is not None:
+                judge_msgs = await kp.adjudicate([player_final])
+                for m in judge_msgs:
+                    await hub.broadcast(m)
+                    try:
+                        await kp.print(m)
+                    except Exception:
+                        pass
+        else:
+            # NPC/enemy action: single step, immediate adjudication
+            agent = name_to_agent.get(actor)
+            if agent is not None:
+                # Provide a brief world snapshot hint to the agent
+                try:
+                    await agent.observe(Msg("Host", _world_summary_text(WORLD.snapshot()), "assistant"))
+                except Exception:
+                    pass
+                out = await agent(None)
+                await hub.broadcast(out)
+                judge_msgs = await kp.adjudicate([out])
+                for m in judge_msgs:
+                    await hub.broadcast(m)
+                    try:
+                        await kp.print(m)
+                    except Exception:
+                        pass
+        i += 1
+
+
+def _roll_initiative(names: list[str]) -> list[tuple[str, int]]:
+    from world.tools import WORLD as _W
+    import random
+    def mod(score: int) -> int:
+        return (int(score) - 10) // 2
+    rolls: list[tuple[str, int]] = []
+    for n in names:
+        try:
+            dex = int((_W.characters.get(n, {}) or {}).get("abilities", {}).get("DEX", 10))
+        except Exception:
+            dex = 10
+        ini = random.randint(1, 20) + mod(dex)
+        rolls.append((n, ini))
+    rolls.sort(key=lambda x: x[1], reverse=True)
+    return rolls
+
+
+def _spawn_enemy_group() -> list[AgentBase]:
+    """Create a small enemy group with stat blocks and simple scripted agents."""
+    # Define two raiders
+    set_dnd_character(
+        name="RI_Raider1",
+        level=1,
+        ac=13,
+        abilities={"STR": 12, "DEX": 12, "CON": 12, "INT": 8, "WIS": 10, "CHA": 8},
+        max_hp=9,
+        proficient_skills=["athletics", "perception"],
+    )
+    set_dnd_character(
+        name="RI_Raider2",
+        level=1,
+        ac=13,
+        abilities={"STR": 12, "DEX": 12, "CON": 12, "INT": 8, "WIS": 10, "CHA": 8},
+        max_hp=9,
+        proficient_skills=["athletics", "perception"],
+    )
+
+    class ScriptedEnemy(AgentBase):
+        def __init__(self, name: str, target: str = "Doctor") -> None:
+            super().__init__()
+            self.name = name
+            self.target = target
+            self._intro_done = False
+        async def observe(self, msg):
+            # no-op minimal memory
+            return None
+        async def reply(self, msg=None):
+            # First time say one line, then attack
+            if not self._intro_done:
+                self._intro_done = True
+                txt = f"{self.name} 挥起短棍逼近，低喝：‘交出通行证！’"
+            else:
+                txt = f"{self.name} 侧身压步，狠击{self.target}的肋侧。"
+            intent = {
+                "intent": "attack",
+                "target": self.target,
+                "ability": "STR",
+                "proficient": False,
+                "damage_expr": "1d6+STR",
+                "time_cost": 1,
+                "notes": "短棍攻击",
+            }
+            content = txt + "\n```json\n" + __import__("json").dumps(intent, ensure_ascii=False) + "\n```"
+            out = Msg(self.name, content, "assistant")
+            await self.print(out)
+            return out
+        async def handle_interrupt(self, *args, **kwargs):
+            msg = Msg(self.name, "（敌人被干扰，暂缓动作）", "assistant")
+            await self.print(msg)
+            return msg
+
+    return [ScriptedEnemy("RI_Raider1"), ScriptedEnemy("RI_Raider2")]
 
 
 if __name__ == "__main__":
