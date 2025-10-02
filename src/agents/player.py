@@ -17,6 +17,7 @@ class PlayerAgent(AgentBase):
         self.prompt = prompt
         self.transcript: List[Msg] = []
         self._want_exit: bool = False
+        self._want_skip: bool = False
 
     async def observe(self, msg: Msg | List[Msg] | None) -> None:
         if msg is None:
@@ -39,6 +40,9 @@ class PlayerAgent(AgentBase):
         if line.strip() == "/quit":
             self._want_exit = True
             line = "我先告辞了，回头见。"
+        elif line.strip() == "/skip":
+            self._want_skip = True
+            line = "(玩家选择跳过本回合)"
 
         out = Msg(name=self.name, content=line, role="user")
         await self.print(out)
@@ -52,4 +56,9 @@ class PlayerAgent(AgentBase):
     def wants_exit(self) -> bool:
         v = self._want_exit
         self._want_exit = False
+        return v
+
+    def wants_skip(self) -> bool:
+        v = self._want_skip
+        self._want_skip = False
         return v

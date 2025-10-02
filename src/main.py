@@ -60,7 +60,8 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
         "- 用简短中文发言，每次只说1-2句，贴合人设。\n"
         "- 当需要推进时间、调整关系或发放物品时，优先使用工具调用：\n"
         "  advance_time(mins:int)、change_relation(a:str,b:str,delta:int,reason:str)、grant_item(target:str,item:str,n:int)。\n"
-        "- 工具调用完成后，再用一句话向对话对象说明处理结果。"
+        "- 工具调用完成后，再用一句话向对话对象说明处理结果。\n"
+        "- 若本回合没有新的有效信息、或沉默更合适，请直接输出：[skip]（仅此标记，无其它文字）。"
     )
 
     model = OpenAIChatModel(
@@ -130,7 +131,7 @@ async def tavern_scene():
                 await hub.broadcast(Msg("Host", "本次冒险暂告一段落。", "assistant"))
                 break
             # Others react this round
-            await sequential_pipeline([mage, warrior, blacksmith])
+            await run_npc_round(hub, [mage, warrior, blacksmith])
             # Snapshot for visibility
             print("[system] world:", WORLD.snapshot())
             round_idx += 1
@@ -156,6 +157,15 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
                         return True
                 except Exception:
                     pass
+            # Handle /skip: player chooses to skip this turn entirely
+            if hasattr(player, "wants_skip") and callable(getattr(player, "wants_skip")):
+                try:
+                    if player.wants_skip():
+                        # Optionally notify with a subtle host message
+                        await hub.broadcast(Msg("Host", "玩家选择跳过本回合。", "assistant"))
+                        return False
+                except Exception:
+                    pass
             # Deliver to KP only
             await kp.observe(out_p)
 
@@ -175,6 +185,29 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
         # Re-enable auto broadcast for subsequent turns
         hub.set_auto_broadcast(True)
     return False
+
+
+async def run_npc_round(hub: MsgHub, agents: list[ReActAgent]):
+    """Run a non-blocking round for NPCs where each NPC may choose to skip.
+    - Auto-broadcast is disabled; we only broadcast non-[skip] outputs.
+    - Tool effects still execute (world updates) and messages are printed to console.
+    """
+    hub.set_auto_broadcast(False)
+    try:
+        for a in agents:
+            out = await a(None)
+            # Extract text to detect skip
+            text = None
+            try:
+                text = out.get_text_content()
+            except Exception:
+                text = None
+            norm = (text or "").strip()
+            if norm == "[skip]" or norm == "(沉默)" or norm == "（沉默）" or norm == "":
+                continue  # skip broadcasting
+            await hub.broadcast(out)
+    finally:
+        hub.set_auto_broadcast(True)
 
 
 if __name__ == "__main__":
