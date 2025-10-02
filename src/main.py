@@ -45,6 +45,12 @@ from world.tools import (
     roll_dice,
     skill_check,
     resolve_melee_attack,
+    # D&D-like
+    set_dnd_character,
+    get_stat_block,
+    skill_check_dnd,
+    saving_throw_dnd,
+    attack_roll_dnd,
 )
 
 
