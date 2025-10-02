@@ -43,7 +43,7 @@ _SYSTEM_PROMPT = (
 
 
 class KPAgent(AgentBase):
-    def __init__(self, name: str = "KP", player_persona: str | None = None) -> None:
+    def __init__(self, name: str = "KP", player_persona: str | None = None, player_name: str = "Player") -> None:
         super().__init__()
         self.name = name
         self.transcript: List[Msg] = []
@@ -51,6 +51,7 @@ class KPAgent(AgentBase):
         self._awaiting_player: bool = False
         self._awaiting_confirm: bool = False
         self._pending_sanitized: Optional[str] = None
+        self.player_name = player_name
         # Compose system prompt with optional player persona
         self._sys_prompt = _SYSTEM_PROMPT
         if player_persona:
@@ -89,7 +90,7 @@ class KPAgent(AgentBase):
             raw = (player_msg.get_text_content() or "")
             # Strict confirmation: only '/yes' confirms; anything else is treated as new intent
             if raw.strip() == "/yes":
-                final_msg = Msg(name="Player", content=self._pending_sanitized or "", role="user")
+                final_msg = Msg(name=self.player_name, content=self._pending_sanitized or "", role="user")
                 await self.print(final_msg)
                 self._awaiting_confirm = False
                 self._awaiting_player = False
@@ -159,7 +160,7 @@ class KPAgent(AgentBase):
     async def _judge_player_input(self, player_msg: Msg) -> dict:
         # Build chat messages for the OpenAI-compatible API with context
         content = player_msg.get_text_content() or ""
-        ctx_text = self._build_context_text(max_items=8)
+        ctx_text = self._build_context_text(max_items=16)
         world_text = self._format_world_snapshot()
         messages = [
             {"role": "system", "content": self._sys_prompt},
@@ -272,7 +273,7 @@ class KPAgent(AgentBase):
         ]
         return "\n".join(lines)
 
-    def _build_context_text(self, max_items: int = 8) -> str:
+    def _build_context_text(self, max_items: int = 16) -> str:
         # Use recent transcript (last N), show as `Name: text`
         items: List[str] = []
         for m in reversed(self.transcript[-max_items:]):
@@ -297,6 +298,6 @@ class KPAgent(AgentBase):
         synth = Msg(name="Player", content="(玩家选择跳过本回合)", role="user")
         judged = await self._judge_player_input(synth)
         sanitized = judged.get("sanitized") or "他轻靠壁柱，指背敲了敲杯沿，示意众人继续。"
-        final_msg = Msg(name="Player", content=sanitized, role="user")
+        final_msg = Msg(name=self.player_name, content=sanitized, role="user")
         await self.print(final_msg)
         return final_msg

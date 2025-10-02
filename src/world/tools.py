@@ -18,6 +18,8 @@ class World:
     relations: Dict[Tuple[str, str], int] = field(default_factory=dict)
     inventory: Dict[str, Dict[str, int]] = field(default_factory=dict)
     characters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    location: str = "罗德岛·会议室"
+    objectives: List[str] = field(default_factory=list)
 
     def snapshot(self) -> dict:
         return {
@@ -26,6 +28,8 @@ class World:
             "relations": {f"{a}&{b}": v for (a, b), v in self.relations.items()},
             "inventory": self.inventory,
             "characters": self.characters,
+            "location": self.location,
+            "objectives": list(self.objectives),
         }
 
 
@@ -125,6 +129,11 @@ def describe_world(detail: bool = False):
     except Exception:
         pass
 
+    # Scene & objectives
+    loc = snap.get("location", "未知")
+    objs = snap.get("objectives", []) or []
+    obj_line = "; ".join(str(o) for o in objs) if objs else "(无)"
+
     # Characters summary
     chars = snap.get("characters", {}) or {}
     char_lines: List[str] = []
@@ -138,6 +147,8 @@ def describe_world(detail: bool = False):
         pass
 
     lines = [
+        f"地点：{loc}",
+        f"目标：{obj_line}",
         f"时间：{time_str}",
         f"天气：{weather}",
         ("关系：" + "; ".join(rel_lines)) if rel_lines else "关系：无变动",
@@ -149,6 +160,31 @@ def describe_world(detail: bool = False):
 
     text = "\n".join(lines)
     return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=snap)
+
+
+def set_scene(location: str, objectives: Optional[List[str]] = None, append: bool = False):
+    """Set the current scene location and optionally objectives list.
+
+    Args:
+        location: 新地点描述
+        objectives: 目标列表；append=True 时为追加，否则替换
+        append: 是否在现有目标后追加
+    """
+    WORLD.location = str(location)
+    if objectives is not None:
+        if append:
+            WORLD.objectives.extend(list(objectives))
+        else:
+            WORLD.objectives = list(objectives)
+    text = f"设定场景：{WORLD.location}；目标：{'; '.join(WORLD.objectives) if WORLD.objectives else '(无)'}"
+    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=WORLD.snapshot())
+
+
+def add_objective(obj: str):
+    """Append a single objective into the world's objectives list."""
+    WORLD.objectives.append(str(obj))
+    text = f"新增目标：{obj}"
+    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"objectives": list(WORLD.objectives)})
 
 
 # ---- Character/stat tools ----

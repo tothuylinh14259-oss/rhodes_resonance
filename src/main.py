@@ -38,6 +38,8 @@ from world.tools import (
     change_relation,
     grant_item,
     describe_world,
+    set_scene,
+    add_objective,
     set_character,
     get_character,
     damage,
@@ -99,18 +101,75 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
     toolkit.register_tool_function(change_relation)
     toolkit.register_tool_function(grant_item)
     toolkit.register_tool_function(describe_world)
+    toolkit.register_tool_function(set_scene)
+    toolkit.register_tool_function(add_objective)
     # Character/stat & dice tools
     toolkit.register_tool_function(get_character)
     toolkit.register_tool_function(damage)
     toolkit.register_tool_function(heal)
     toolkit.register_tool_function(roll_dice)
     toolkit.register_tool_function(skill_check)
-    # D&D-like tools
-    toolkit.register_tool_function(set_dnd_character)
+    # D&D-like tools (provide manual JSON schema to avoid Pydantic issues)
+    toolkit.register_tool_function(
+        set_dnd_character,
+        json_schema={
+            "type": "function",
+            "function": {
+                "name": "set_dnd_character",
+                "description": "Create or update a D&D-style character sheet (level, AC, abilities, HP, proficiencies).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Character name"},
+                        "level": {"type": "integer"},
+                        "ac": {"type": "integer"},
+                        "abilities": {
+                            "type": "object",
+                            "properties": {
+                                "STR": {"type": "integer"},
+                                "DEX": {"type": "integer"},
+                                "CON": {"type": "integer"},
+                                "INT": {"type": "integer"},
+                                "WIS": {"type": "integer"},
+                                "CHA": {"type": "integer"}
+                            },
+                            "required": ["STR", "DEX", "CON", "INT", "WIS", "CHA"]
+                        },
+                        "max_hp": {"type": "integer"},
+                        "proficient_skills": {"type": "array", "items": {"type": "string"}},
+                        "proficient_saves": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["name", "level", "ac", "abilities", "max_hp"]
+                }
+            }
+        },
+    )
     toolkit.register_tool_function(get_stat_block)
     toolkit.register_tool_function(skill_check_dnd)
     toolkit.register_tool_function(saving_throw_dnd)
-    toolkit.register_tool_function(attack_roll_dnd)
+    toolkit.register_tool_function(
+        attack_roll_dnd,
+        json_schema={
+            "type": "function",
+            "function": {
+                "name": "attack_roll_dnd",
+                "description": "D&D-like attack: d20 + ability mod (+prof) vs AC; on hit deal damage (supports +STR etc).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "attacker": {"type": "string"},
+                        "defender": {"type": "string"},
+                        "ability": {"type": "string", "description": "Ability used: STR/DEX/CON/INT/WIS/CHA", "default": "STR"},
+                        "proficient": {"type": "boolean", "default": False},
+                        "target_ac": {"type": "integer", "description": "Override defender AC", "nullable": True},
+                        "damage_expr": {"type": "string", "description": "e.g. 1d8+STR", "default": "1d4+STR"},
+                        "advantage": {"type": "string", "enum": ["none", "advantage", "disadvantage"], "default": "none"}
+                    },
+                    "required": ["attacker", "defender"]
+                }
+            }
+        },
+    )
 
     return ReActAgent(
         name=name,
@@ -124,17 +183,22 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
 
 async def tavern_scene():
     # Use Kimi (Moonshot) LLM-backed NPCs + a human player + KP (GM)
-    warrior = make_kimi_npc("Warrior", "勇士，直来直去，讲究承诺与荣誉。")
-    mage = make_kimi_npc("Mage", "法师，好奇健谈，喜欢引用古籍。")
-    blacksmith = make_kimi_npc("Blacksmith", "铁匠，务实可靠，关心物价与原料。")
-    player = PlayerAgent(name="Player", prompt="你> ")
-    kp = KPAgent(name="KP", player_persona=PLAYER_PERSONA)
+    amiya = make_kimi_npc("Amiya", "罗德岛公开领导人阿米娅。温柔而坚定，理性克制，关切同伴；擅长源石技艺（术师），发言简洁不夸张。")
+    kaltsit = make_kimi_npc("Kaltsit", "罗德岛医疗部门负责人凯尔希。冷静苛刻、直言不讳，注重风险控制与证据；医疗/生物技术专家。")
+    player = PlayerAgent(name="Doctor", prompt="博士> ")
+    kp = KPAgent(name="KP", player_persona=PLAYER_PERSONA, player_name="Doctor")
     # Provide KP with a world snapshot provider so it can see the environment context
     kp.set_world_snapshot_provider(lambda: WORLD.snapshot())
 
+    # Initialize scene & objectives
+    set_scene("罗德岛·会议室", [
+        "确认切尔诺伯格核心城残骸的辐射监测数据",
+        "在伦蒂尼姆行动前完成风险评估",
+    ])
+
     # Initialize D&D-like stat blocks
     set_dnd_character(
-        name="Player",
+        name="Doctor",
         level=1,
         ac=14,
         abilities={"STR": 12, "DEX": 16, "CON": 14, "INT": 10, "WIS": 14, "CHA": 10},
@@ -143,58 +207,38 @@ async def tavern_scene():
         proficient_saves=["STR", "DEX"],
     )
     set_dnd_character(
-        name="Warrior",
-        level=1,
-        ac=16,
-        abilities={"STR": 16, "DEX": 12, "CON": 14, "INT": 10, "WIS": 10, "CHA": 12},
-        max_hp=14,
-        proficient_skills=["athletics", "intimidation"],
-        proficient_saves=["STR", "CON"],
-    )
-    set_dnd_character(
-        name="Mage",
+        name="Amiya",
         level=1,
         ac=12,
-        abilities={"STR": 8, "DEX": 14, "CON": 12, "INT": 16, "WIS": 12, "CHA": 10},
-        max_hp=8,
-        proficient_skills=["arcana", "history", "investigation"],
+        abilities={"STR": 8, "DEX": 14, "CON": 12, "INT": 16, "WIS": 12, "CHA": 12},
+        max_hp=10,
+        proficient_skills=["arcana", "history", "persuasion"],
         proficient_saves=["INT", "WIS"],
     )
     set_dnd_character(
-        name="Blacksmith",
+        name="Kaltsit",
         level=1,
-        ac=12,
-        abilities={"STR": 14, "DEX": 10, "CON": 14, "INT": 10, "WIS": 12, "CHA": 10},
-        max_hp=12,
-        proficient_skills=["athletics", "history"],
-        proficient_saves=["CON", "WIS"],
+        ac=14,
+        abilities={"STR": 10, "DEX": 12, "CON": 14, "INT": 16, "WIS": 14, "CHA": 10},
+        max_hp=14,
+        proficient_skills=["medicine", "investigation", "history"],
+        proficient_saves=["INT", "WIS"],
     )
 
     async with MsgHub(
-        participants=[warrior, mage, player, kp],
+        participants=[amiya, kaltsit, player, kp],
         announcement=Msg(
             "Host",
-            "你们在酒馆壁炉旁相识。做个自我介绍。\n提示：玩家可直接发言；如需推进剧情，NPC 可使用工具：advance_time/change_relation/grant_item。",
+            "罗德岛·会议室。各位做好简短自我介绍，并对当前事务做快速同步。\n提示：玩家可直接发言；如需推进剧情，NPC 可使用工具/检定：describe_world/skill_check_dnd/attack_roll_dnd。",
             "assistant",
         ),
     ) as hub:
-        # Opening: warriors/mage introduce
-        await sequential_pipeline([warrior, mage])
+        # Opening: Amiya/Kaltsit introduce
+        await sequential_pipeline([amiya, kaltsit])
         # Player <-> KP handshake before others act (isolate from others)
         if await run_player_kp_handshake(hub, player, kp):
             return
 
-        # Dynamic join
-        hub.add(blacksmith)
-        await hub.broadcast(
-            Msg(
-                "Host",
-                "铁匠走进酒馆，向你们打招呼。可以根据需要调用工具（例如推进时间15分钟、调整两人的关系、分发道具）。",
-                "assistant",
-            )
-        )
-        # After blacksmith joins: have blacksmith speak first
-        await sequential_pipeline([blacksmith])
         # Main loop: continue rounds until player quits
         round_idx = 1
         while True:
@@ -205,7 +249,7 @@ async def tavern_scene():
                 await hub.broadcast(Msg("Host", "本次冒险暂告一段落。", "assistant"))
                 break
             # Others react this round
-            await run_npc_round(hub, [mage, warrior, blacksmith])
+            await run_npc_round(hub, [kaltsit, amiya])
             # Snapshot for visibility
             print("[system] world:", WORLD.snapshot())
             round_idx += 1
@@ -286,6 +330,8 @@ def _world_summary_text(snap: dict) -> str:
         t = 0
     hh, mm = t // 60, t % 60
     weather = snap.get("weather", "unknown")
+    location = snap.get("location", "未知")
+    objectives = snap.get("objectives", []) or []
     rels = snap.get("relations", {}) or {}
     try:
         rel_lines = [f"{k}:{v}" for k, v in rels.items()]
@@ -312,7 +358,8 @@ def _world_summary_text(snap: dict) -> str:
         pass
 
     lines = [
-        f"环境概要：时间 {hh:02d}:{mm:02d}，天气 {weather}",
+        f"环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}",
+        ("目标：" + "; ".join(map(str, objectives))) if objectives else "目标：无",
         ("关系：" + "; ".join(rel_lines)) if rel_lines else "关系：无变动",
         ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
@@ -339,9 +386,8 @@ async def _maybe_auto_resolve_player_melee(hub: MsgHub, player_msg):
         return
     # Target mapping by keywords
     target_map = {
-        "mage": "Mage", "法师": "Mage",
-        "warrior": "Warrior", "勇士": "Warrior",
-        "blacksmith": "Blacksmith", "铁匠": "Blacksmith",
+        "amiya": "Amiya", "阿米娅": "Amiya",
+        "kaltsit": "Kaltsit", "凯尔希": "Kaltsit",
     }
     target = None
     for k, v in target_map.items():
@@ -351,7 +397,7 @@ async def _maybe_auto_resolve_player_melee(hub: MsgHub, player_msg):
     if not target:
         return
     # Resolve attack with default DC and damage
-    res = resolve_melee_attack(attacker="Player", defender=target, atk_mod=0, dc=12, dmg_expr="1d4")
+    res = resolve_melee_attack(attacker="Doctor", defender=target, atk_mod=0, dc=12, dmg_expr="1d4")
     # Summarize ToolResponse content to a Host message
     out_lines = []
     for blk in res.content or []:
