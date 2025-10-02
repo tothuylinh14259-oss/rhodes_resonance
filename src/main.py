@@ -32,7 +32,7 @@ PLAYER_PERSONA = (
     "说话风格：简短、克制，偶有冷幽默；避免夸饰。\n"
     "禁区：不自称神/王/贵族；不知未来与他人隐私。\n"
 )
-from world.tools import WORLD, advance_time, change_relation, grant_item
+from world.tools import WORLD, advance_time, change_relation, grant_item, describe_world
 
 
 def banner():
@@ -60,6 +60,7 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
         "- 用简短中文发言，每次只说1-2句，贴合人设。\n"
         "- 当需要推进时间、调整关系或发放物品时，优先使用工具调用：\n"
         "  advance_time(mins:int)、change_relation(a:str,b:str,delta:int,reason:str)、grant_item(target:str,item:str,n:int)。\n"
+        "- 若需要了解环境信息，优先调用 describe_world()，不要凭空臆测世界状态。\n"
         "- 工具调用完成后，再用一句话向对话对象说明处理结果。\n"
         "- 若本回合没有新的有效信息、或沉默更合适，请直接输出：[skip]（仅此标记，无其它文字）。"
     )
@@ -77,6 +78,7 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
     toolkit.register_tool_function(advance_time)
     toolkit.register_tool_function(change_relation)
     toolkit.register_tool_function(grant_item)
+    toolkit.register_tool_function(describe_world)
 
     return ReActAgent(
         name=name,
@@ -127,6 +129,8 @@ async def tavern_scene():
         round_idx = 1
         while True:
             await hub.broadcast(Msg("Host", f"第{round_idx}回合：玩家行动（输入 /quit 退出）", "assistant"))
+            # Host broadcasts a brief environment summary each round
+            await hub.broadcast(Msg("Host", _world_summary_text(WORLD.snapshot()), "assistant"))
             if await run_player_kp_handshake(hub, player, kp):
                 await hub.broadcast(Msg("Host", "本次冒险暂告一段落。", "assistant"))
                 break
@@ -208,6 +212,35 @@ async def run_npc_round(hub: MsgHub, agents: list[ReActAgent]):
             await hub.broadcast(out)
     finally:
         hub.set_auto_broadcast(True)
+
+
+def _world_summary_text(snap: dict) -> str:
+    try:
+        t = int(snap.get("time_min", 0))
+    except Exception:
+        t = 0
+    hh, mm = t // 60, t % 60
+    weather = snap.get("weather", "unknown")
+    rels = snap.get("relations", {}) or {}
+    try:
+        rel_lines = [f"{k}:{v}" for k, v in rels.items()]
+    except Exception:
+        rel_lines = []
+    inv = snap.get("inventory", {}) or {}
+    inv_lines = []
+    try:
+        for who, bag in inv.items():
+            if not bag:
+                continue
+            inv_lines.append(f"{who}[" + ", ".join(f"{it}:{cnt}" for it, cnt in bag.items()) + "]")
+    except Exception:
+        pass
+    lines = [
+        f"环境概要：时间 {hh:02d}:{mm:02d}，天气 {weather}",
+        ("关系：" + "; ".join(rel_lines)) if rel_lines else "关系：无变动",
+        ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
+    ]
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

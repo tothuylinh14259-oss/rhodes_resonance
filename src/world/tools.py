@@ -86,3 +86,50 @@ def grant_item(target: str, item: str, n: int = 1):
         content=[TextBlock(type="text", text=f"给予 {target} 物品 {item} x{int(n)}，现有数量={bag[item]}")],
         metadata=res,
     )
+
+
+def describe_world(detail: bool = False):
+    """Return a human-readable summary of the world state for agents.
+
+    Args:
+        detail: If True, include more verbose lines. (Metadata always contains the raw snapshot.)
+
+    Returns:
+        ToolResponse with a text summary and metadata as the raw snapshot dict.
+    """
+    snap = WORLD.snapshot()
+    # Format time
+    t = int(snap.get("time_min", 0))
+    hh, mm = t // 60, t % 60
+    time_str = f"{hh:02d}:{mm:02d}"
+    weather = snap.get("weather", "unknown")
+    # Relations
+    rels = snap.get("relations", {}) or {}
+    try:
+        rel_lines = [f"{k}:{v}" for k, v in rels.items()]
+    except Exception:
+        rel_lines = []
+    # Inventory
+    inv = snap.get("inventory", {}) or {}
+    inv_lines = []
+    try:
+        for who, bag in inv.items():
+            if not bag:
+                continue
+            inv_lines.append(
+                f"{who}[" + ", ".join(f"{it}:{cnt}" for it, cnt in bag.items()) + "]"
+            )
+    except Exception:
+        pass
+
+    lines = [
+        f"时间：{time_str}",
+        f"天气：{weather}",
+        ("关系：" + "; ".join(rel_lines)) if rel_lines else "关系：无变动",
+        ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
+    ]
+    if detail:
+        lines.append("(详情见元数据)")
+
+    text = "\n".join(lines)
+    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=snap)
