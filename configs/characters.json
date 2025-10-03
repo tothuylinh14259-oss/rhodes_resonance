@@ -1,5 +1,5 @@
 {
-  "participants": ["Amiya", "Kaltsit", "Doctor"],
+  "participants": ["Amiya", "Doctor"],
 
   "Doctor": {
     "type": "player",
@@ -25,19 +25,5 @@
       "proficient_skills": ["arcana","history","persuasion"],
       "proficient_saves": ["INT","WIS"]
     }
-  },
-
-  "Kaltsit": {
-    "type": "npc",
-    "persona": "罗德岛医疗部门负责人凯尔希。冷静苛刻、直言不讳，注重风险控制与证据；医疗/生物技术专家。",
-    "dnd": {
-      "level": 1,
-      "ac": 14,
-      "max_hp": 14,
-      "abilities": {"STR":10,"DEX":12,"CON":14,"INT":16,"WIS":14,"CHA":10},
-      "proficient_skills": ["medicine","investigation","history"],
-      "proficient_saves": ["INT","WIS"]
-    }
   }
 }
-

@@ -73,7 +73,7 @@ def banner():
 
 
 # ---- Kimi (Moonshot) integration helpers ----
-def make_kimi_npc(name: str, persona: str, prompt_template: str | None = None) -> ReActAgent:
+def make_kimi_npc(name: str, persona: str, prompt_template: str | None = None, allowed_names: str | None = None) -> ReActAgent:
     """Create an LLM-backed NPC using Kimi's OpenAI-compatible API.
 
     Required env vars (set in your conda env):
@@ -98,7 +98,7 @@ def make_kimi_npc(name: str, persona: str, prompt_template: str | None = None) -
     tpl = prompt_template or _NPC_PROMPT_TEMPLATE
     if tpl:
         try:
-            sys_prompt = tpl.format(name=name, persona=persona, tools=tools, intent_schema=intent_schema)
+            sys_prompt = tpl.format(name=name, persona=persona, tools=tools, intent_schema=intent_schema, allowed_names=(allowed_names or "Doctor, Amiya"))
         except Exception:
             sys_prompt = None
     if not sys_prompt:
@@ -108,6 +108,8 @@ def make_kimi_npc(name: str, persona: str, prompt_template: str | None = None) -
 - 先用简短中文说1-2句对白/想法/微动作，符合人设。
 - 然后给出一个 JSON 意图（不要调用任何工具；裁决由KP执行）。
 - 若需要了解环境信息，可调用 describe_world()；除此之外不要调用其他工具。
+- 参与者名称（仅可用）：{allowed_names}
+- 意图JSON的 target 字段必须从上述列表中选择；禁止使用别称/编号（如 Player/玩家/Player1）。
 意图JSON格式（仅保留需要的字段）：
 {intent_schema}
 输出示例：
@@ -116,7 +118,7 @@ def make_kimi_npc(name: str, persona: str, prompt_template: str | None = None) -
 {\"intent\":\"skill_check\",\"target\":\"Amiya\",\"skill\":\"investigation\",\"dc_hint\":12,\"notes\":\"核对监测表\"}
 ```
 """
-        ).format(intent_schema=intent_schema)
+        ).format(intent_schema=intent_schema, allowed_names=(allowed_names or "Doctor, Amiya"))
 
     model = OpenAIChatModel
 
@@ -191,6 +193,7 @@ async def tavern_scene():
             char_cfg = {}
         # Initialize D&D blocks and agents according to config
         order = char_cfg.get("participants") or []
+        allowed_names_str = ", ".join(order) if isinstance(order, list) else "Doctor, Amiya"
         for name in order:
             entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
             typ = str(entry.get("type") or "npc")
@@ -215,13 +218,18 @@ async def tavern_scene():
                 participants_order.append(player)
             else:
                 persona = entry.get("persona") or "一个简短的人设描述"
-                agent = make_kimi_npc(name, persona, prompt_template=_NPC_PROMPT_TEMPLATE)
+                agent = make_kimi_npc(name, persona, prompt_template=_NPC_PROMPT_TEMPLATE, allowed_names=allowed_names_str)
                 npcs_list.append(agent)
                 participants_order.append(agent)
+        # Safety net: if config existed but failed to create a player, fallback to default Player
+        if player is None:
+            player = PlayerAgent(name="Doctor", prompt="博士> ")
+            participants_order.append(player)
     else:
         # Fallback to hardcoded actors
-        amiya = make_kimi_npc("Amiya", "罗德岛公开领导人阿米娅。温柔而坚定，理性克制，关切同伴；擅长源石技艺（术师），发言简洁不夸张。", prompt_template=_NPC_PROMPT_TEMPLATE)
-        kaltsit = make_kimi_npc("Kaltsit", "罗德岛医疗部门负责人凯尔希。冷静苛刻、直言不讳，注重风险控制与证据；医疗/生物技术专家。", prompt_template=_NPC_PROMPT_TEMPLATE)
+        allowed_names_str = ", ".join(["Kaltsit", "Amiya", "Doctor"])  # fallback visible names
+        amiya = make_kimi_npc("Amiya", "罗德岛公开领导人阿米娅。温柔而坚定，理性克制，关切同伴；擅长源石技艺（术师），发言简洁不夸张。", prompt_template=_NPC_PROMPT_TEMPLATE, allowed_names=allowed_names_str)
+        kaltsit = make_kimi_npc("Kaltsit", "罗德岛医疗部门负责人凯尔希。冷静苛刻、直言不讳，注重风险控制与证据；医疗/生物技术专家。", prompt_template=_NPC_PROMPT_TEMPLATE, allowed_names=allowed_names_str)
         player = PlayerAgent(name="Doctor", prompt="博士> ")
         npcs_list = [kaltsit, amiya]
         participants_order = [kaltsit, amiya, player]
@@ -288,10 +296,11 @@ async def tavern_scene():
     except Exception:
         pass
 
-    # Initialize scene & objectives
-    set_scene("罗德岛·会议室", [
-        "确认切尔诺伯格核心城残骸的辐射监测数据",
-        "在伦蒂尼姆行动前完成风险评估",
+    # Initialize scene & objectives for the escape storyline
+    set_scene("旧城区·北侧仓棚", [
+        "确认包围态势与盲区",
+        "潜行接近突破口",
+        "抵达撤离点 E-3",
     ])
 
     # If character config didn't provide player stat, ensure a sane default for player
@@ -306,26 +315,7 @@ async def tavern_scene():
             proficient_saves=["STR", "DEX"],
         )
 
-    # Seed timed events so the world keeps moving even if players skip.
-    now = WORLD.time_min
-    schedule_event(
-        name="监测科上报初步辐射值",
-        at_min=now + 5,
-        note="伦蒂尼姆方向辐射读数偏高，需二次确认",
-        effects=[{"kind": "add_objective", "name": "确认辐射值并拟定防护预案"}],
-    )
-    schedule_event(
-        name="运输路线暴露风险上升",
-        at_min=now + 15,
-        note="敌对势力侦查迹象明确，需调整路径",
-        effects=[{"kind": "add_objective", "name": "调整运送路线以降低暴露"}],
-    )
-    schedule_event(
-        name="感染者急性发作个案",
-        at_min=now + 30,
-        note="医疗部报告一例急性发作，需隔离与紧急用药",
-        effects=[{"kind": "add_objective", "name": "处置急性发作并稳定队伍"}],
-    )
+    # Note: story beats (docs/plot.story.json) will handle additional pressure/events
 
 
     # Prepare mutable NPC list (already built); ensure it excludes player and KP
@@ -363,11 +353,50 @@ async def tavern_scene():
         except Exception:
             pass
 
+    async def _check_death_endings() -> bool:
+        """If Doctor or Amiya HP <= 0, broadcast ending and stop the adventure."""
+        try:
+            snap = WORLD.snapshot()
+            chars = snap.get("characters", {}) or {}
+            def _hp(name: str) -> int:
+                st = chars.get(name, {}) or {}
+                try:
+                    return int(st.get("hp", 0) or 0)
+                except Exception:
+                    return 0
+            doc_hp = _hp("Doctor")
+            ami_hp = _hp("Amiya")
+            if doc_hp <= 0:
+                await _bcast(Msg("Host", "仓棚阴影骤紧，呼号在铁皮墙间打转——博士倒地，通讯熄灭。", "assistant"))
+                await _bcast(Msg("Host", "结局：撤离失败（玩家阵亡）", "assistant"))
+                try:
+                    tr = block_objective("抵达撤离点 E-3", "关键成员阵亡")
+                    for blk in tr.content or []:
+                        if blk.get("type") == "text":
+                            await _bcast(Msg("Host", blk.get("text"), "assistant"))
+                except Exception:
+                    pass
+                return True
+            if ami_hp <= 0:
+                await _bcast(Msg("Host", "微光在披风边缘熄灭，脚步声徒然空落——阿米娅停止了呼吸。", "assistant"))
+                await _bcast(Msg("Host", "结局：突围终止（阿米娅阵亡）", "assistant"))
+                try:
+                    tr = block_objective("抵达撤离点 E-3", "关键成员阵亡")
+                    for blk in tr.content or []:
+                        if blk.get("type") == "text":
+                            await _bcast(Msg("Host", blk.get("text"), "assistant"))
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            return False
+        return False
+
     async with MsgHub(
         participants=participants,
         announcement=Msg(
             "Host",
-            "罗德岛·会议室。各位做好简短自我介绍，并对当前事务做快速同步。\n提示：玩家可直接发言；如需推进剧情，NPC 可使用工具/检定：describe_world/skill_check_dnd/attack_roll_dnd。",
+            "旧城区·北侧仓棚。外围灯影交错，北与西面巡逻重叠；E-3 或许尚可通行。\n目标：确认包围态势与盲区、潜行接近突破口、抵达撤离点 E-3。\n提示：玩家直接发言；需要推进潜行/观察/越障/压制等，由 KP 以 skill_check_dnd/attack_roll_dnd 裁决。",
             "assistant",
         ),
     ) as hub:
@@ -401,12 +430,21 @@ async def tavern_scene():
                 judge_msgs = await kp.adjudicate([player_final])
                 for m in judge_msgs:
                     await _bcast(m)
+                # Death endings check after immediate adjudication
+                if await _check_death_endings():
+                    break
             # Allow KP as director to insert enemies/events based on story state
             await _maybe_director_actions(hub, kp, npcs_list, _bcast)
+            # Death endings after director actions (e.g., scripted damage)
+            if await _check_death_endings():
+                break
 
             # NPCs act stepwise with immediate adjudication
             await run_npc_round_stepwise(hub, kp, npcs_list, _bcast)
             print("[system] world:", WORLD.snapshot())
+            # Death endings after NPC round
+            if await _check_death_endings():
+                break
             round_idx += 1
 
         # Close log when finishing
@@ -553,6 +591,20 @@ async def _maybe_director_actions(hub: MsgHub, kp: KPAgent, npcs_list: list[ReAc
                 txt = str(a.get("text") or "").strip()
                 if txt:
                     await _bcast(Msg("Host", txt, "assistant"))
+            elif t == "set_scene":
+                # Director can switch scene and optionally reset/append objectives
+                # {type:"set_scene", name:"地点名", objectives:[...], append: bool}
+                name = a.get("name")
+                objs = a.get("objectives")
+                append = bool(a.get("append", False))
+                if name:
+                    try:
+                        tr = set_scene(str(name), list(objs) if isinstance(objs, list) else None, append=append)
+                        for blk in (tr.content or []):
+                            if blk.get("type") == "text":
+                                await _bcast(Msg("Host", blk.get("text"), "assistant"))
+                    except Exception:
+                        pass
             elif t == "spawn":
                 units = a.get("units") or []
                 if isinstance(units, list):
@@ -645,7 +697,11 @@ async def _spawn_from_specs(hub: MsgHub, npcs_list: list[ReActAgent], units: lis
             set_dnd_character(name=name, level=1, ac=ac, abilities=abilities, max_hp=hp)
         except Exception:
             pass
-        agent = make_enemy_npc(name=name, persona=persona, default_damage_expr=dmg, target_pref=target_pref, prompt_template=_ENEMY_PROMPT_TEMPLATE)
+        try:
+            allowed_names_str = ", ".join(list(WORLD.characters.keys()))
+        except Exception:
+            allowed_names_str = "Doctor, Amiya"
+        agent = make_enemy_npc(name=name, persona=persona, default_damage_expr=dmg, target_pref=target_pref, prompt_template=_ENEMY_PROMPT_TEMPLATE, allowed_names=allowed_names_str)
         npcs_list.append(agent)
 
 _enemy_auto_id = 1
@@ -663,7 +719,7 @@ def _default_enemy_persona(kind: str) -> str:
         return "远程火力支援手。偏好远距离压制，优先打击高威胁目标。"
     return "整合运动突击手。行动果断，先威吓索要通行与物资，遭拒或反抗即近身攻击。"
 
-def make_enemy_npc(name: str, persona: str, default_damage_expr: str = "1d6+STR", target_pref: str = "Doctor", prompt_template: str | None = None) -> ReActAgent:
+def make_enemy_npc(name: str, persona: str, default_damage_expr: str = "1d6+STR", target_pref: str = "Doctor", prompt_template: str | None = None, allowed_names: str | None = None) -> ReActAgent:
     """Create an LLM-backed enemy NPC with stronger nudges to include attack intents.
     Enemy talks 1-2 sentences then output a JSON intent; when attacking, include damage_expr.
     """
@@ -681,7 +737,7 @@ def make_enemy_npc(name: str, persona: str, default_damage_expr: str = "1d6+STR"
     tpl = prompt_template or _ENEMY_PROMPT_TEMPLATE
     if tpl:
         try:
-            sys_prompt = tpl.format(name=name, persona=persona, target_pref=target_pref, default_damage_expr=default_damage_expr, tools=tools, intent_schema=intent_schema)
+            sys_prompt = tpl.format(name=name, persona=persona, target_pref=target_pref, default_damage_expr=default_damage_expr, tools=tools, intent_schema=intent_schema, allowed_names=(allowed_names or "Doctor, Amiya"))
         except Exception:
             sys_prompt = None
     if not sys_prompt:
@@ -691,6 +747,8 @@ def make_enemy_npc(name: str, persona: str, default_damage_expr: str = "1d6+STR"
 - 然后给出一个 JSON 意图（不要调用工具；裁决由KP执行）。
 - 当你决定攻击时，请在 JSON 中包含 damage_expr（通常为 {default_damage_expr}）。
 - 目标偏好：{target_pref}（若该目标不在场，可选择最近或威胁更高者）。
+- 参与者名称（仅可用）：{allowed_names}
+- 意图JSON的 target 必须从上述列表中选择；禁止使用别称/编号（如 Player/玩家/Player1）。
 JSON格式（仅保留需要的字段）：
 {intent_schema}
 输出示例：
@@ -699,7 +757,7 @@ JSON格式（仅保留需要的字段）：
 {{"intent":"attack","target":"{target_pref}","ability":"STR","proficient":false,"damage_expr":"{default_damage_expr}","notes":"短棍攻击"}}
 ```
 """
-        ).format(intent_schema=intent_schema)
+        ).format(intent_schema=intent_schema, allowed_names=(allowed_names or "Doctor, Amiya"))
 
     model = OpenAIChatModel(
         model_name=model_name,

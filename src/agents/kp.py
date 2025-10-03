@@ -590,7 +590,14 @@ class KPAgent(AgentBase):
             except Exception:
                 pass
             # built-in fallbacks
-            mp = {"阿米娅": "Amiya", "凯尔希": "Kaltsit", "博士": "Doctor"}
+            # normalize common aliases for player
+            try:
+                nl = n.lower() if isinstance(n, str) else n
+                if nl in ("player", "player1", "玩家"):
+                    return self.player_name or "Doctor"
+            except Exception:
+                pass
+            mp = {"阿米娅": "Amiya", "凯尔希": "Kaltsit", "博士": "Doctor", "player": self.player_name or "Doctor", "player1": self.player_name or "Doctor"}
             return mp.get(n, n)
         actor_id = _canon(actor)
         narr_meta = {"actor": actor_id, "kind": kind}

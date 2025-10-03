@@ -1,36 +1,237 @@
 {
-  "meta": { "title": "伦蒂尼姆前置行动", "style": "低调推进、时间压力、外部骚扰" },
+  "meta": {
+    "title": "夜色突围·多场景",
+    "style": "潜行、短促接触、时间压力、分支"
+  },
   "acts": [
     {
-      "id": "briefing",
+      "id": "scene_warehouse",
       "beats": [
         {
-          "id": "deadline_push",
-          "when": { "time_min_gte": 485, "objectives_pending_any": ["确认切尔诺伯格核心城残骸的辐射监测数据"] },
+          "id": "kickoff",
+          "when": {
+            "time_min_gte": 481
+          },
           "actions": [
-            { "type": "broadcast", "text": "作战处来电：伦蒂尼姆外围侦测异常，要求尽快给出预案。" }
+            {
+              "type": "set_scene",
+              "name": "旧城区·北侧仓棚",
+              "objectives": [
+                "确认包围态势与盲区",
+                "潜行接近突破口",
+                "抵达撤离点 E-3"
+              ],
+              "append": false
+            },
+            {
+              "type": "broadcast",
+              "text": "仓棚内灯影交错——北与西两面巡逻重叠，E-3 或许尚可通行。"
+            }
+          ],
+          "once": true
+        },
+        {
+          "id": "tool_drop",
+          "when": {
+            "rounds_stalled_gte": 2,
+            "objectives_pending_any": [
+              "潜行接近突破口"
+            ]
+          },
+          "actions": [
+            {
+              "type": "grant",
+              "target": "Doctor",
+              "item": "烟雾弹",
+              "n": 1
+            },
+            {
+              "type": "broadcast",
+              "text": "后勤临时抛投：烟雾弹 x1，可用于遮断视线后穿越。"
+            }
+          ],
+          "once": true
+        },
+        {
+          "id": "patrol_overlap",
+          "when": {
+            "time_min_gte": 486,
+            "objectives_pending_any": [
+              "潜行接近突破口"
+            ]
+          },
+          "actions": [
+            {
+              "type": "broadcast",
+              "text": "对讲机间歇增多，巡逻切换更频繁；北侧形成短时盲区。"
+            }
+          ],
+          "cooldown_min": 8
+        }
+      ]
+    },
+    {
+      "id": "scene_alley",
+      "beats": [
+        {
+          "id": "shift_to_alley",
+          "when": {
+            "time_min_gte": 490
+          },
+          "actions": [
+            {
+              "type": "set_scene",
+              "name": "旧城区·北巷阴影",
+              "objectives": [
+                "潜行接近突破口",
+                "抵达撤离点 E-3"
+              ],
+              "append": false
+            },
+            {
+              "type": "broadcast",
+              "text": "北巷阴影里，光束划过墙面，巡逻间隔缩短。"
+            }
+          ],
+          "once": true
+        },
+        {
+          "id": "spotted_ping",
+          "when": {
+            "rounds_stalled_gte": 3,
+            "objectives_pending_any": [
+              "潜行接近突破口",
+              "抵达撤离点 E-3"
+            ]
+          },
+          "actions": [
+            {
+              "type": "broadcast",
+              "text": "远处光束一顿，似有怀疑；再拖延恐将被标定。"
+            }
+          ],
+          "cooldown_min": 6
+        },
+        {
+          "id": "contact_raiders",
+          "when": {
+            "rounds_stalled_gte": 4,
+            "objectives_pending_any": [
+              "潜行接近突破口",
+              "抵达撤离点 E-3"
+            ]
+          },
+          "actions": [
+            {
+              "type": "broadcast",
+              "text": "两名突击手自侧门掠出，试图封死巷口！"
+            },
+            {
+              "type": "spawn",
+              "units": [
+                {
+                  "kind": "raider",
+                  "target_pref": "Doctor",
+                  "damage_expr": "1d6+STR",
+                  "persona": "近战突击手。逼近后短促压制。"
+                },
+                {
+                  "kind": "raider",
+                  "target_pref": "nearest",
+                  "damage_expr": "1d6+STR",
+                  "persona": "近战突击手。协同夹击，压制后撤。"
+                }
+              ]
+            }
+          ],
+          "cooldown_min": 10
+        },
+        {
+          "id": "tighten_window",
+          "when": {
+            "time_min_gte": 496,
+            "objectives_pending_any": [
+              "抵达撤离点 E-3"
+            ]
+          },
+          "actions": [
+            {
+              "type": "broadcast",
+              "text": "外围巡线增厚，撤离窗口收紧。"
+            }
           ],
           "once": true
         }
       ]
     },
     {
-      "id": "disruption",
+      "id": "scene_checkpoint",
       "beats": [
         {
-          "id": "raider_intrusion",
-          "when": { "rounds_stalled_gte": 2, "objectives_pending_any": ["在伦蒂尼姆行动前完成风险评估"] },
+          "id": "shift_to_checkpoint",
+          "when": {
+            "time_min_gte": 500
+          },
           "actions": [
-            { "type": "broadcast", "text": "通道尽头传来脚步与金属碰撞声——两名整合运动突击手破门而入！" },
-            { "type": "spawn", "units": [
-              { "kind": "raider", "target_pref": "Doctor", "damage_expr": "1d6+STR", "persona": "整合运动突击手。遭到喝止仍强行靠近，挑衅即动手。" },
-              { "kind": "raider", "target_pref": "nearest", "damage_expr": "1d6+STR", "persona": "整合运动突击手。协同夹击，优先压制发言最强硬者。" }
-            ]}
+            {
+              "type": "set_scene",
+              "name": "旧城区·外环检查线 E-3",
+              "objectives": [
+                "抵达撤离点 E-3"
+              ],
+              "append": false
+            },
+            {
+              "type": "broadcast",
+              "text": "前方是 E-3 检查线，灯影与反光夹角在收紧。"
+            }
           ],
-          "cooldown_min": 8
+          "once": true
+        },
+        {
+          "id": "sniper_overpass",
+          "when": {
+            "time_min_gte": 502,
+            "objectives_pending_any": [
+              "抵达撤离点 E-3"
+            ]
+          },
+          "actions": [
+            {
+              "type": "broadcast",
+              "text": "高处短促反光——疑似远程标定，务必尽快通过 E-3！"
+            },
+            {
+              "type": "spawn",
+              "units": [
+                {
+                  "kind": "sniper",
+                  "target_pref": "nearest",
+                  "damage_expr": "1d8+DEX",
+                  "persona": "远程压制手。优先打击暴露目标。"
+                }
+              ]
+            }
+          ],
+          "once": true
+        },
+        {
+          "id": "deadline_fail_hint",
+          "when": {
+            "time_min_gte": 510,
+            "objectives_pending_any": [
+              "抵达撤离点 E-3"
+            ]
+          },
+          "actions": [
+            {
+              "type": "broadcast",
+              "text": "外围宣布扩编搜索，E-3 即将封闭——若仍未抵达，将需要改道或接应。"
+            }
+          ],
+          "once": true
         }
       ]
     }
   ]
 }
-

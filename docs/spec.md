@@ -1,77 +1,69 @@
 # 项目规范（NPC 群聊与剧情驱动 Demo）
 
 目标
-- 演示以 MsgHub 管理多 NPC 对话，支持轮流发言与动态加入/退出。
-- 提供可扩展骨架：后续可接入真实 AgentScope、工具调用、长时记忆、剧情节点图与游戏引擎。
+- 以 MsgHub 管理 NPC 群聊，支持轮流发言与动态插入事件/敌人。
+- 提供可扩展骨架：KP 审判（意图→工具）、旁白、D&D 检定/攻击、剧情节拍与配置化。
 
-架构角色
-- Director（可选）：控制回合、工具调用白名单、剧情节点跳转（本 Demo 先由 `main.py` 代行部分职责）。
-- NPC Agent：基于人设产出发言；本 Demo 使用 `SimpleNPCAgent`（无 LLM，确定性），便于离线运行。
-- MsgHub：集中管理参与者与消息序列；`sequential_pipeline` 实现按顺序发言。
-- World/Tools：世界状态与规则工具（时间推进、关系变化、物品发放等）。
+组件角色
+- Player：人类玩家；支持 `/quit`、`/skip`。
+- KP（主持/GM）：改写/澄清/确认玩家意图；裁决工具；基于策略与剧情插入事件/敌人。
+- NPC Agent：由 LLM 生成对白并输出结构化意图 JSON（不直接调用工具）。
+- MsgHub：集中管理参与者与消息；`sequential_pipeline` 顺序发言。
+- World/Tools：世界状态与规则工具（时间、关系、物品、D&D、事件时钟、目标）。
+- Narrator：在关键动作后生成中文微叙事（环境/感官白描，避免复述人物）。
 
 接口与约定
-- 消息对象：`Msg(sender: str, content: str, role: str='assistant')`。
-- Hub 生命周期：
-  - `async with MsgHub(participants=[...], announcement=Msg(...)) as hub:`
-  - `hub.add(agent)`, `hub.delete(agent)`, `await hub.broadcast(Msg(...))`。
-  - `await sequential_pipeline([agent_a, agent_b, ...])` 在 Hub 上下文内调用。
-- Agent 接口：
-  - `await agent.step(transcript: list[Msg]) -> Msg | str | dict`。
-  - 本 Demo 中 `dict` 形如 `{ "speak": "一句对白" }`；实际项目建议统一 JSON Schema（见下）。
+- 消息对象：`Msg(sender: str, content: str|List[Block], role: 'assistant'|'user')`。
+- 握手：Player↔KP 在 Hub 的 auto-broadcast 关闭下单独交流；确认后再广播最终 Player 消息。
+- NPC 意图：`await agent.step(transcript)->Msg|str|dict`；推荐输出结构化 JSON（下）。
+- KP 裁决：解析 Player/NPC 意图，选择/调用相应工具，广播文本块并更新世界状态。
 
-建议的结构化输出 Schema（后续接入 LLM 时启用）
+建议的结构化意图 JSON
 ```json
 {
-  "speak": "string",
-  "emotion": "calm|angry|curious|...",
-  "intents": ["ask_price", "seek_help"],
-  "tool_calls": [
-    {"name": "change_relation", "args": {"a": "Warrior", "b": "Mage", "delta": 1, "reason": "..."}}
-  ]
+  "intent": "attack|talk|investigate|move|assist|use_item|skill_check|wait",
+  "target": "目标名称",
+  "skill": "perception|medicine|...",
+  "ability": "STR|DEX|CON|INT|WIS|CHA",
+  "proficient": true,
+  "dc_hint": 12,
+  "damage_expr": "1d6+STR",
+  "time_cost": 1,
+  "notes": "一句话说明意图"
 }
 ```
-- 校验：若解析失败或违反约束（长度、禁区），应触发重试与“自我收敛”提示（后续加入）。
+- 校验：若解析失败或缺少必要字段（如 target），应触发澄清或重试（后续可加入硬校验器）。
 
-工具规范（World/Tools）
-- 纯函数优先：幂等/可回滚；返回 `{ ok: bool, ... }`。
-- 变更需附理由：如 `reason` 字段，便于追踪和回放。
-- 示例工具：`advance_time(mins)`, `change_relation(a,b,delta,reason)`, `grant_item(target,item,n)`。
-
-剧情节点（后续扩展）
-- 节点定义：`id, conditions, announcement, participants, allowed_tools, next_nodes`。
-- 运行时：每回合评估 `conditions` 决定跳转；Director 产出 `join/leave/broadcast` 指令。
-
-记忆（后续扩展）
-- 短时：当前场景对话上下文（可做摘要）。
-- 长时：角色人设、关系走向、世界事实摘要；场景结束写入；按话题/关系检索 Top-K。
+工具规范
+- 纯函数优先、幂等可回放；返回 `ToolResponse({blocks}, {metadata})`。
+- 变更附理由：如关系/目标变化记录 `reason/note`，便于追踪。
+- D&D 检定/攻击：`skill_check_dnd`、`saving_throw_dnd`、`attack_roll_dnd`（支持 advantage、熟练、能力修正、伤害表达式）。
+- 事件时钟：`schedule_event` + `process_events`（由 `advance_time` 自动触发）。
+- 目标管理：`add_objective / complete_objective / block_objective`。
 
 目录结构
 ```
 src/
-  main.py                # 入口：酒馆场景 Demo
-  mini_agentscope/       # 本地最小替身（无依赖），接口贴近 AgentScope
-    message.py
-    pipeline.py
+  main.py              # 入口：回合、KP 审判、导演动作、日志
   agents/
-    npc.py               # 简单 NPC Agent（确定性）
+    player.py          # 玩家输入
+    kp.py              # KP（改写/澄清/确认 + 裁决 + 导演）
+    npc.py             # 简单 Agent 基类实现（目前未用）
+    narrator.py        # 旁白
   world/
-    tools.py             # 世界状态与工具
+    tools.py           # 世界状态与工具
+configs/               # 角色、模型、提示词、旁白策略、规则、特性开关
+docs/
+  plot.story.json      # 可选：剧情节拍（acts/beats/conditions/actions）
 ```
 
-代码风格
-- Python 3.10+；类型注解；ASCII 文件（中文仅限文档、对话内容）。
-- 函数短小、返回结构化数据；关键路径处保留简短注释说明意图。
-
 运行与环境
-- 使用 Conda 环境（无降级/无本地 stub）：
-  - `conda env create -f environment.yml && conda activate npc-talk`
-  - `python src/main.py`
-- 该环境要求真实 AgentScope（含 `agentscope.pipeline`）。
-- 针对真实模型与工具调用，需配置相应环境变量（如 DASHSCOPE_API_KEY 等）。
+- Python 3.11；真实 Agentscope（`agentscope.pipeline`）
+- LLM：通过 Kimi 的 OpenAI 兼容接口（需 `MOONSHOT_API_KEY`；可配 `KIMI_BASE_URL/KIMI_MODEL`）
+- 运行：`conda env create -f environment.yml && conda activate npc-talk && python src/main.py`
 
 演进路线
-- M0：当前 Demo（轮流发言 + 动态加入 + 世界状态更新）。
-- M1：引入结构化输出校验与重试；关系图可视化；节点图驱动。
-- M2：接入游戏引擎（HTTP/MCP 工具）；事件总线驱动剧情。
-- M3：跟踪与回放（tracing）、成本与一致性调优、自动化测试。
+- M0：当前 Demo（回合 + 握手 + 审判 + 旁白 + 事件时钟）
+- M1：结构化输出校验与重试；关系/目标可视化；剧情图驱动
+- M2：接入游戏引擎（HTTP/MCP 工具）；事件总线驱动
+- M3：Tracing/回放、成本与一致性调优、自动化测试

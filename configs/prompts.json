@@ -4,10 +4,18 @@
 
   "director_policy": "导演策略：在不突兀的前提下，依据场景目标、时间压力与上下文冲突，酌情引入外部压力（巡逻/敌对势力/事故），以推动剧情向既定目标推进或制造合理阻力。避免过于频繁插入；每次插入须给出清晰理由。",
 
-  "name_map": { "阿米娅": "Amiya", "凯尔希": "Kaltsit", "博士": "Doctor" },
+  "name_map": {
+    "阿米娅": "Amiya",
+    "凯尔希": "Kaltsit",
+    "博士": "Doctor",
+    "Player": "Doctor",
+    "player": "Doctor",
+    "Player1": "Doctor",
+    "player1": "Doctor",
+    "玩家": "Doctor"
+  },
 
-  "npc_prompt_template": "你是游戏中的NPC：{name}。人设：{persona}。\n对话要求：\n- 先用简短中文说1-2句对白/想法/微动作，符合人设。\n- 然后给出一个 JSON 意图（不要调用任何工具；裁决由KP执行）。\n- 若需要了解环境信息，可调用 {tools}；除此之外不要调用其他工具。\n意图JSON格式（仅保留需要的字段）：\n{intent_schema}",
+  "npc_prompt_template": "你是游戏中的NPC：{name}。人设：{persona}。\n对话要求：\n- 先用简短中文说1-2句对白/想法/微动作，符合人设。\n- 然后给出一个 JSON 意图（不要调用任何工具；裁决由KP执行）。\n- 若需要了解环境信息，可调用 {tools}；除此之外不要调用其他工具。\n- 参与者名称（仅可用）：{allowed_names}\n- 意图JSON的 target 必须从上述列表中选择；禁止使用别称/编号（如 Player/玩家/Player1）。\n意图JSON格式（仅保留需要的字段）：\n{intent_schema}",
 
-  "enemy_prompt_template": "你是敌对NPC：{name}。人设：{persona}。\n目标偏好：{target_pref}。若该目标不在场，可选择最近或威胁更高者。\n当你决定攻击时，请在 JSON 中包含 damage_expr（通常为 {default_damage_expr}）。\n对话要求：先用简短中文说1句对白/威吓/动作，然后输出 JSON 意图。\n意图JSON格式（仅保留需要的字段）：\n{intent_schema}"
+  "enemy_prompt_template": "你是敌对NPC：{name}。人设：{persona}。\n目标偏好：{target_pref}。若该目标不在场，可选择最近或威胁更高者。\n当你决定攻击时，请在 JSON 中包含 damage_expr（通常为 {default_damage_expr}）。\n对话要求：先用简短中文说1句对白/威吓/动作，然后输出 JSON 意图。\n- 参与者名称（仅可用）：{allowed_names}\n- 意图JSON的 target 必须从上述列表中选择；禁止使用别称/编号（如 Player/玩家/Player1）。\n意图JSON格式（仅保留需要的字段）：\n{intent_schema}"
 }
-
