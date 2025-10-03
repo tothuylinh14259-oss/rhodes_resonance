@@ -193,10 +193,31 @@ class KPAgent(AgentBase):
         decision = judged.get("decision")
         if decision == "accept":
             sanitized = judged.get("sanitized") or (player_msg.get_text_content() or "")
+            intent_obj = judged.get("intent") if isinstance(judged.get("intent"), dict) else None
+            # 自动接受模式：直接输出玩家最终消息，不再二次确认
+            if getattr(self, "_auto_accept", False):
+                content = sanitized
+                try:
+                    import json as _json
+                    if isinstance(intent_obj, dict):
+                        ij = _json.dumps(intent_obj, ensure_ascii=False)
+                        if ij and ij != "{}":
+                            content += "\n```json\n" + ij + "\n```"
+                except Exception:
+                    pass
+                final_msg = Msg(name=self.player_name, content=content, role="user")
+                await self.print(final_msg)
+                self._last_processed_player_id = player_msg.id
+                self._awaiting_confirm = False
+                self._awaiting_player = False
+                self._pending_sanitized = None
+                self._pending_intent = None
+                return final_msg
+            # 默认流程：仍需 /yes 确认
             self._awaiting_player = True
             self._awaiting_confirm = True
             self._pending_sanitized = sanitized
-            self._pending_intent = judged.get("intent") if isinstance(judged.get("intent"), dict) else None
+            self._pending_intent = intent_obj
             confirm = Msg(name=self.name, content=f"我理解为：{sanitized}。若正确请回复 /yes 确认。", role="assistant")
             await self.print(confirm)
             return confirm
@@ -529,7 +550,9 @@ class KPAgent(AgentBase):
                         intent["target"] = t
                         judged["intent"] = intent
                     else:
-                        return {"decision": "clarify", "question": "本次行动需要明确目标对象，请指明目标名称。"}
+                        # 松弛：不阻塞澄清，允许后续裁决侧作保守处理
+                        if not getattr(self, "_loose_target", False):
+                            return {"decision": "clarify", "question": "本次行动需要明确目标对象，请指明目标名称。"}
         except Exception:
             pass
         return judged
