@@ -127,20 +127,10 @@
               "text": "两名突击手自侧门掠出，试图封死巷口！"
             },
             {
-              "type": "spawn",
-              "units": [
-                {
-                  "kind": "raider",
-                  "target_pref": "Doctor",
-                  "damage_expr": "1d6+STR",
-                  "persona": "近战突击手。逼近后短促压制。"
-                },
-                {
-                  "kind": "raider",
-                  "target_pref": "nearest",
-                  "damage_expr": "1d6+STR",
-                  "persona": "近战突击手。协同夹击，压制后撤。"
-                }
+              "type": "spawn_by_id",
+              "ids": [
+                "Raider1",
+                "Raider2"
               ]
             }
           ],
@@ -202,14 +192,9 @@
               "text": "高处短促反光——疑似远程标定，务必尽快通过 E-3！"
             },
             {
-              "type": "spawn",
-              "units": [
-                {
-                  "kind": "sniper",
-                  "target_pref": "nearest",
-                  "damage_expr": "1d8+DEX",
-                  "persona": "远程压制手。优先打击暴露目标。"
-                }
+              "type": "spawn_by_id",
+              "ids": [
+                "Sniper1"
               ]
             }
           ],
@@ -232,6 +217,59 @@
           "once": true
         }
       ]
+    }
+  ],
+  "units": [
+    {
+      "id": "Raider1",
+      "kind": "raider",
+      "target_pref": "Doctor",
+      "ac": 13,
+      "hp": 9,
+      "abilities": {
+        "STR": 12,
+        "DEX": 12,
+        "CON": 12,
+        "INT": 8,
+        "WIS": 10,
+        "CHA": 8
+      },
+      "damage_expr": "1d6+STR",
+      "persona": "近战突击手。逼近后短促压制。"
+    },
+    {
+      "id": "Raider2",
+      "kind": "raider",
+      "target_pref": "nearest",
+      "ac": 13,
+      "hp": 9,
+      "abilities": {
+        "STR": 12,
+        "DEX": 12,
+        "CON": 12,
+        "INT": 8,
+        "WIS": 10,
+        "CHA": 8
+      },
+      "damage_expr": "1d6+STR",
+      "persona": "近战突击手。协同夹击，压制后撤。"
+    },
+    {
+      "id": "Sniper1",
+      "kind": "sniper",
+      "target_pref": "nearest",
+      "ac": 14,
+      "hp": 8,
+      "abilities": {
+        "STR": 10,
+        "DEX": 16,
+        "CON": 10,
+        "INT": 10,
+        "WIS": 12,
+        "CHA": 8
+      },
+      "damage_expr": "1d8+DEX",
+      "persona": "远程压制手。优先打击暴露目标。"
     }
   ]
 }

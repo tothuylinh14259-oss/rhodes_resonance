@@ -322,13 +322,24 @@ async def tavern_scene():
     npcs_list = [a for a in npcs_list if getattr(a, "name", None) != getattr(player, "name", None)]
 
     # Optionally load a plot story and inject to KP (best-effort)
+    _UNIT_CATALOG: dict[str, dict] = {}
     try:
         with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "plot.story.json"), "r", encoding="utf-8") as f:
             story = _json.load(f)
         if isinstance(story, dict):
+            # cache unit catalog for spawn_by_id
+            units = story.get("units") or []
+            if isinstance(units, list):
+                for u in units:
+                    try:
+                        uid = str(u.get("id"))
+                        if uid:
+                            _UNIT_CATALOG[uid] = dict(u)
+                    except Exception:
+                        pass
             kp.set_story(story)
     except Exception:
-        pass
+        _UNIT_CATALOG = {}
 
     # Assemble participants for MsgHub
     participants = list(participants_order) + [kp]
@@ -609,6 +620,14 @@ async def _maybe_director_actions(hub: MsgHub, kp: KPAgent, npcs_list: list[ReAc
                 units = a.get("units") or []
                 if isinstance(units, list):
                     await _spawn_from_specs(hub, npcs_list, units)
+            elif t == "spawn_by_id":
+                ids = a.get("ids") or []
+                if isinstance(ids, list) and ids:
+                    # resolve specs from story units catalog
+                    try:
+                        await _spawn_from_ids(hub, npcs_list, [str(x) for x in ids])
+                    except Exception:
+                        pass
             elif t == "add_objective":
                 nm = a.get("name")
                 if nm:
@@ -701,6 +720,36 @@ async def _spawn_from_specs(hub: MsgHub, npcs_list: list[ReActAgent], units: lis
             allowed_names_str = ", ".join(list(WORLD.characters.keys()))
         except Exception:
             allowed_names_str = "Doctor, Amiya"
+        agent = make_enemy_npc(name=name, persona=persona, default_damage_expr=dmg, target_pref=target_pref, prompt_template=_ENEMY_PROMPT_TEMPLATE, allowed_names=allowed_names_str)
+        npcs_list.append(agent)
+
+async def _spawn_from_ids(hub: MsgHub, npcs_list: list[ReActAgent], ids: list[str]) -> None:
+    # Pull specs from cached story units
+    try:
+        allowed_names_str = ", ".join(list(WORLD.characters.keys()))
+    except Exception:
+        allowed_names_str = "Doctor, Amiya"
+    for sid in ids:
+        spec = None
+        try:
+            spec = _UNIT_CATALOG.get(str(sid))  # type: ignore[name-defined]
+        except Exception:
+            spec = None
+        if not isinstance(spec, dict):
+            await hub.broadcast(Msg("Host", f"[忽略] 未在名册中定义的单位：{sid}", "assistant"))
+            continue
+        name = str(spec.get("id") or sid)
+        kind = str(spec.get("kind") or "raider")
+        target_pref = str(spec.get("target_pref") or "Doctor")
+        ac = int(spec.get("ac") or 13)
+        hp = int(spec.get("hp") or 9)
+        abilities = spec.get("abilities") or {"STR": 12, "DEX": 12, "CON": 12, "INT": 8, "WIS": 10, "CHA": 8}
+        dmg = str(spec.get("damage_expr") or "1d6+STR")
+        persona = str(spec.get("persona") or _default_enemy_persona(kind))
+        try:
+            set_dnd_character(name=name, level=1, ac=ac, abilities=abilities, max_hp=hp)
+        except Exception:
+            pass
         agent = make_enemy_npc(name=name, persona=persona, default_damage_expr=dmg, target_pref=target_pref, prompt_template=_ENEMY_PROMPT_TEMPLATE, allowed_names=allowed_names_str)
         npcs_list.append(agent)
     # Enter combat automatically when enemies出现

@@ -81,6 +81,7 @@ class KPAgent(AgentBase):
         # Optional narrator and feature flags
         self._narrator = None  # set via set_narrator()
         self._suppress_mech_narration: bool = True
+        self._strict_spawn: bool = False  # 禁用LLM回退spawn，仅允许剧情脚本驱动
     async def observe(self, msg: Msg | List[Msg] | None) -> None:
         if msg is None:
             return
@@ -872,6 +873,10 @@ class KPAgent(AgentBase):
         if isinstance(story_dec, dict) and story_dec.get("decision") in ("actions", "spawn"):
             return story_dec
 
+        # Strict mode: disable LLM-driven spawn fallback
+        if getattr(self, "_strict_spawn", False):
+            return {"decision": "none"}
+
         # Prepare context for the model
         world_text = self._format_world_snapshot()
         ctx_text = self._build_context_text(10)
@@ -1012,6 +1017,9 @@ class KPAgent(AgentBase):
                 val = flags.get("suppress_mech_narration")
                 if val is not None:
                     self._suppress_mech_narration = bool(val)
+                val2 = flags.get("strict_spawn")
+                if val2 is not None:
+                    self._strict_spawn = bool(val2)
         except Exception:
             pass
 
