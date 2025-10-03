@@ -703,6 +703,12 @@ async def _spawn_from_specs(hub: MsgHub, npcs_list: list[ReActAgent], units: lis
             allowed_names_str = "Doctor, Amiya"
         agent = make_enemy_npc(name=name, persona=persona, default_damage_expr=dmg, target_pref=target_pref, prompt_template=_ENEMY_PROMPT_TEMPLATE, allowed_names=allowed_names_str)
         npcs_list.append(agent)
+    # Enter combat automatically when enemies出现
+    try:
+        from world.tools import start_combat as _start_combat
+        _start_combat()
+    except Exception:
+        pass
 
 _enemy_auto_id = 1
 def _auto_enemy_name() -> str:

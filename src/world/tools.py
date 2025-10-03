@@ -25,6 +25,16 @@ class World:
     events: List[Dict[str, Any]] = field(default_factory=list)
     tension: int = 1  # 0-5
     marks: List[str] = field(default_factory=list)
+    # --- Combat (D&D-like, 6s rounds) ---
+    in_combat: bool = False
+    round: int = 1
+    turn_idx: int = 0
+    initiative_order: List[str] = field(default_factory=list)
+    initiative_scores: Dict[str, int] = field(default_factory=dict)
+    # per-turn tokens/state for each name
+    turn_state: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # default walking speeds (ft). If empty, 30ft is assumed.
+    speeds: Dict[str, int] = field(default_factory=dict)
 
     def snapshot(self) -> dict:
         return {
@@ -39,6 +49,14 @@ class World:
             "objective_notes": dict(self.objective_notes),
             "tension": int(self.tension),
             "marks": list(self.marks),
+            "combat": {
+                "in_combat": bool(self.in_combat),
+                "round": int(self.round),
+                "turn_idx": int(self.turn_idx),
+                "initiative": list(self.initiative_order),
+                "initiative_scores": dict(self.initiative_scores),
+                "turn_state": {k: dict(v) for k, v in self.turn_state.items()},
+            },
         }
 
 
@@ -165,6 +183,20 @@ def describe_world(detail: bool = False):
     except Exception:
         pass
 
+    # Combat line (if any)
+    combat = snap.get("combat") or {}
+    combat_line = None
+    try:
+        if combat.get("in_combat") and combat.get("initiative"):
+            order = combat.get("initiative") or []
+            try:
+                cur = order[int(combat.get("turn_idx") or 0)] if order else None
+            except Exception:
+                cur = None
+            combat_line = f"战斗：R{int(combat.get('round') or 1)} 当前 {cur if cur else '(未定)'}；先攻顺序=" + ", ".join(order)
+    except Exception:
+        combat_line = None
+
     lines = [
         f"地点：{loc}",
         f"目标：{obj_line}",
@@ -174,6 +206,8 @@ def describe_world(detail: bool = False):
         ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
     ]
+    if combat_line:
+        lines.insert(1, combat_line)
     if detail:
         lines.append("(详情见元数据)")
 
@@ -209,6 +243,139 @@ def add_objective(obj: str):
     WORLD.objective_status[name] = WORLD.objective_status.get(name, "pending")
     text = f"新增目标：{name}"
     return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"objectives": list(WORLD.objectives), "status": dict(WORLD.objective_status)})
+
+
+# ---- D&D combat (initiative/turn economy) ----
+def _dex_mod_of(name: str) -> int:
+    st = WORLD.characters.get(name, {})
+    try:
+        dex = int(st.get("abilities", {}).get("DEX", 10))
+    except Exception:
+        dex = 10
+    return _mod(dex)
+
+
+def set_speed(name: str, feet: int = 30):
+    WORLD.speeds[str(name)] = int(feet)
+    return ToolResponse(content=[TextBlock(type="text", text=f"速度设定：{name} {int(feet)}ft")], metadata={"name": name, "speed": int(feet)})
+
+
+def roll_initiative(participants: Optional[List[str]] = None):
+    names = list(participants or list(WORLD.characters.keys()))
+    import random as _rand
+    scores: Dict[str, int] = {}
+    for nm in names:
+        # d20 + DEX
+        sc = _rand.randint(1, 20) + _dex_mod_of(nm)
+        scores[nm] = sc
+    # sort desc by score; tiebreaker by DEX then name
+    ordered = sorted(names, key=lambda n: (scores.get(n, 0), _dex_mod_of(n), str(n)), reverse=True)
+    WORLD.initiative_scores = scores
+    WORLD.initiative_order = ordered
+    WORLD.round = 1
+    WORLD.turn_idx = 0
+    WORLD.in_combat = True
+    # reset tokens for first actor
+    _reset_turn_tokens_for(_current_actor_name())
+    txt = "先攻：" + ", ".join(f"{n}({scores[n]})" for n in ordered)
+    return ToolResponse(content=[TextBlock(type="text", text=txt)], metadata={"initiative": ordered, "scores": scores})
+
+
+def start_combat(participants: Optional[List[str]] = None):
+    res = roll_initiative(participants)
+    return ToolResponse(content=[TextBlock(type="text", text="进入战斗模式")] + (res.content or []), metadata=res.metadata)
+
+
+def end_combat():
+    WORLD.in_combat = False
+    WORLD.initiative_order.clear()
+    WORLD.initiative_scores.clear()
+    WORLD.turn_state.clear()
+    return ToolResponse(content=[TextBlock(type="text", text="战斗结束")], metadata={"in_combat": False})
+
+
+def _current_actor_name() -> Optional[str]:
+    try:
+        if not WORLD.in_combat:
+            return None
+        order = WORLD.initiative_order
+        if not order:
+            return None
+        idx = int(WORLD.turn_idx)
+        if idx < 0 or idx >= len(order):
+            return None
+        return order[idx]
+    except Exception:
+        return None
+
+
+def _reset_turn_tokens_for(name: Optional[str]):
+    if not name:
+        return
+    spd = int(WORLD.speeds.get(name, 30))
+    WORLD.turn_state[name] = {
+        "action_used": False,
+        "bonus_used": False,
+        "reaction_available": True,
+        "move_left": spd,
+    }
+
+
+def next_turn():
+    if not WORLD.in_combat or not WORLD.initiative_order:
+        return ToolResponse(content=[TextBlock(type="text", text="未处于战斗中")], metadata={"in_combat": False})
+    WORLD.turn_idx += 1
+    if WORLD.turn_idx >= len(WORLD.initiative_order):
+        WORLD.turn_idx = 0
+        WORLD.round += 1
+    _reset_turn_tokens_for(_current_actor_name())
+    cur = _current_actor_name() or "(未定)"
+    return ToolResponse(content=[TextBlock(type="text", text=f"回合推进：R{WORLD.round} 轮到 {cur}")], metadata={"round": WORLD.round, "actor": cur})
+
+
+def get_turn() -> ToolResponse:
+    return ToolResponse(content=[TextBlock(type="text", text=f"当前：R{WORLD.round} idx={WORLD.turn_idx} actor={_current_actor_name() or '(未定)'}")], metadata={
+        "round": WORLD.round,
+        "turn_idx": WORLD.turn_idx,
+        "actor": _current_actor_name(),
+        "order": list(WORLD.initiative_order),
+        "state": dict(WORLD.turn_state.get(_current_actor_name() or "", {})),
+    })
+
+
+def use_action(name: str, kind: str = "action") -> ToolResponse:
+    nm = str(name)
+    st = WORLD.turn_state.setdefault(nm, {})
+    if kind == "action":
+        if st.get("action_used"):
+            return ToolResponse(content=[TextBlock(type="text", text=f"[已用] {nm} 本回合动作已用完")], metadata={"ok": False})
+        st["action_used"] = True
+        return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 使用 动作")], metadata={"ok": True})
+    if kind == "bonus":
+        if st.get("bonus_used"):
+            return ToolResponse(content=[TextBlock(type="text", text=f"[已用] {nm} 本回合附赠动作已用完")], metadata={"ok": False})
+        st["bonus_used"] = True
+        return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 使用 附赠动作")], metadata={"ok": True})
+    if kind == "reaction":
+        if not st.get("reaction_available", True):
+            return ToolResponse(content=[TextBlock(type="text", text=f"[已用] {nm} 本轮反应不可用")], metadata={"ok": False})
+        st["reaction_available"] = False
+        return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 使用 反应")], metadata={"ok": True})
+    return ToolResponse(content=[TextBlock(type="text", text=f"未知动作类型 {kind}")], metadata={"ok": False})
+
+
+def consume_movement(name: str, feet: int) -> ToolResponse:
+    nm = str(name)
+    st = WORLD.turn_state.setdefault(nm, {})
+    left = int(st.get("move_left", WORLD.speeds.get(nm, 30)))
+    feet = int(feet)
+    if feet <= 0:
+        return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 不移动")], metadata={"ok": True, "left": left})
+    if feet > left:
+        st["move_left"] = 0
+        return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 试图移动 {feet}ft，但仅剩 {left}ft；按 {left}ft 计算")], metadata={"ok": False, "left": 0})
+    st["move_left"] = left - feet
+    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 移动 {feet}ft（剩余 {st['move_left']}ft）")], metadata={"ok": True, "left": st["move_left"]})
 
 
 # ---- Character/stat tools ----
