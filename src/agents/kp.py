@@ -580,7 +580,7 @@ class KPAgent(AgentBase):
             act_dash, act_disengage, act_dodge, act_help, act_hide, act_search,
             act_grapple, act_shove, move_to_band, set_cover, get_cover,
             advantage_for_attack, cover_bonus, clear_condition, has_condition,
-            get_turn, get_ac,
+            get_turn, get_ac, pop_triggers, use_action,
         )
         msgs: List[Msg] = []
         kind = str(intent.get("intent") or "").lower()
@@ -767,6 +767,33 @@ class KPAgent(AgentBase):
                     msgs.append(Msg(name="Host", content=txt, role="assistant"))
             except Exception:
                 pass
+        # Process simple triggers (e.g., OA) after action
+        try:
+            if in_combat:
+                trigs = pop_triggers()
+                for trig in trigs:
+                    kind = str(trig.get("kind") or "")
+                    payload = trig.get("payload") or {}
+                    if kind == "opportunity_attack":
+                        atk = payload.get("attacker")
+                        prov = payload.get("provoker")
+                        if not atk or not prov:
+                            continue
+                        # consume reaction
+                        res = use_action(atk, "reaction")
+                        if not ((res.metadata or {}).get("ok", False)):
+                            msgs.append(Msg(name="Host", content=f"[触发] {atk} 的反应已用，无法进行借机攻击。", role="assistant"))
+                            continue
+                        adv2 = advantage_for_attack(atk, prov)
+                        ac_base = get_ac(prov)
+                        ac_bonus, blocked = cover_bonus(prov)
+                        # assume melee OA，默认 STR/熟练，1d6+STR
+                        tr2 = attack_roll_dnd(atk, prov, ability="STR", proficient=True, damage_expr="1d6+STR", advantage=adv2, target_ac=ac_base + ac_bonus)
+                        lines = self._collect_text_blocks(tr2.content)
+                        if lines:
+                            msgs.append(Msg(name="Host", content=f"[借机攻击] {atk}→{prov}\n" + "\n".join(lines), role="assistant"))
+        except Exception:
+            pass
         # Atmosphere tuning and micro-narration (pure sentence, no labels)
         try:
             from world.tools import adjust_tension

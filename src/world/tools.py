@@ -336,6 +336,11 @@ def _reset_turn_tokens_for(name: Optional[str]):
         "help_target": None,
         "ready": None,  # {trigger: str, action: dict}
     }
+    # clear short-lived conditions at the start of the actor's turn
+    try:
+        clear_condition(name, "dodge")
+    except Exception:
+        pass
 
 
 def next_turn():
@@ -512,14 +517,22 @@ def cover_bonus(name: str) -> Tuple[int, bool]:
 
 
 def advantage_for_attack(attacker: str, defender: str) -> str:
-    # Very small set: hidden -> advantage; prone -> melee adv, ranged dis
-    adv = "none"
+    """Compute net advantage from simple conditions.
+    +1: attacker hidden; +1: defender prone; -1: defender dodge.
+    Return 'advantage' | 'disadvantage' | 'none'.
+    """
+    score = 0
     if has_condition(attacker, "hidden"):
-        adv = "advantage"
-    # defender prone gives melee adv; we leave ranged dis to KP判断
-    if has_condition(defender, "prone") and adv != "advantage":
-        adv = "advantage"
-    return adv
+        score += 1
+    if has_condition(defender, "prone"):
+        score += 1
+    if has_condition(defender, "dodge"):
+        score -= 1
+    if score > 0:
+        return "advantage"
+    if score < 0:
+        return "disadvantage"
+    return "none"
 
 
 # ---- Standard actions (thin wrappers) ----
