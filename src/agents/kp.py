@@ -82,6 +82,10 @@ class KPAgent(AgentBase):
         self._narrator = None  # set via set_narrator()
         self._suppress_mech_narration: bool = True
         self._strict_spawn: bool = False  # 禁用LLM回退spawn，仅允许剧情脚本驱动
+        # Player text handling
+        self._auto_accept: bool = False      # 是否直接接受，无需 /yes（默认否）
+        self._loose_target: bool = False     # 缺少 target 时是否不阻塞澄清（默认否）
+        self._preserve_text: bool = True     # 是否尽量保留玩家原文，不做语义改写（默认是）
     async def observe(self, msg: Msg | List[Msg] | None) -> None:
         if msg is None:
             return
@@ -192,7 +196,10 @@ class KPAgent(AgentBase):
         judged = await self._judge_player_input(player_msg)
         decision = judged.get("decision")
         if decision == "accept":
-            sanitized = judged.get("sanitized") or (player_msg.get_text_content() or "")
+            raw_text = player_msg.get_text_content() or ""
+            sanitized = judged.get("sanitized") or raw_text
+            if getattr(self, "_preserve_text", True):
+                sanitized = raw_text
             intent_obj = judged.get("intent") if isinstance(judged.get("intent"), dict) else None
             # 自动接受模式：直接输出玩家最终消息，不再二次确认
             if getattr(self, "_auto_accept", False):
@@ -1040,9 +1047,18 @@ class KPAgent(AgentBase):
                 val = flags.get("suppress_mech_narration")
                 if val is not None:
                     self._suppress_mech_narration = bool(val)
-                val2 = flags.get("strict_spawn")
-                if val2 is not None:
-                    self._strict_spawn = bool(val2)
+                v_strict_spawn = flags.get("strict_spawn")
+                if v_strict_spawn is not None:
+                    self._strict_spawn = bool(v_strict_spawn)
+                v_auto = flags.get("kp_auto_accept")
+                if v_auto is not None:
+                    self._auto_accept = bool(v_auto)
+                v_loose = flags.get("kp_loose_target")
+                if v_loose is not None:
+                    self._loose_target = bool(v_loose)
+                v_pres = flags.get("kp_preserve_text")
+                if v_pres is not None:
+                    self._preserve_text = bool(v_pres)
         except Exception:
             pass
 

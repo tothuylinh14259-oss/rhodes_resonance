@@ -2,6 +2,7 @@
   "suppress_mech_narration": true,
   "log_narrator_debug": true,
   "strict_spawn": true,
-  "kp_auto_accept": true,
-  "kp_loose_target": true
+  "kp_auto_accept": false,
+  "kp_loose_target": true,
+  "kp_preserve_text": true
 }
