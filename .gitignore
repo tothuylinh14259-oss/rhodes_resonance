@@ -1,6 +1,7 @@
 # OS
 .DS_Store
 Thumbs.db
+AGENTS.md
 
 # Python bytecode / cache
 __pycache__/
@@ -35,8 +36,6 @@ dist/
 *.egg-info/
 
 # Logs / temp
-logs/
-*.log
 .tmp/
 tmp/
 

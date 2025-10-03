@@ -22,14 +22,22 @@ from agentscope.tool import Toolkit  # type: ignore
 from agents.player import PlayerAgent
 from agents.kp import KPAgent
 from agentscope.agent import AgentBase  # type: ignore
+from agents.narrator import Narrator
 
-# --- Player persona (used by KP to rewrite tone/intent) ---
-PLAYER_PERSONA = (
+# --- Configurable prompts & personas (overridable via configs/prompts.json) ---
+_DEFAULT_PLAYER_PERSONA = (
     "角色：罗德岛‘博士’，战术协调与决策核心。\n"
     "背景：在凯尔希与阿米娅的协助下进行战略研判，偏好以信息整合与资源调配达成目标。\n"
     "说话风格：简短、理性、任务导向；避免夸饰与情绪化表达。\n"
     "边界：不自称超自然或超现实身份；不越权知晓未公开的机密情报。\n"
 )
+_PROMPTS_CFG: dict = {}
+_NPC_PROMPT_TEMPLATE: str | None = None
+_ENEMY_PROMPT_TEMPLATE: str | None = None
+_NAME_MAP_CFG: dict = {}
+_MODEL_CFG: dict = {}
+_NARR_POLICY: dict = {}
+_FEATURE_FLAGS: dict = {}
 from world.tools import (
     WORLD,
     advance_time,
@@ -55,6 +63,7 @@ from world.tools import (
     complete_objective,
     block_objective,
 )
+import json as _json
 
 
 def banner():
@@ -64,7 +73,7 @@ def banner():
 
 
 # ---- Kimi (Moonshot) integration helpers ----
-def make_kimi_npc(name: str, persona: str) -> ReActAgent:
+def make_kimi_npc(name: str, persona: str, prompt_template: str | None = None) -> ReActAgent:
     """Create an LLM-backed NPC using Kimi's OpenAI-compatible API.
 
     Required env vars (set in your conda env):
@@ -73,43 +82,50 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
     - KIMI_MODEL: e.g. kimi-k2-turbo-preview or moonshot-v1-128k
     """
     api_key = os.environ["MOONSHOT_API_KEY"]
-    base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-    model_name = os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
+    base_url = _MODEL_CFG.get("base_url") or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
+    sec = _MODEL_CFG.get("npc") or _MODEL_CFG
+    model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
-    # Intent-only NPCs: Speak 1-2 sentences, then output a JSON intent block for KP to adjudicate.        # Intent-only NPCs: Speak 1-2 sentences, then output a JSON intent block for KP to adjudicate.
-    sys_prompt = f"你是游戏中的NPC：{name}。人设：{persona}。\n" + (
-        """对话要求：
+    # Build system prompt from template or fallback
+    tools = "describe_world()"
+    intent_schema = (
+        "{\n  \"intent\": \"attack|talk|investigate|move|assist|use_item|skill_check|wait\",\n"
+        "  \"target\": \"目标名称\",\n  \"skill\": \"perception|medicine|...\",\n"
+        "  \"ability\": \"STR|DEX|CON|INT|WIS|CHA\",\n  \"proficient\": true,\n  \"dc_hint\": 12,\n"
+        "  \"damage_expr\": \"1d4+STR\",\n  \"time_cost\": 1,\n  \"notes\": \"一句话说明意图\"\n}"
+    )
+    sys_prompt = None
+    tpl = prompt_template or _NPC_PROMPT_TEMPLATE
+    if tpl:
+        try:
+            sys_prompt = tpl.format(name=name, persona=persona, tools=tools, intent_schema=intent_schema)
+        except Exception:
+            sys_prompt = None
+    if not sys_prompt:
+        # Fallback built-in prompt
+        sys_prompt = f"你是游戏中的NPC：{name}。人设：{persona}。\n" + (
+            """对话要求：
 - 先用简短中文说1-2句对白/想法/微动作，符合人设。
 - 然后给出一个 JSON 意图（不要调用任何工具；裁决由KP执行）。
 - 若需要了解环境信息，可调用 describe_world()；除此之外不要调用其他工具。
 意图JSON格式（仅保留需要的字段）：
-{
-  "intent": "attack|talk|investigate|move|assist|use_item|skill_check|wait",
-  "target": "目标名称",
-  "skill": "perception|medicine|...",
-  "ability": "STR|DEX|CON|INT|WIS|CHA",
-  "proficient": true,
-  "dc_hint": 12,
-  "damage_expr": "1d4+STR",
-  "time_cost": 1,
-  "notes": "一句话说明意图"
-}
+{intent_schema}
 输出示例：
 阿米娅看向博士，压低声音：‘要先确认辐射数据。’
 ```json
 {\"intent\":\"skill_check\",\"target\":\"Amiya\",\"skill\":\"investigation\",\"dc_hint\":12,\"notes\":\"核对监测表\"}
 ```
 """
-    )
+        ).format(intent_schema=intent_schema)
 
     model = OpenAIChatModel
 
     model = OpenAIChatModel(
         model_name=model_name,
         api_key=api_key,
-        stream=True,  # enable streaming output
+        stream=bool(sec.get("stream", True)),
         client_args={"base_url": base_url},
-        generate_kwargs={"temperature": 0.7},
+        generate_kwargs={"temperature": float(sec.get("temperature", 0.7))},
     )
 
     # Equip only describe_world; all other tools are executed by KP adjudicator.
@@ -127,13 +143,150 @@ def make_kimi_npc(name: str, persona: str) -> ReActAgent:
 
 
 async def tavern_scene():
-    # Use Kimi (Moonshot) LLM-backed NPCs + a human player + KP (GM)
-    amiya = make_kimi_npc("Amiya", "罗德岛公开领导人阿米娅。温柔而坚定，理性克制，关切同伴；擅长源石技艺（术师），发言简洁不夸张。")
-    kaltsit = make_kimi_npc("Kaltsit", "罗德岛医疗部门负责人凯尔希。冷静苛刻、直言不讳，注重风险控制与证据；医疗/生物技术专家。")
-    player = PlayerAgent(name="Doctor", prompt="博士> ")
-    kp = KPAgent(name="KP", player_persona=PLAYER_PERSONA, player_name="Doctor")
-    # Provide KP with a world snapshot provider so it can see the environment context
+    # Load external prompts (optional)
+    prompts_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "prompts.json")
+    player_persona = _DEFAULT_PLAYER_PERSONA
+    try:
+        with open(prompts_path, "r", encoding="utf-8") as f:
+            _PROMPTS_CFG.update(_json.load(f) or {})
+        player_persona = _PROMPTS_CFG.get("player_persona") or player_persona
+        # templates
+        global _NPC_PROMPT_TEMPLATE, _ENEMY_PROMPT_TEMPLATE, _NAME_MAP_CFG
+        _NPC_PROMPT_TEMPLATE = _PROMPTS_CFG.get("npc_prompt_template")
+        _ENEMY_PROMPT_TEMPLATE = _PROMPTS_CFG.get("enemy_prompt_template")
+        _NAME_MAP_CFG = _PROMPTS_CFG.get("name_map") or {}
+    except Exception:
+        pass
+
+    # Load model config (optional)
+    model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "model.json")
+    try:
+        with open(model_path, "r", encoding="utf-8") as f:
+            _MODEL_CFG.update(_json.load(f) or {})
+    except Exception:
+        pass
+    # Load narration policy & env keywords (optional)
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "narration_policy.json"), "r", encoding="utf-8") as f:
+            _NARR_POLICY.update(_json.load(f) or {})
+    except Exception:
+        pass
+    # Load feature flags (optional)
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "feature_flags.json"), "r", encoding="utf-8") as f:
+            _FEATURE_FLAGS.update(_json.load(f) or {})
+    except Exception:
+        pass
+
+    # Build actors from characters.json or fallback
+    chars_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "characters.json")
+    npcs_list: list[ReActAgent] = []
+    player: PlayerAgent | None = None
+    participants_order: list[AgentBase] = []
+    if os.path.exists(chars_path):
+        try:
+            with open(chars_path, "r", encoding="utf-8") as f:
+                char_cfg = _json.load(f) or {}
+        except Exception:
+            char_cfg = {}
+        # Initialize D&D blocks and agents according to config
+        order = char_cfg.get("participants") or []
+        for name in order:
+            entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
+            typ = str(entry.get("type") or "npc")
+            # Stat block
+            dnd = entry.get("dnd") or {}
+            if dnd:
+                try:
+                    set_dnd_character(
+                        name=name,
+                        level=int(dnd.get("level", 1)),
+                        ac=int(dnd.get("ac", 10)),
+                        abilities=dnd.get("abilities") or {},
+                        max_hp=int(dnd.get("max_hp", 8)),
+                        proficient_skills=dnd.get("proficient_skills") or [],
+                        proficient_saves=dnd.get("proficient_saves") or [],
+                    )
+                except Exception:
+                    pass
+            if typ == "player":
+                cli_prompt = entry.get("cli_prompt") or "你> "
+                player = PlayerAgent(name=name, prompt=cli_prompt)
+                participants_order.append(player)
+            else:
+                persona = entry.get("persona") or "一个简短的人设描述"
+                agent = make_kimi_npc(name, persona, prompt_template=_NPC_PROMPT_TEMPLATE)
+                npcs_list.append(agent)
+                participants_order.append(agent)
+    else:
+        # Fallback to hardcoded actors
+        amiya = make_kimi_npc("Amiya", "罗德岛公开领导人阿米娅。温柔而坚定，理性克制，关切同伴；擅长源石技艺（术师），发言简洁不夸张。", prompt_template=_NPC_PROMPT_TEMPLATE)
+        kaltsit = make_kimi_npc("Kaltsit", "罗德岛医疗部门负责人凯尔希。冷静苛刻、直言不讳，注重风险控制与证据；医疗/生物技术专家。", prompt_template=_NPC_PROMPT_TEMPLATE)
+        player = PlayerAgent(name="Doctor", prompt="博士> ")
+        npcs_list = [kaltsit, amiya]
+        participants_order = [kaltsit, amiya, player]
+
+    # KP (GM)
+    kp = KPAgent(name="KP", player_persona=player_persona, player_name=getattr(player, "name", "Doctor"))
     kp.set_world_snapshot_provider(lambda: WORLD.snapshot())
+    # Apply optional prompt overrides to KP
+    try:
+        if _PROMPTS_CFG.get("kp_system_prompt"):
+            kp.set_kp_system_prompt(_PROMPTS_CFG.get("kp_system_prompt"))
+    except Exception:
+        pass
+    try:
+        if _PROMPTS_CFG.get("director_policy"):
+            kp.set_director_policy(_PROMPTS_CFG.get("director_policy"))
+    except Exception:
+        pass
+    try:
+        if _NAME_MAP_CFG:
+            kp.set_name_map(_NAME_MAP_CFG)
+    except Exception:
+        pass
+    # Apply model/rules configs
+    try:
+        if _MODEL_CFG:
+            kp.set_model_config(_MODEL_CFG)
+    except Exception:
+        pass
+    # Load time/relation rules and apply to KP
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "time_rules.json"), "r", encoding="utf-8") as f:
+            kp.set_time_rules(_json.load(f) or {})
+    except Exception:
+        pass
+    try:
+        if _FEATURE_FLAGS:
+            kp.set_feature_flags(_FEATURE_FLAGS)
+    except Exception:
+        pass
+    # Narration: create narrator and attach to KP
+    try:
+        narrator = Narrator(_MODEL_CFG, _NARR_POLICY)
+        # env keywords (scenes visual/sound/air/props)
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "narration_env.json"), "r", encoding="utf-8") as f:
+            env_kw = _json.load(f) or {}
+        scenes = env_kw.get("scenes") or {}
+        if scenes:
+            narrator.set_env_keywords(scenes)
+        # Optional narrator debug logger: write raw LLM returns to run.log
+        def _log_debug(line: str):
+            try:
+                log_fp.write(f"[NARR] {line}\n"); log_fp.flush()
+            except Exception:
+                pass
+        if _FEATURE_FLAGS.get("log_narrator_debug"):
+            narrator.set_debug_logger(_log_debug)
+        kp.set_narrator(narrator)
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "relation_rules.json"), "r", encoding="utf-8") as f:
+            kp.set_relation_rules(_json.load(f) or {})
+    except Exception:
+        pass
 
     # Initialize scene & objectives
     set_scene("罗德岛·会议室", [
@@ -141,34 +294,17 @@ async def tavern_scene():
         "在伦蒂尼姆行动前完成风险评估",
     ])
 
-    # Initialize D&D-like stat blocks
-    set_dnd_character(
-        name="Doctor",
-        level=1,
-        ac=14,
-        abilities={"STR": 12, "DEX": 16, "CON": 14, "INT": 10, "WIS": 14, "CHA": 10},
-        max_hp=12,
-        proficient_skills=["perception", "stealth", "survival", "athletics"],
-        proficient_saves=["STR", "DEX"],
-    )
-    set_dnd_character(
-        name="Amiya",
-        level=1,
-        ac=12,
-        abilities={"STR": 8, "DEX": 14, "CON": 12, "INT": 16, "WIS": 12, "CHA": 12},
-        max_hp=10,
-        proficient_skills=["arcana", "history", "persuasion"],
-        proficient_saves=["INT", "WIS"],
-    )
-    set_dnd_character(
-        name="Kaltsit",
-        level=1,
-        ac=14,
-        abilities={"STR": 10, "DEX": 12, "CON": 14, "INT": 16, "WIS": 14, "CHA": 10},
-        max_hp=14,
-        proficient_skills=["medicine", "investigation", "history"],
-        proficient_saves=["INT", "WIS"],
-    )
+    # If character config didn't provide player stat, ensure a sane default for player
+    if "Doctor" not in WORLD.characters:
+        set_dnd_character(
+            name="Doctor",
+            level=1,
+            ac=14,
+            abilities={"STR": 12, "DEX": 16, "CON": 14, "INT": 10, "WIS": 14, "CHA": 10},
+            max_hp=12,
+            proficient_skills=["perception", "stealth", "survival", "athletics"],
+            proficient_saves=["STR", "DEX"],
+        )
 
     # Seed timed events so the world keeps moving even if players skip.
     now = WORLD.time_min
@@ -192,19 +328,51 @@ async def tavern_scene():
     )
 
 
-    # Prepare a mutable NPC list; enemies may be inserted by KP director
-    npcs_list: list[ReActAgent] = [kaltsit, amiya]
+    # Prepare mutable NPC list (already built); ensure it excludes player and KP
+    npcs_list = [a for a in npcs_list if getattr(a, "name", None) != getattr(player, "name", None)]
+
+    # Optionally load a plot story and inject to KP (best-effort)
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "plot.story.json"), "r", encoding="utf-8") as f:
+            story = _json.load(f)
+        if isinstance(story, dict):
+            kp.set_story(story)
+    except Exception:
+        pass
+
+    # Assemble participants for MsgHub
+    participants = list(participants_order) + [kp]
+
+    # Prepare run log (overwrite each run)
+    _root = os.path.dirname(os.path.dirname(__file__))
+    _log_path = os.path.join(_root, "run.log")
+    log_fp = open(_log_path, "w", encoding="utf-8")
+
+    async def _bcast(msg: Msg):
+        await hub.broadcast(msg)
+        try:
+            try:
+                text = msg.get_text_content()
+            except Exception:
+                text = None
+            if text is None:
+                c = getattr(msg, "content", "")
+                text = c if isinstance(c, str) else str(c)
+            log_fp.write(f"{msg.name}: {text}\n")
+            log_fp.flush()
+        except Exception:
+            pass
 
     async with MsgHub(
-        participants=[amiya, kaltsit, player, kp],
+        participants=participants,
         announcement=Msg(
             "Host",
             "罗德岛·会议室。各位做好简短自我介绍，并对当前事务做快速同步。\n提示：玩家可直接发言；如需推进剧情，NPC 可使用工具/检定：describe_world/skill_check_dnd/attack_roll_dnd。",
             "assistant",
         ),
     ) as hub:
-        # Opening: Amiya/Kaltsit introduce
-        await sequential_pipeline([amiya, kaltsit])
+        # Opening: all NPCs introduce in order
+        await sequential_pipeline(npcs_list)
         # Note: 不在开场阶段进行 Player↔KP 握手；只在回合内进行，
         # 避免“确认后立刻又到玩家回合”的体验跳变。
 
@@ -213,40 +381,42 @@ async def tavern_scene():
         while True:
             # 主持人信息也打印到控制台，避免只进入消息总线而不显示
             _hdr = Msg("Host", f"第{round_idx}回合：玩家行动（输入 /quit 退出）", "assistant")
-            await hub.broadcast(_hdr)
+            await _bcast(_hdr)
             try:
                 await kp.print(_hdr)
             except Exception:
                 pass
             _sum = Msg("Host", _world_summary_text(WORLD.snapshot()), "assistant")
-            await hub.broadcast(_sum)
+            await _bcast(_sum)
             try:
                 await kp.print(_sum)
             except Exception:
                 pass
-            should_end, player_final = await run_player_kp_handshake(hub, player, kp)
+            should_end, player_final = await run_player_kp_handshake(hub, player, kp, _bcast)
             if should_end:
-                await hub.broadcast(Msg("Host", "本次冒险暂告一段落。", "assistant"))
+                await _bcast(Msg("Host", "本次冒险暂告一段落。", "assistant"))
                 break
             # Immediately adjudicate confirmed player action
             if player_final is not None:
                 judge_msgs = await kp.adjudicate([player_final])
                 for m in judge_msgs:
-                    await hub.broadcast(m)
-                    try:
-                        await kp.print(m)
-                    except Exception:
-                        pass
-            # Allow KP as director to insert enemies based on story state
-            await _maybe_director_spawn(hub, kp, npcs_list)
+                    await _bcast(m)
+            # Allow KP as director to insert enemies/events based on story state
+            await _maybe_director_actions(hub, kp, npcs_list, _bcast)
 
             # NPCs act stepwise with immediate adjudication
-            await run_npc_round_stepwise(hub, kp, npcs_list)
+            await run_npc_round_stepwise(hub, kp, npcs_list, _bcast)
             print("[system] world:", WORLD.snapshot())
             round_idx += 1
 
+        # Close log when finishing
+        try:
+            log_fp.close()
+        except Exception:
+            pass
 
-async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent, max_steps: int = 8) -> tuple[bool, Msg | None]:
+
+async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent, _bcast, max_steps: int = 8) -> tuple[bool, Msg | None]:
     """Run an isolated Player<->KP handshake:
     - Temporarily disable auto broadcast so raw Player输入与KP提案不会影响其他NPC；
     - 仅在确认“是”后，将最终改写后的 Player 发言广播给所有参与者。
@@ -262,7 +432,7 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
             if hasattr(player, "wants_exit") and callable(getattr(player, "wants_exit")):
                 try:
                     if player.wants_exit():
-                        await hub.broadcast(out_p)
+                        await _bcast(out_p)
                         return True, out_p
                 except Exception:
                     pass
@@ -273,7 +443,7 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
                         # 让 KP 直接改写为被动姿态，并返回最终 Player 消息
                         if hasattr(kp, "rewrite_skip_immediately"):
                             final_msg = await kp.rewrite_skip_immediately()
-                            await hub.broadcast(final_msg)
+                            await _bcast(final_msg)
                             return False, final_msg
                 except Exception:
                     pass
@@ -285,7 +455,7 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
 
             # If KP returned a finalized Player message, broadcast it to all and stop
             if getattr(out_kp, "name", "") == getattr(player, "name", "Player") and getattr(out_kp, "role", "") == "user":
-                await hub.broadcast(out_kp)
+                await _bcast(out_kp)
                 return False, out_kp
 
             # Otherwise, deliver KP's assistant reply back to Player only (no broadcast)
@@ -298,21 +468,17 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
     return False, None
 
 
-async def run_npc_round_stepwise(hub: MsgHub, kp: KPAgent, agents: list[ReActAgent]) -> None:
+async def run_npc_round_stepwise(hub: MsgHub, kp: KPAgent, agents: list[ReActAgent], _bcast) -> None:
     """NPCs act one by one; after each action, KP adjudicates immediately and
     broadcasts results (including time advancement and events)."""
     hub.set_auto_broadcast(False)
     try:
         for a in agents:
             out = await a(None)
-            await hub.broadcast(out)
+            await _bcast(out)
             judge_msgs = await kp.adjudicate([out])
             for m in judge_msgs:
-                await hub.broadcast(m)
-                try:
-                    await kp.print(m)
-                except Exception:
-                    pass
+                await _bcast(m)
     finally:
         hub.set_auto_broadcast(True)
 
@@ -365,24 +531,106 @@ def _world_summary_text(snap: dict) -> str:
 # Obsolete auto-resolver removed; KP.adjudicate handles results.
 
 
-async def _maybe_director_spawn(hub: MsgHub, kp: KPAgent, npcs_list: list[ReActAgent]) -> None:
-    """Ask KP (as director) whether to insert enemies now; if so, create stat blocks
-    and LLM-backed enemy agents, then append to the NPC list and broadcast."""
+async def _maybe_director_actions(hub: MsgHub, kp: KPAgent, npcs_list: list[ReActAgent], _bcast) -> None:
+    """Ask KP (as director) whether to do director actions now. Supports:
+    - actions: list of typed actions (broadcast/spawn/add_objective/...)
+    - fallback decision=spawn with 'spawn' list (LLM path)
+    """
     try:
         actions = await kp.consider_director_actions()
     except Exception:
         return
-    if not isinstance(actions, dict) or actions.get("decision") != "spawn":
+    if not isinstance(actions, dict):
         return
-    spawn_list = actions.get("spawn") or []
-    if not isinstance(spawn_list, list) or not spawn_list:
+    # Structured actions list (story-driven)
+    act_list = actions.get("actions")
+    if isinstance(act_list, list) and act_list:
+        for a in act_list:
+            if not isinstance(a, dict):
+                continue
+            t = str(a.get("type") or "")
+            if t == "broadcast":
+                txt = str(a.get("text") or "").strip()
+                if txt:
+                    await _bcast(Msg("Host", txt, "assistant"))
+            elif t == "spawn":
+                units = a.get("units") or []
+                if isinstance(units, list):
+                    await _spawn_from_specs(hub, npcs_list, units)
+            elif t == "add_objective":
+                nm = a.get("name")
+                if nm:
+                    tr = add_objective(str(nm))
+                    for blk in tr.content or []:
+                        if blk.get("type") == "text":
+                            await _bcast(Msg("Host", blk.get("text"), "assistant"))
+            elif t == "complete_objective":
+                nm = a.get("name")
+                note = a.get("note") or ""
+                if nm:
+                    tr = complete_objective(str(nm), str(note))
+                    for blk in tr.content or []:
+                        if blk.get("type") == "text":
+                            await _bcast(Msg("Host", blk.get("text"), "assistant"))
+            elif t == "block_objective":
+                nm = a.get("name")
+                reason = a.get("reason") or ""
+                if nm:
+                    tr = block_objective(str(nm), str(reason))
+                    for blk in tr.content or []:
+                        if blk.get("type") == "text":
+                            await _bcast(Msg("Host", blk.get("text"), "assistant"))
+            elif t == "schedule_event":
+                name = a.get("name") or "(事件)"
+                at = int(a.get("at_min") or WORLD.time_min)
+                note = a.get("note") or ""
+                eff = a.get("effects") or []
+                schedule_event(str(name), at, str(note), effects=eff if isinstance(eff, list) else [])
+            elif t == "relation":
+                x = a.get("a")
+                y = a.get("b")
+                d = int(a.get("delta") or 0)
+                reason = a.get("reason") or ""
+                if x and y:
+                    tr = change_relation(str(x), str(y), d, reason=str(reason))
+                    for blk in tr.content or []:
+                        if blk.get("type") == "text":
+                            await _bcast(Msg("Host", blk.get("text"), "assistant"))
+            elif t == "grant":
+                target = a.get("target"); item = a.get("item"); n = int(a.get("n") or 1)
+                if target and item:
+                    tr = grant_item(str(target), str(item), int(n))
+                    for blk in tr.content or []:
+                        if blk.get("type") == "text":
+                            await _bcast(Msg("Host", blk.get("text"), "assistant"))
+            elif t == "damage":
+                target = a.get("target"); amount = int(a.get("amount") or 0)
+                if target:
+                    from world.tools import damage as _damage
+                    tr = _damage(str(target), int(amount))
+                    for blk in tr.content or []:
+                        if blk.get("type") == "text":
+                            await _bcast(Msg("Host", blk.get("text"), "assistant"))
+            elif t == "heal":
+                target = a.get("target"); amount = int(a.get("amount") or 0)
+                if target:
+                    from world.tools import heal as _heal
+                    tr = _heal(str(target), int(amount))
+                    for blk in tr.content or []:
+                        if blk.get("type") == "text":
+                            await _bcast(Msg("Host", blk.get("text"), "assistant"))
         return
-    # Broadcast director narration if provided
-    bc = actions.get("broadcast")
-    if isinstance(bc, str) and bc.strip():
-        await hub.broadcast(Msg("Host", bc.strip(), "assistant"))
-    # Create each enemy and append to NPCs list
-    for spec in spawn_list:
+    # LLM fallback path with decision=spawn
+    if actions.get("decision") == "spawn":
+        spawn_list = actions.get("spawn") or []
+        if isinstance(spawn_list, list) and spawn_list:
+            bc = actions.get("broadcast")
+            if isinstance(bc, str) and bc.strip():
+                await _bcast(Msg("Host", bc.strip(), "assistant"))
+            await _spawn_from_specs(hub, npcs_list, spawn_list)
+
+async def _spawn_from_specs(hub: MsgHub, npcs_list: list[ReActAgent], units: list[dict]) -> None:
+    for spec in units:
         if not isinstance(spec, dict):
             continue
         name = str(spec.get("name") or _auto_enemy_name())
@@ -393,13 +641,11 @@ async def _maybe_director_spawn(hub: MsgHub, kp: KPAgent, npcs_list: list[ReActA
         abilities = spec.get("abilities") or {"STR": 12, "DEX": 12, "CON": 12, "INT": 8, "WIS": 10, "CHA": 8}
         dmg = str(spec.get("damage_expr") or "1d6+STR")
         persona = str(spec.get("persona") or _default_enemy_persona(kind))
-        # Create/update stat block
         try:
             set_dnd_character(name=name, level=1, ac=ac, abilities=abilities, max_hp=hp)
         except Exception:
             pass
-        # Create LLM-backed enemy agent with a persona that nudges for proper JSON intent
-        agent = make_enemy_npc(name=name, persona=persona, default_damage_expr=dmg, target_pref=target_pref)
+        agent = make_enemy_npc(name=name, persona=persona, default_damage_expr=dmg, target_pref=target_pref, prompt_template=_ENEMY_PROMPT_TEMPLATE)
         npcs_list.append(agent)
 
 _enemy_auto_id = 1
@@ -417,45 +663,50 @@ def _default_enemy_persona(kind: str) -> str:
         return "远程火力支援手。偏好远距离压制，优先打击高威胁目标。"
     return "整合运动突击手。行动果断，先威吓索要通行与物资，遭拒或反抗即近身攻击。"
 
-def make_enemy_npc(name: str, persona: str, default_damage_expr: str = "1d6+STR", target_pref: str = "Doctor") -> ReActAgent:
+def make_enemy_npc(name: str, persona: str, default_damage_expr: str = "1d6+STR", target_pref: str = "Doctor", prompt_template: str | None = None) -> ReActAgent:
     """Create an LLM-backed enemy NPC with stronger nudges to include attack intents.
     Enemy talks 1-2 sentences then output a JSON intent; when attacking, include damage_expr.
     """
     api_key = os.environ["MOONSHOT_API_KEY"]
-    base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-    model_name = os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
+    base_url = _MODEL_CFG.get("base_url") or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
+    sec = _MODEL_CFG.get("npc") or _MODEL_CFG
+    model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
-    sys_prompt = f"你是敌对NPC：{name}。人设：{persona}。\n" + (
-        f"""对话要求：
+    tools = "describe_world()"
+    intent_schema = (
+        "{\n  \"intent\": \"attack|talk|investigate|move|assist|wait\",\n  \"target\": \"目标名称\",\n"
+        "  \"ability\": \"STR|DEX|...\",\n  \"proficient\": true,\n  \"dc_hint\": 12,\n  \"damage_expr\": \"%s\",\n  \"time_cost\": 1,\n  \"notes\": \"一句话说明意图\"\n}" % (default_damage_expr,)
+    )
+    sys_prompt = None
+    tpl = prompt_template or _ENEMY_PROMPT_TEMPLATE
+    if tpl:
+        try:
+            sys_prompt = tpl.format(name=name, persona=persona, target_pref=target_pref, default_damage_expr=default_damage_expr, tools=tools, intent_schema=intent_schema)
+        except Exception:
+            sys_prompt = None
+    if not sys_prompt:
+        sys_prompt = f"你是敌对NPC：{name}。人设：{persona}。\n" + (
+            f"""对话要求：
 - 先用简短中文说1句对白/威吓/动作，符合人设。
 - 然后给出一个 JSON 意图（不要调用工具；裁决由KP执行）。
 - 当你决定攻击时，请在 JSON 中包含 damage_expr（通常为 {default_damage_expr}）。
 - 目标偏好：{target_pref}（若该目标不在场，可选择最近或威胁更高者）。
 JSON格式（仅保留需要的字段）：
-{{
-  "intent": "attack|talk|investigate|move|assist|wait",
-  "target": "目标名称",
-  "ability": "STR|DEX|...",
-  "proficient": true,
-  "dc_hint": 12,
-  "damage_expr": "{default_damage_expr}",
-  "time_cost": 1,
-  "notes": "一句话说明意图"
-}}
+{intent_schema}
 输出示例：
 {name}低喝：交出通行证！
 ```json
 {{"intent":"attack","target":"{target_pref}","ability":"STR","proficient":false,"damage_expr":"{default_damage_expr}","notes":"短棍攻击"}}
 ```
 """
-    )
+        ).format(intent_schema=intent_schema)
 
     model = OpenAIChatModel(
         model_name=model_name,
         api_key=api_key,
-        stream=True,
+        stream=bool(sec.get("stream", True)),
         client_args={"base_url": base_url},
-        generate_kwargs={"temperature": 0.7},
+        generate_kwargs={"temperature": float(sec.get("temperature", 0.7))},
     )
     toolkit = Toolkit()
     toolkit.register_tool_function(describe_world)

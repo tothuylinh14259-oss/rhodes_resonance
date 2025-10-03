@@ -1,0 +1,9 @@
+{
+  "max_len": 36,
+  "candidates": 3,
+  "history_size": 8,
+  "focus_cycle": ["visual", "sound", "air", "motion", "light", "object"],
+  "no_filter": true,
+  "raw_pick": true,
+  "disable_fallback": true
+}

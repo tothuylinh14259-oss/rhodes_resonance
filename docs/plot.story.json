@@ -1,0 +1,36 @@
+{
+  "meta": { "title": "伦蒂尼姆前置行动", "style": "低调推进、时间压力、外部骚扰" },
+  "acts": [
+    {
+      "id": "briefing",
+      "beats": [
+        {
+          "id": "deadline_push",
+          "when": { "time_min_gte": 485, "objectives_pending_any": ["确认切尔诺伯格核心城残骸的辐射监测数据"] },
+          "actions": [
+            { "type": "broadcast", "text": "作战处来电：伦蒂尼姆外围侦测异常，要求尽快给出预案。" }
+          ],
+          "once": true
+        }
+      ]
+    },
+    {
+      "id": "disruption",
+      "beats": [
+        {
+          "id": "raider_intrusion",
+          "when": { "rounds_stalled_gte": 2, "objectives_pending_any": ["在伦蒂尼姆行动前完成风险评估"] },
+          "actions": [
+            { "type": "broadcast", "text": "通道尽头传来脚步与金属碰撞声——两名整合运动突击手破门而入！" },
+            { "type": "spawn", "units": [
+              { "kind": "raider", "target_pref": "Doctor", "damage_expr": "1d6+STR", "persona": "整合运动突击手。遭到喝止仍强行靠近，挑衅即动手。" },
+              { "kind": "raider", "target_pref": "nearest", "damage_expr": "1d6+STR", "persona": "整合运动突击手。协同夹击，优先压制发言最强硬者。" }
+            ]}
+          ],
+          "cooldown_min": 8
+        }
+      ]
+    }
+  ]
+}
+

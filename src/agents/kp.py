@@ -67,6 +67,20 @@ class KPAgent(AgentBase):
             "导演策略：在不突兀的前提下，依据场景目标、时间压力与上下文冲突，酌情引入外部压力（如巡逻、敌对势力、事故），"
             "以推动剧情向既定目标推进或制造合理阻力。避免过于频繁的插入；每次插入须给出清晰理由。"
         )
+        # Optional name map for canonicalization (e.g., 中文→内部ID)
+        self._name_map: dict[str, str] = {"阿米娅": "Amiya", "凯尔希": "Kaltsit", "博士": "Doctor"}
+        # Optional story script (acts/beats) and runtime state
+        self._story: Optional[dict] = None
+        self._fired_beats: set[str] = set()
+        self._beat_last_min: dict[str, int] = {}
+        self._stalled_rounds: int = 0
+        self._last_obj_status_sig: str = ""
+        # Optional external rules
+        self._time_rules: Optional[dict] = None  # { intent_cost_min: {intent:int}, default_min:int }
+        self._relation_rules: Optional[dict] = None  # { talk_default_delta:int, multi_target_split:bool }
+        # Optional narrator and feature flags
+        self._narrator = None  # set via set_narrator()
+        self._suppress_mech_narration: bool = True
     async def observe(self, msg: Msg | List[Msg] | None) -> None:
         if msg is None:
             return
@@ -84,8 +98,9 @@ class KPAgent(AgentBase):
         # If waiting for confirmation and got player's response now
         if self._awaiting_confirm and player_msg.id != self._last_processed_player_id:
             raw = (player_msg.get_text_content() or "")
-            # Strict confirmation: only '/yes' confirms; anything else is treated as new intent
-            if raw.strip() == "/yes":
+            # Flexible confirmation: accept '是/对/好的/确认/yes/y' etc.
+            norm = self._normalize_confirm_text(raw)
+            if self._is_yes(norm) or raw.strip() == "/yes":
                 content = (self._pending_sanitized or "").strip()
                 try:
                     import json as _json
@@ -123,7 +138,15 @@ class KPAgent(AgentBase):
                 self._pending_intent = None
                 self._last_processed_player_id = player_msg.id
                 return final_msg
-            # Treat as new intent: re-judge and propose a new sanitized version, ask to reply '/yes'
+            # Treat as incremental slot filling or new intent
+            # Quick slot fill: try to update target from this short reply
+            try:
+                tquick = self._infer_target_from_text(raw)
+                if tquick and isinstance(self._pending_intent, dict):
+                    if not self._pending_intent.get("target"):
+                        self._pending_intent["target"] = tquick
+            except Exception:
+                pass
             judged2 = await self._judge_player_input(player_msg)
             sanitized2 = judged2.get("sanitized") or self._fallback_sanitize(raw)
             self._pending_sanitized = sanitized2
@@ -145,7 +168,15 @@ class KPAgent(AgentBase):
                         await self.print(ask); return ask
             if intent2 is None:
                 intent2 = self._extract_intent_from_text(raw) or {"intent": "wait", "notes": "未能解析，默认等待"}
-            self._pending_intent = intent2
+            # Merge into pending intent (slot memory)
+            if isinstance(self._pending_intent, dict):
+                base = dict(self._pending_intent)
+                for k, v in (intent2 or {}).items():
+                    if v:
+                        base[k] = v
+                self._pending_intent = base
+            else:
+                self._pending_intent = intent2
             self._awaiting_confirm = True
             self._awaiting_player = True
             confirm_new = Msg(name=self.name, content=f"我理解为：{sanitized2}。若正确请回复 /yes 确认。", role="assistant")
@@ -169,6 +200,38 @@ class KPAgent(AgentBase):
             await self.print(confirm)
             return confirm
         if decision == "clarify":
+            # Cache/merge partial intent for memory
+            maybe_intent = judged.get("intent") if isinstance(judged.get("intent"), dict) else None
+            if maybe_intent:
+                if isinstance(self._pending_intent, dict):
+                    base = dict(self._pending_intent)
+                    for k, v in maybe_intent.items():
+                        if v:
+                            base[k] = v
+                    self._pending_intent = base
+                else:
+                    self._pending_intent = dict(maybe_intent)
+            # If only target missing, try infer from this message and confirm directly
+            try:
+                need_target = False
+                kind = str(((self._pending_intent or {}).get("intent")) or "").lower()
+                if kind in {"attack","talk","assist","investigate","use_item"}:
+                    need_target = not bool((self._pending_intent or {}).get("target"))
+                if need_target:
+                    inferred = self._infer_target_from_text(player_msg.get_text_content() or "")
+                    if inferred:
+                        self._pending_intent = dict(self._pending_intent or {})
+                        self._pending_intent["target"] = inferred
+                        sanitized = judged.get("sanitized") or (player_msg.get_text_content() or "")
+                        self._pending_sanitized = sanitized
+                        self._awaiting_player = True
+                        self._awaiting_confirm = True
+                        confirm = Msg(name=self.name, content=f"我理解为：{sanitized}。若正确请回复 /yes 确认。", role="assistant")
+                        await self.print(confirm)
+                        return confirm
+            except Exception:
+                pass
+            # Otherwise ask the clarify question
             q = judged.get("question") or "请更具体说明你的行动。"
             self._awaiting_player = True
             self._awaiting_confirm = False
@@ -372,7 +435,8 @@ class KPAgent(AgentBase):
                 intents.append((m.name, it))
         out_msgs: List[Msg] = []
         for actor, it in intents:
-            out_msgs.extend(self._adjudicate_one(actor, it))
+            part = await self._adjudicate_one(actor, it)
+            out_msgs.extend(part)
         return out_msgs
     def _extract_intent_from_text(self, text: str) -> Optional[dict]:
         s = text or ""
@@ -394,7 +458,14 @@ class KPAgent(AgentBase):
             return obj
         low = s.lower()
         target = None
-        for k, v in {"amiya": "Amiya", "阿米娅": "Amiya", "kaltsit": "Kaltsit", "凯尔希": "Kaltsit"}.items():
+        # Name hint mapping: combine built-ins and custom map (case-insensitive)
+        hint_map = {"amiya": "Amiya", "阿米娅": "Amiya", "kaltsit": "Kaltsit", "凯尔希": "Kaltsit", "doctor": "Doctor", "博士": "Doctor"}
+        try:
+            for k, v in (self._name_map or {}).items():
+                hint_map[str(k).lower()] = str(v)
+        except Exception:
+            pass
+        for k, v in hint_map.items():
             if k in s:
                 target = v
                 break
@@ -426,10 +497,15 @@ class KPAgent(AgentBase):
     def _infer_target_from_text(self, text: str) -> Optional[str]:
         low = (text or "").lower()
         mapping = {
-            "kaltsit": "Kaltsit", "凯尔希": "Kaltsit",
+            "kaltsit": "Kaltsit", "凯尔希": "Kaltsit", "凯尔希的头": "Kaltsit", "猫头": "Kaltsit",
             "amiya": "Amiya", "阿米娅": "Amiya",
             "doctor": "Doctor", "博士": "Doctor",
         }
+        try:
+            for k, v in (self._name_map or {}).items():
+                mapping[str(k).lower()] = str(v)
+        except Exception:
+            pass
         for k, v in mapping.items():
             if k in low:
                 return v
@@ -498,15 +574,26 @@ class KPAgent(AgentBase):
         if len(s) > 40:
             s = s[:40] + "…"
         return s
-    def _adjudicate_one(self, actor: str, intent: dict) -> List[Msg]:
+    async def _adjudicate_one(self, actor: str, intent: dict) -> List[Msg]:
         from world.tools import attack_roll_dnd, skill_check_dnd, change_relation, advance_time
         msgs: List[Msg] = []
         kind = str(intent.get("intent") or "").lower()
         # Canonicalize common Chinese names to internal IDs
         def _canon(n: str) -> str:
+            try:
+                if self._name_map and n in self._name_map:
+                    return self._name_map[n]
+                # also try lowercase key
+                lk = n.lower() if isinstance(n, str) else n
+                if self._name_map and isinstance(lk, str) and lk in self._name_map:
+                    return self._name_map[lk]
+            except Exception:
+                pass
+            # built-in fallbacks
             mp = {"阿米娅": "Amiya", "凯尔希": "Kaltsit", "博士": "Doctor"}
             return mp.get(n, n)
         actor_id = _canon(actor)
+        narr_meta = {"actor": actor_id, "kind": kind}
         if kind == "attack":
             defender = _canon(intent.get("target") or "")
             ability = (intent.get("ability") or "STR").upper()
@@ -515,6 +602,18 @@ class KPAgent(AgentBase):
             if defender:
                 tr = attack_roll_dnd(actor_id, defender, ability=ability, proficient=prof, damage_expr=dmg_expr)
                 lines = self._collect_text_blocks(tr.content)
+                try:
+                    meta = tr.metadata or {}
+                    narr_meta.update({
+                        "target": defender,
+                        "hit": bool(meta.get("hit")),
+                        "damage": int(meta.get("damage_total") or 0),
+                        "hp_after": meta.get("hp_after"),
+                        "ko": bool(meta.get("hp_after") is not None and int(meta.get("hp_after")) <= 0),
+                    })
+                except Exception:
+                    pass
+                # meta already merged above
                 if lines:
                     msgs.append(Msg(name="Host", content=f"[裁决] {actor_id}→{defender}\n" + "\n".join(lines), role="assistant"))
         elif kind == "skill_check":
@@ -522,29 +621,81 @@ class KPAgent(AgentBase):
             dc = int(intent.get("dc_hint") or 12)
             tr = skill_check_dnd(actor_id, skill, dc)
             lines = self._collect_text_blocks(tr.content)
+            try:
+                narr_meta.update({"skill": skill, "success": bool((tr.metadata or {}).get("success"))})
+            except Exception:
+                pass
+            narr_meta.update({"skill": skill, "success": bool((tr.metadata or {}).get("success"))})
             if lines:
                 msgs.append(Msg(name="Host", content=f"[检定] {actor_id} {skill} vs DC {dc}\n" + "\n".join(lines), role="assistant"))
         elif kind == "talk":
-            target = _canon(intent.get("target") or "")
-            if target:
-                tr = change_relation(actor_id, target, 1, reason="积极交流")
-                lines = self._collect_text_blocks(tr.content)
-                if lines:
-                    msgs.append(Msg(name="Host", content=f"[关系] {actor_id}↔{target}: +1\n" + "\n".join(lines), role="assistant"))
+            target_raw = intent.get("target") or ""
+            if target_raw:
+                try:
+                    narr_meta.update({"target": _canon(target_raw)})
+                except Exception:
+                    pass
+            narr_meta.update({"target": _canon(target_raw) if target_raw else ""})
+            rr = self._relation_rules or {}
+            delta = int(rr.get("talk_default_delta", 1))
+            multi = bool(rr.get("multi_target_split", False))
+            if not target_raw:
+                if not self._suppress_mech_narration:
+                    msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} 与人交谈。", role="assistant"))
             else:
-                msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} 与人交谈。", role="assistant"))
+                targets: list[str] = [target_raw]
+                if multi:
+                    for sep in [",", "，", "、", ";", "；"]:
+                        if sep in target_raw:
+                            targets = [x.strip() for x in target_raw.split(sep) if x.strip()]
+                            break
+                applied = False
+                for t in targets:
+                    tgt = _canon(t)
+                    if not delta:
+                        continue
+                    tr = change_relation(actor_id, tgt, delta, reason="交流")
+                    lines = self._collect_text_blocks(tr.content)
+                    if lines:
+                        msgs.append(Msg(name="Host", content=f"[关系] {actor_id}↔{tgt}: {delta:+d}\n" + "\n".join(lines), role="assistant"))
+                        applied = True
+                if not applied and delta == 0:
+                    if not self._suppress_mech_narration:
+                        msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} 与 {target_raw} 交谈。", role="assistant"))
         elif kind in ("move", "wait", "assist", "investigate"):
             note = intent.get("notes") or kind
-            msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} {note}", role="assistant"))
+            if not self._suppress_mech_narration:
+                msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} {note}", role="assistant"))
         else:
             note = intent.get("notes") or "保持行动"
-            msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} {note}", role="assistant"))
+            if not self._suppress_mech_narration:
+                msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} {note}", role="assistant"))
         # Time advancement per action
         tc = self._time_cost_min(intent)
         try:
             adv = advance_time(tc)
             for txt in self._collect_text_blocks(adv.content):
                 msgs.append(Msg(name="Host", content=txt, role="assistant"))
+        except Exception:
+            pass
+        # Atmosphere tuning and micro-narration (pure sentence, no labels)
+        try:
+            from world.tools import adjust_tension
+            if kind == "attack":
+                dval = int(narr_meta.get("damage") or 0)
+                if narr_meta.get("hit"):
+                    adjust_tension(2 if dval >= 6 else 1)
+            elif kind == "talk":
+                adjust_tension(-1)
+        except Exception:
+            pass
+        try:
+            if self._narrator is not None and callable(getattr(self._narrator, "generate", None)):
+                narr_meta["time_cost"] = int(tc)
+                snap = self._world_snapshot_provider() if self._world_snapshot_provider else {}
+                text = await self._narrator.generate(narr_meta, snap or {})
+                if text:
+                    msgs.append(Msg(name="Host", content=str(text), role="assistant"))
         except Exception:
             pass
         return msgs
@@ -561,6 +712,15 @@ class KPAgent(AgentBase):
             except Exception:
                 pass
         kind = str(intent.get("intent") or "").lower()
+        rules = self._time_rules or {}
+        try:
+            mapping = rules.get("intent_cost_min") or {}
+            if kind in mapping:
+                return int(mapping[kind])
+            if "default_min" in rules:
+                return int(rules["default_min"])
+        except Exception:
+            pass
         if kind in ("attack", "talk", "move", "assist", "wait"):
             return 1
         if kind in ("investigate", "skill_check"):
@@ -591,6 +751,11 @@ class KPAgent(AgentBase):
                     "abilities":{"STR":12,"DEX":12,"CON":12,"INT":8,"WIS":10,"CHA":8},
                     "damage_expr":"1d6+STR","persona":"..."}]}
         """
+        # First: try story-driven actions (rules). If any, return directly.
+        story_dec = self._story_decision()
+        if isinstance(story_dec, dict) and story_dec.get("decision") in ("actions", "spawn"):
+            return story_dec
+
         # Prepare context for the model
         world_text = self._format_world_snapshot()
         ctx_text = self._build_context_text(10)
@@ -660,3 +825,162 @@ class KPAgent(AgentBase):
 
     def set_director_policy(self, text: str) -> None:
         self._director_policy = str(text or "").strip() or self._director_policy
+
+    def set_story(self, story: dict) -> None:
+        """Attach a structured story script with acts/beats and simple conditions."""
+        try:
+            self._story = story or {}
+            self._fired_beats = set()
+            self._beat_last_min = {}
+            self._stalled_rounds = 0
+            self._last_obj_status_sig = ""
+        except Exception:
+            self._story = None
+
+    def set_kp_system_prompt(self, text: str) -> None:
+        """Override KP system prompt if a custom prompt is provided."""
+        try:
+            t = (text or "").strip()
+            if t:
+                self._sys_prompt = t
+        except Exception:
+            pass
+
+    def set_name_map(self, name_map: dict) -> None:
+        """Set a custom name canonicalization mapping (keys can be any alias)."""
+        try:
+            m: dict[str, str] = {}
+            for k, v in (name_map or {}).items():
+                if not k or not v:
+                    continue
+                m[str(k)] = str(v)
+            if m:
+                self._name_map.update(m)
+        except Exception:
+            pass
+
+    def set_model_config(self, cfg: dict) -> None:
+        """Rebuild KP's model client from a model config dict.
+        cfg example: {"base_url":"...","kp":{"model":"...","temperature":0.2,"stream":false}}
+        """
+        try:
+            import os
+            root = cfg or {}
+            sec = root.get("kp") or root
+            model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
+            base_url = root.get("base_url") or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
+            temperature = float(sec.get("temperature", 0.2))
+            stream = bool(sec.get("stream", False))
+            self.model = OpenAIChatModel(
+                model_name=model_name,
+                api_key=os.environ["MOONSHOT_API_KEY"],
+                stream=stream,
+                client_args={"base_url": base_url},
+                generate_kwargs={"temperature": temperature},
+            )
+        except Exception:
+            pass
+
+    def set_time_rules(self, rules: dict) -> None:
+        self._time_rules = rules or None
+
+    def set_relation_rules(self, rules: dict) -> None:
+        self._relation_rules = rules or None
+
+    def set_narrator(self, narrator) -> None:
+        self._narrator = narrator
+
+    def set_feature_flags(self, flags: dict) -> None:
+        try:
+            if isinstance(flags, dict):
+                val = flags.get("suppress_mech_narration")
+                if val is not None:
+                    self._suppress_mech_narration = bool(val)
+        except Exception:
+            pass
+
+    def _story_decision(self) -> dict:
+        """Evaluate story beats and return a director decision.
+        Supported beat.when keys: time_min_gte, objectives_pending_any (list of names),
+        rounds_stalled_gte (int), cooldown_min (int), once (bool).
+        Beat.actions supports: broadcast, spawn (units: list of unit specs), add_objective,
+        complete_objective, block_objective, schedule_event, relation, grant, damage, heal.
+        Returns a dict with decision 'actions' and an 'actions' list if any beat matches.
+        """
+        if not self._story:
+            return {"decision": "none"}
+        try:
+            snap = self._world_snapshot_provider() if self._world_snapshot_provider else {}
+        except Exception:
+            snap = {}
+        # Track 'stalled rounds' by objective status signature
+        try:
+            st = snap.get("objective_status", {}) or {}
+            sig = ";".join(f"{k}:{v}" for k, v in sorted(st.items()))
+        except Exception:
+            st = {}; sig = ""
+        if sig == self._last_obj_status_sig:
+            self._stalled_rounds += 1
+        else:
+            self._stalled_rounds = 0
+            self._last_obj_status_sig = sig
+
+        def _ok_when(when: dict) -> bool:
+            if not isinstance(when, dict):
+                return True
+            # time_min_gte
+            try:
+                tmin = int(snap.get("time_min") or 0)
+                need = when.get("time_min_gte")
+                if need is not None and tmin < int(need):
+                    return False
+            except Exception:
+                pass
+            # objectives_pending_any
+            pend = when.get("objectives_pending_any")
+            if isinstance(pend, list) and pend:
+                m = snap.get("objective_status", {}) or {}
+                if not any(m.get(str(x)) == "pending" for x in pend):
+                    return False
+            # rounds_stalled_gte
+            try:
+                need_stall = when.get("rounds_stalled_gte")
+                if need_stall is not None and self._stalled_rounds < int(need_stall):
+                    return False
+            except Exception:
+                pass
+            # cooldown_min per beat handled outside
+            return True
+
+        acts = (self._story.get("acts") or []) if isinstance(self._story, dict) else []
+        for act in acts:
+            beats = (act.get("beats") or []) if isinstance(act, dict) else []
+            for beat in beats:
+                bid = str(beat.get("id") or "")
+                when = beat.get("when") or {}
+                once = bool(beat.get("once", False))
+                cooldown_min = beat.get("cooldown_min")
+                if once and bid in self._fired_beats:
+                    continue
+                if not _ok_when(when):
+                    continue
+                # cooldown check
+                try:
+                    if cooldown_min is not None:
+                        last = int(self._beat_last_min.get(bid, -10**9))
+                        cur = int(snap.get("time_min") or 0)
+                        if cur - last < int(cooldown_min):
+                            continue
+                except Exception:
+                    pass
+                actions = beat.get("actions") or []
+                if not isinstance(actions, list) or not actions:
+                    continue
+                # mark fired
+                self._fired_beats.add(bid)
+                try:
+                    self._beat_last_min[bid] = int(snap.get("time_min") or 0)
+                except Exception:
+                    pass
+                return {"decision": "actions", "why": f"beat:{bid}", "actions": actions}
+        return {"decision": "none"}

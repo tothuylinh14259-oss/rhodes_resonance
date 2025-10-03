@@ -23,6 +23,8 @@ class World:
     objective_status: Dict[str, str] = field(default_factory=dict)
     objective_notes: Dict[str, str] = field(default_factory=dict)
     events: List[Dict[str, Any]] = field(default_factory=list)
+    tension: int = 1  # 0-5
+    marks: List[str] = field(default_factory=list)
 
     def snapshot(self) -> dict:
         return {
@@ -35,6 +37,8 @@ class World:
             "objectives": list(self.objectives),
             "objective_status": dict(self.objective_status),
             "objective_notes": dict(self.objective_notes),
+            "tension": int(self.tension),
+            "marks": list(self.marks),
         }
 
 
@@ -509,17 +513,29 @@ def attack_roll_dnd(
     success = bool(atk_res.metadata.get("success")) if atk_res.metadata else False
     parts: List[TextBlock] = []
     parts.append(TextBlock(type="text", text=f"攻击：{attacker} d20{_signed(base)} vs AC {ac} -> {'命中' if success else '未中'}"))
+    hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
+    dmg_total = 0
     if success:
         # Replace ability placeholders in damage expr
         dmg_expr2 = _replace_ability_tokens(damage_expr, mod)
         dmg_res = roll_dice(dmg_expr2)
         total = int(dmg_res.metadata.get("total", 0)) if dmg_res.metadata else 0
+        dmg_total = total
         dmg_apply = damage(defender, total)
         parts.append(TextBlock(type="text", text=f"伤害：{dmg_expr2} -> {total}"))
         for blk in dmg_apply.content or []:
             if blk.get("type") == "text":
                 parts.append(blk)
-    return ToolResponse(content=parts, metadata={"attacker": attacker, "defender": defender, "hit": success, "base": base})
+    hp_after = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
+    return ToolResponse(content=parts, metadata={
+        "attacker": attacker,
+        "defender": defender,
+        "hit": success,
+        "base": base,
+        "damage_total": int(dmg_total),
+        "hp_before": int(hp_before),
+        "hp_after": int(hp_after),
+    })
 
 
 def _replace_ability_tokens(expr: str, ability_mod: int) -> str:
@@ -594,3 +610,16 @@ def process_events():
     if outputs:
         return ToolResponse(content=outputs, metadata={"fired": len(due)})
     return ToolResponse(content=[], metadata={"fired": 0})
+
+# ---- Atmosphere helpers ----
+def adjust_tension(delta: int):
+    WORLD.tension = max(0, min(5, int(WORLD.tension) + int(delta)))
+    return ToolResponse(content=[TextBlock(type="text", text=f"(气氛){'升' if delta>0 else '降' if delta<0 else '稳'}至 {WORLD.tension}")], metadata={"tension": WORLD.tension})
+
+def add_mark(text: str):
+    s = str(text or "").strip()
+    if s:
+        WORLD.marks.append(s)
+        if len(WORLD.marks) > 10:
+            WORLD.marks = WORLD.marks[-10:]
+    return ToolResponse(content=[TextBlock(type="text", text=f"(环境刻痕)+{s}")], metadata={"marks": list(WORLD.marks)})
