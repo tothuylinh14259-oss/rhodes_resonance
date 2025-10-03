@@ -575,7 +575,13 @@ class KPAgent(AgentBase):
             s = s[:40] + "…"
         return s
     async def _adjudicate_one(self, actor: str, intent: dict) -> List[Msg]:
-        from world.tools import attack_roll_dnd, skill_check_dnd, change_relation, advance_time
+        from world.tools import (
+            attack_roll_dnd, skill_check_dnd, change_relation, advance_time,
+            act_dash, act_disengage, act_dodge, act_help, act_hide, act_search,
+            act_grapple, act_shove, move_to_band, set_cover, get_cover,
+            advantage_for_attack, cover_bonus, clear_condition, has_condition,
+            get_turn, get_ac,
+        )
         msgs: List[Msg] = []
         kind = str(intent.get("intent") or "").lower()
         # Canonicalize common Chinese names to internal IDs
@@ -607,7 +613,14 @@ class KPAgent(AgentBase):
             prof = bool(intent.get("proficient") or False)
             dmg_expr = intent.get("damage_expr") or "1d4+STR"
             if defender:
-                tr = attack_roll_dnd(actor_id, defender, ability=ability, proficient=prof, damage_expr=dmg_expr)
+                # advantage and cover
+                adv = advantage_for_attack(actor_id, defender)
+                ac_base = get_ac(defender)
+                ac_bonus, blocked = cover_bonus(defender)
+                if blocked:
+                    msgs.append(Msg(name="Host", content=f"[裁决] 目标处于完全掩体，无法直接瞄准。", role="assistant"))
+                    return msgs
+                tr = attack_roll_dnd(actor_id, defender, ability=ability, proficient=prof, damage_expr=dmg_expr, advantage=adv, target_ac=ac_base + ac_bonus)
                 lines = self._collect_text_blocks(tr.content)
                 try:
                     meta = tr.metadata or {}
@@ -618,6 +631,12 @@ class KPAgent(AgentBase):
                         "hp_after": meta.get("hp_after"),
                         "ko": bool(meta.get("hp_after") is not None and int(meta.get("hp_after")) <= 0),
                     })
+                except Exception:
+                    pass
+                # reveal if previously hidden
+                try:
+                    if has_condition(actor_id, "hidden"):
+                        clear_condition(actor_id, "hidden")
                 except Exception:
                     pass
                 # meta already merged above
@@ -669,22 +688,85 @@ class KPAgent(AgentBase):
                 if not applied and delta == 0:
                     if not self._suppress_mech_narration:
                         msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} 与 {target_raw} 交谈。", role="assistant"))
-        elif kind in ("move", "wait", "assist", "investigate"):
-            note = intent.get("notes") or kind
-            if not self._suppress_mech_narration:
-                msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} {note}", role="assistant"))
+        elif kind == "move":
+            subtype = str(intent.get("subtype") or "").lower()
+            if subtype == "dash":
+                tr = act_dash(actor_id)
+                for txt in self._collect_text_blocks(tr.content):
+                    msgs.append(Msg(name="Host", content=txt, role="assistant"))
+            elif subtype == "disengage":
+                tr = act_disengage(actor_id)
+                for txt in self._collect_text_blocks(tr.content):
+                    msgs.append(Msg(name="Host", content=txt, role="assistant"))
+            elif subtype == "take_cover":
+                lvl = intent.get("cover") or "half"
+                tr = set_cover(actor_id, lvl)
+                for txt in self._collect_text_blocks(tr.content):
+                    msgs.append(Msg(name="Host", content=txt, role="assistant"))
+            else:
+                band = str(intent.get("band") or "")
+                tgt = _canon(intent.get("target") or "")
+                if band and tgt:
+                    tr = move_to_band(actor_id, tgt, band)
+                    for txt in self._collect_text_blocks(tr.content):
+                        msgs.append(Msg(name="Host", content=txt, role="assistant"))
+                else:
+                    note = intent.get("notes") or "移动至更有利位置"
+                    if not self._suppress_mech_narration:
+                        msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} {note}", role="assistant"))
+        elif kind == "assist":
+            tgt = _canon(intent.get("target") or "")
+            if tgt:
+                tr = act_help(actor_id, tgt)
+                for txt in self._collect_text_blocks(tr.content):
+                    msgs.append(Msg(name="Host", content=txt, role="assistant"))
+        elif kind == "investigate":
+            tr = act_search(actor_id, skill=str(intent.get("skill") or "investigation"), dc=int(intent.get("dc_hint") or 12))
+            for txt in self._collect_text_blocks(tr.content):
+                msgs.append(Msg(name="Host", content=txt, role="assistant"))
+        elif kind == "wait":
+            subtype = str(intent.get("subtype") or "").lower()
+            if subtype == "dodge":
+                tr = act_dodge(actor_id)
+                for txt in self._collect_text_blocks(tr.content):
+                    msgs.append(Msg(name="Host", content=txt, role="assistant"))
+            elif subtype == "ready":
+                trig = intent.get("trigger") or "接近至可见时"
+                from world.tools import act_ready
+                tr = act_ready(actor_id, trig, {})
+                for txt in self._collect_text_blocks(tr.content):
+                    msgs.append(Msg(name="Host", content=txt, role="assistant"))
+            else:
+                note = intent.get("notes") or "保持待命"
+                if not self._suppress_mech_narration:
+                    msgs.append(Msg(name="Host", content=f"[待命] {actor_id} {note}", role="assistant"))
+        # Special attack maneuvers (grapple/shove)
+        if kind == "attack" and str(intent.get("subtype") or "").lower() in ("grapple", "shove"):
+            sub = str(intent.get("subtype")).lower()
+            tgt = _canon(intent.get("target") or "")
+            if tgt:
+                tr = act_grapple(actor_id, tgt) if sub == "grapple" else act_shove(actor_id, tgt, mode=str(intent.get("mode") or "prone"))
+                for txt in self._collect_text_blocks(tr.content):
+                    msgs.append(Msg(name="Host", content=txt, role="assistant"))
         else:
             note = intent.get("notes") or "保持行动"
             if not self._suppress_mech_narration:
                 msgs.append(Msg(name="Host", content=f"[叙述] {actor_id} {note}", role="assistant"))
-        # Time advancement per action
+        # Time advancement per action（战斗中跳过分钟推进）
         tc = self._time_cost_min(intent)
+        in_combat = False
         try:
-            adv = advance_time(tc)
-            for txt in self._collect_text_blocks(adv.content):
-                msgs.append(Msg(name="Host", content=txt, role="assistant"))
+            snap = self._world_snapshot_provider() if self._world_snapshot_provider else {}
+            in_combat = bool((snap.get("combat") or {}).get("in_combat"))
         except Exception:
-            pass
+            in_combat = False
+        if not in_combat:
+            try:
+                adv = advance_time(tc)
+                for txt in self._collect_text_blocks(adv.content):
+                    msgs.append(Msg(name="Host", content=txt, role="assistant"))
+            except Exception:
+                pass
         # Atmosphere tuning and micro-narration (pure sentence, no labels)
         try:
             from world.tools import adjust_tension

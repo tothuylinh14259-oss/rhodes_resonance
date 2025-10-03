@@ -1,7 +1,7 @@
 # Minimal world state and tools for the demo; designed to be pure and easy to test.
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Any, List, Optional
+from typing import Dict, Tuple, Any, List, Optional, Set
 import random
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
@@ -35,6 +35,14 @@ class World:
     turn_state: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # default walking speeds (ft). If empty, 30ft is assumed.
     speeds: Dict[str, int] = field(default_factory=dict)
+    # range bands between pairs (engaged/near/far/long)
+    range_bands: Dict[Tuple[str, str], str] = field(default_factory=dict)
+    # simple cover levels per character
+    cover: Dict[str, str] = field(default_factory=dict)
+    # conditions per character (hidden/prone/grappled/restrained/readying/...)
+    conditions: Dict[str, Set[str]] = field(default_factory=dict)
+    # lightweight triggers queue (ready/opportunity_attack, etc.)
+    triggers: List[Dict[str, Any]] = field(default_factory=list)
 
     def snapshot(self) -> dict:
         return {
@@ -56,6 +64,7 @@ class World:
                 "initiative": list(self.initiative_order),
                 "initiative_scores": dict(self.initiative_scores),
                 "turn_state": {k: dict(v) for k, v in self.turn_state.items()},
+                "range_bands": {f"{a}&{b}": v for (a, b), v in self.range_bands.items()},
             },
         }
 
@@ -291,6 +300,10 @@ def end_combat():
     WORLD.initiative_order.clear()
     WORLD.initiative_scores.clear()
     WORLD.turn_state.clear()
+    WORLD.range_bands.clear()
+    WORLD.cover.clear()
+    WORLD.conditions.clear()
+    WORLD.triggers.clear()
     return ToolResponse(content=[TextBlock(type="text", text="战斗结束")], metadata={"in_combat": False})
 
 
@@ -318,6 +331,10 @@ def _reset_turn_tokens_for(name: Optional[str]):
         "bonus_used": False,
         "reaction_available": True,
         "move_left": spd,
+        "disengage": False,
+        "dodge": False,
+        "help_target": None,
+        "ready": None,  # {trigger: str, action: dict}
     }
 
 
@@ -376,6 +393,240 @@ def consume_movement(name: str, feet: int) -> ToolResponse:
         return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 试图移动 {feet}ft，但仅剩 {left}ft；按 {left}ft 计算")], metadata={"ok": False, "left": 0})
     st["move_left"] = left - feet
     return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 移动 {feet}ft（剩余 {st['move_left']}ft）")], metadata={"ok": True, "left": st["move_left"]})
+
+
+# ---- Range bands & cover/conditions ----
+BANDS = ["engaged", "near", "far", "long"]
+
+
+def set_range_band(a: str, b: str, band: str):
+    band = str(band)
+    if band not in BANDS:
+        return ToolResponse(content=[TextBlock(type="text", text=f"未知距离带 {band}")], metadata={"ok": False})
+    k = _rel_key(a, b)
+    WORLD.range_bands[k] = band
+    return ToolResponse(content=[TextBlock(type="text", text=f"距离：{k[0]}↔{k[1]} = {band}")], metadata={"ok": True, "pair": list(k), "band": band})
+
+
+def get_range_band(a: str, b: str) -> str:
+    return WORLD.range_bands.get(_rel_key(a, b), "near")
+
+
+def _band_steps(fr: str, to: str) -> int:
+    try:
+        i1 = BANDS.index(fr); i2 = BANDS.index(to)
+        return abs(i1 - i2)
+    except Exception:
+        return 0
+
+
+def _band_cost(fr: str, to: str) -> int:
+    # engaged<->near:5; near<->far:30; far<->long:60; accumulate steps
+    if fr == to:
+        return 0
+    idx1 = BANDS.index(fr); idx2 = BANDS.index(to)
+    lo, hi = sorted([idx1, idx2])
+    cost = 0
+    for i in range(lo, hi):
+        a = BANDS[i]; b = BANDS[i + 1]
+        if (a, b) == ("engaged", "near"):
+            cost += 5
+        elif (a, b) == ("near", "far"):
+            cost += 30
+        else:
+            cost += 60
+    return cost
+
+
+def move_to_band(actor: str, target: str, band: str):
+    cur = get_range_band(actor, target)
+    need = _band_cost(cur, band)
+    was_engaged = cur == "engaged" and band != "engaged"
+    res = consume_movement(actor, need)
+    ok = bool((res.metadata or {}).get("ok", True))
+    if ok:
+        set_range_band(actor, target, band)
+        # leaving engagement may provoke OA (queued here; KP消费)
+        if was_engaged and not (WORLD.turn_state.get(actor, {}).get("disengage")):
+            queue_trigger("opportunity_attack", {"attacker": target, "provoker": actor})
+    return ToolResponse(content=(res.content or []), metadata={"ok": ok, "cost": need, "from": cur, "to": band})
+
+
+def set_cover(name: str, level: str):
+    level = str(level)
+    if level not in ("none", "half", "three_quarters", "total"):
+        return ToolResponse(content=[TextBlock(type="text", text=f"未知掩体等级 {level}")], metadata={"ok": False})
+    WORLD.cover[str(name)] = level
+    return ToolResponse(content=[TextBlock(type="text", text=f"掩体：{name} -> {level}")], metadata={"ok": True, "name": name, "cover": level})
+
+
+def get_cover(name: str) -> str:
+    return WORLD.cover.get(str(name), "none")
+
+
+def apply_condition(name: str, cond: str):
+    s = WORLD.conditions.setdefault(str(name), set())
+    s.add(str(cond))
+    return ToolResponse(content=[TextBlock(type="text", text=f"状态：{name} +{cond}")], metadata={"ok": True, "name": name, "cond": cond})
+
+
+def clear_condition(name: str, cond: str):
+    s = WORLD.conditions.setdefault(str(name), set())
+    if cond in s:
+        s.remove(cond)
+    return ToolResponse(content=[TextBlock(type="text", text=f"状态：{name} -{cond}")], metadata={"ok": True, "name": name, "cond": cond})
+
+
+def has_condition(name: str, cond: str) -> bool:
+    return str(cond) in WORLD.conditions.get(str(name), set())
+
+
+def queue_trigger(kind: str, payload: Optional[Dict[str, Any]] = None):
+    WORLD.triggers.append({"kind": str(kind), "payload": dict(payload or {})})
+    return ToolResponse(content=[TextBlock(type="text", text=f"触发：{kind}")], metadata={"queued": len(WORLD.triggers)})
+
+
+def pop_triggers() -> List[Dict[str, Any]]:
+    out = list(WORLD.triggers)
+    WORLD.triggers.clear()
+    return out
+
+
+def get_ac(name: str) -> int:
+    try:
+        return int(WORLD.characters.get(str(name), {}).get("ac", 10))
+    except Exception:
+        return 10
+
+
+def cover_bonus(name: str) -> Tuple[int, bool]:
+    """Return (ac_bonus, total_cover_blocked)."""
+    c = get_cover(name)
+    if c == "half":
+        return 2, False
+    if c == "three_quarters":
+        return 5, False
+    if c == "total":
+        return 0, True
+    return 0, False
+
+
+def advantage_for_attack(attacker: str, defender: str) -> str:
+    # Very small set: hidden -> advantage; prone -> melee adv, ranged dis
+    adv = "none"
+    if has_condition(attacker, "hidden"):
+        adv = "advantage"
+    # defender prone gives melee adv; we leave ranged dis to KP判断
+    if has_condition(defender, "prone") and adv != "advantage":
+        adv = "advantage"
+    return adv
+
+
+# ---- Standard actions (thin wrappers) ----
+def act_dash(name: str):
+    nm = str(name)
+    use_action(nm, "action")
+    st = WORLD.turn_state.setdefault(nm, {})
+    spd = int(WORLD.speeds.get(nm, 30))
+    st["move_left"] = int(st.get("move_left", spd)) + spd
+    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 冲刺（移动力+{spd}ft）")], metadata={"ok": True, "move_left": st["move_left"]})
+
+
+def act_disengage(name: str):
+    nm = str(name)
+    use_action(nm, "action")
+    st = WORLD.turn_state.setdefault(nm, {})
+    st["disengage"] = True
+    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 脱离接触（本回合移动不引发借机攻击）")], metadata={"ok": True})
+
+
+def act_dodge(name: str):
+    nm = str(name)
+    use_action(nm, "action")
+    st = WORLD.turn_state.setdefault(nm, {})
+    st["dodge"] = True
+    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 闪避架势（直到下回合开始，被攻击者判定处于不利）")], metadata={"ok": True})
+
+
+def act_help(name: str, target: str):
+    nm = str(name)
+    use_action(nm, "action")
+    st = WORLD.turn_state.setdefault(nm, {})
+    st["help_target"] = str(target)
+    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 协助 {target}（其下一次检定或攻击获得优势）")], metadata={"ok": True, "target": target})
+
+
+def act_hide(name: str, dc: int = 13):
+    # Perform stealth check; on success, grant hidden
+    nm = str(name)
+    res = skill_check_dnd(nm, "stealth", int(dc))
+    success = bool((res.metadata or {}).get("success"))
+    out = list(res.content or [])
+    if success:
+        tr = apply_condition(nm, "hidden")
+        out.extend(tr.content or [])
+    return ToolResponse(content=out, metadata={"ok": success})
+
+
+def act_search(name: str, skill: str = "perception", dc: int = 13):
+    return skill_check_dnd(str(name), str(skill), int(dc))
+
+
+def contest(a: str, a_skill: str, b: str, b_skill: str) -> ToolResponse:
+    # Simple opposed check: d20 + (ability+prof)
+    import random as _rand
+    def _mod_skill(nm: str, sk: str) -> int:
+        st = WORLD.characters.get(nm, {})
+        ab_name = SKILL_TO_ABILITY.get(sk.lower())
+        ab = int(st.get("abilities", {}).get(ab_name or "STR", 10))
+        mod = _mod(ab)
+        prof = int(st.get("prof", 2)) if (sk.lower() in (st.get("proficient_skills") or [])) else 0
+        return mod + prof
+    a_base = _mod_skill(a, a_skill)
+    b_base = _mod_skill(b, b_skill)
+    a_roll = _rand.randint(1,20) + a_base
+    b_roll = _rand.randint(1,20) + b_base
+    text = f"对抗：{a} {a_skill}={a_roll} vs {b} {b_skill}={b_roll} -> {'{a}胜' if a_roll>=b_roll else '{b}胜'}"
+    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"a_total": a_roll, "b_total": b_roll, "a_base": a_base, "b_base": b_base, "winner": a if a_roll>=b_roll else b})
+
+
+def act_grapple(attacker: str, defender: str) -> ToolResponse:
+    res = contest(attacker, "athletics", defender, "athletics")
+    winner = res.metadata.get("winner") if res.metadata else None
+    out = list(res.content or [])
+    if winner == attacker:
+        tr = apply_condition(defender, "grappled")
+        out.extend(tr.content or [])
+    return ToolResponse(content=out, metadata={"ok": winner == attacker})
+
+
+def act_shove(attacker: str, defender: str, mode: str = "prone") -> ToolResponse:
+    res = contest(attacker, "athletics", defender, "acrobatics")
+    winner = res.metadata.get("winner") if res.metadata else None
+    out = list(res.content or [])
+    if winner == attacker:
+        if mode == "prone":
+            tr = apply_condition(defender, "prone")
+            out.extend(tr.content or [])
+        else:
+            # push: move defender one band away if known vs attacker
+            cur = get_range_band(attacker, defender)
+            try:
+                idx = BANDS.index(cur)
+                target_band = BANDS[min(idx+1, len(BANDS)-1)]
+            except Exception:
+                target_band = "near"
+            mv = move_to_band(defender, attacker, target_band)
+            out.extend(mv.content or [])
+    return ToolResponse(content=out, metadata={"ok": winner == attacker})
+
+
+def act_ready(name: str, trigger: str, reaction_action: Dict[str, Any]) -> ToolResponse:
+    nm = str(name)
+    use_action(nm, "action")
+    st = WORLD.turn_state.setdefault(nm, {})
+    st["ready"] = {"trigger": str(trigger or ""), "action": dict(reaction_action or {})}
+    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 预备：{trigger}")], metadata={"ok": True})
 
 
 # ---- Character/stat tools ----
