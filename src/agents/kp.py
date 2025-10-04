@@ -105,7 +105,8 @@ class KPAgent(AgentBase):
             raw = (player_msg.get_text_content() or "")
             # Flexible confirmation: accept '是/对/好的/确认/yes/y' etc.
             norm = self._normalize_confirm_text(raw)
-            if self._is_yes(norm) or raw.strip() == "/yes":
+            # Accept confirmation when player explicitly says yes or sends an empty line
+            if self._is_yes(norm) or raw.strip() == "/yes" or raw.strip() == "":
                 content = (self._pending_sanitized or "").strip()
                 try:
                     import json as _json
