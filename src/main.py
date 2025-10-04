@@ -102,23 +102,25 @@ def make_kimi_npc(name: str, persona: str, prompt_template: str | None = None, a
         except Exception:
             sys_prompt = None
     if not sys_prompt:
-        # Fallback built-in prompt
-        sys_prompt = f"你是游戏中的NPC：{name}。人设：{persona}。\n" + (
-            """对话要求：
-- 先用简短中文说1-2句对白/想法/微动作，符合人设。
-- 然后给出一个 JSON 意图（不要调用任何工具；裁决由KP执行）。
-- 若需要了解环境信息，可调用 describe_world()；除此之外不要调用其他工具。
-- 参与者名称（仅可用）：{allowed_names}
-- 意图JSON的 target 字段必须从上述列表中选择；禁止使用别称/编号（如 Player/玩家/Player1）。
-意图JSON格式（仅保留需要的字段）：
-{intent_schema}
-输出示例：
-阿米娅看向博士，压低声音：‘要先确认辐射数据。’
-```json
-{\"intent\":\"skill_check\",\"target\":\"Amiya\",\"skill\":\"investigation\",\"dc_hint\":12,\"notes\":\"核对监测表\"}
-```
-"""
-        ).format(intent_schema=intent_schema, allowed_names=(allowed_names or "Doctor, Amiya"))
+        # Fallback built-in prompt (avoid format() so JSON braces are literal)
+        header = f"你是游戏中的NPC：{name}。人设：{persona}。\n"
+        rules = (
+            "对话要求：\n"
+            "- 先用简短中文说1-2句对白/想法/微动作，符合人设。\n"
+            "- 然后给出一个 JSON 意图（不要调用任何工具；裁决由KP执行）。\n"
+            "- 若需要了解环境信息，可调用 describe_world()；除此之外不要调用其他工具。\n"
+            f"- 参与者名称（仅可用）：{allowed_names or 'Doctor, Amiya'}\n"
+            "- 意图JSON的 target 字段必须从上述列表中选择；禁止使用别称/编号（如 Player/玩家/Player1）。\n"
+            "意图JSON格式（仅保留需要的字段）：\n"
+        )
+        example = (
+            "输出示例：\n"
+            "阿米娅看向博士，压低声音：‘要先确认辐射数据。’\n"
+            "```json\n"
+            '{"intent":"skill_check","target":"Amiya","skill":"investigation","dc_hint":12,"notes":"核对监测表"}'
+            "\n```\n"
+        )
+        sys_prompt = header + rules + intent_schema + "\n" + example
 
     model = OpenAIChatModel
 
