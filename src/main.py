@@ -358,6 +358,17 @@ async def tavern_scene():
         except Exception:
             pass
 
+    # Attach KP debug logger so握手/决策摘要写入 run.log
+    try:
+        def _kp_dbg(line: str):
+            try:
+                log_fp.write(f"[KP] {line}\n"); log_fp.flush()
+            except Exception:
+                pass
+        kp.set_debug_logger(_kp_dbg)
+    except Exception:
+        pass
+
     async def _bcast(msg: Msg):
         await hub.broadcast(msg)
         try:
@@ -500,6 +511,21 @@ async def run_player_kp_handshake(hub: MsgHub, player: PlayerAgent, kp: KPAgent,
         while steps < max_steps:
             # 1) Player speaks (no auto broadcast)
             out_p = await player(None)
+            # Log raw player input (not broadcasted)
+            try:
+                try:
+                    txt = out_p.get_text_content()
+                except Exception:
+                    txt = None
+                if txt is None:
+                    c = getattr(out_p, "content", "")
+                    txt = c if isinstance(c, str) else str(c)
+                if txt and len(txt) > 120:
+                    txt = txt[:120] + "…"
+                # write as PLAYER line
+                _log_tag("PLAYER", txt)
+            except Exception:
+                pass
             # Handle /quit fast path
             if hasattr(player, "wants_exit") and callable(getattr(player, "wants_exit")):
                 try:
