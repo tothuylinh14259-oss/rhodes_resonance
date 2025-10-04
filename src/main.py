@@ -58,6 +58,7 @@ from world.tools import (
     skill_check_dnd,
     saving_throw_dnd,
     attack_roll_dnd,
+    get_turn,
     # Director/event helpers
     schedule_event,
     complete_objective,
@@ -351,6 +352,12 @@ async def tavern_scene():
     _log_path = os.path.join(_root, "run.log")
     log_fp = open(_log_path, "w", encoding="utf-8")
 
+    def _log_tag(tag: str, text: str):
+        try:
+            log_fp.write(f"[{tag}] {text}\n"); log_fp.flush()
+        except Exception:
+            pass
+
     async def _bcast(msg: Msg):
         await hub.broadcast(msg)
         try:
@@ -426,6 +433,20 @@ async def tavern_scene():
             await _bcast(_hdr)
             try:
                 await kp.print(_hdr)
+            except Exception:
+                pass
+            # Log current turn snapshot if in combat
+            try:
+                turn = get_turn()
+                meta = turn.metadata or {}
+                actor = meta.get("actor")
+                rnd = meta.get("round")
+                state = meta.get("state") or {}
+                mv = state.get("move_left")
+                a_used = state.get("action_used")
+                b_used = state.get("bonus_used")
+                r_avail = state.get("reaction_available")
+                _log_tag("TURN", f"R{rnd} actor={actor} move_left={mv} action_used={a_used} bonus_used={b_used} reaction_avail={r_avail}")
             except Exception:
                 pass
             _sum = Msg("Host", _world_summary_text(WORLD.snapshot()), "assistant")
@@ -621,12 +642,17 @@ async def _maybe_director_actions(hub: MsgHub, kp: KPAgent, npcs_list: list[ReAc
             elif t == "spawn":
                 units = a.get("units") or []
                 if isinstance(units, list):
+                    try:
+                        _log_tag("SPAWN", f"units={len(units)} (by spec)")
+                    except Exception:
+                        pass
                     await _spawn_from_specs(hub, npcs_list, units)
             elif t == "spawn_by_id":
                 ids = a.get("ids") or []
                 if isinstance(ids, list) and ids:
                     # resolve specs from story units catalog
                     try:
+                        _log_tag("SPAWN", "by_id=" + ",".join([str(x) for x in ids]))
                         await _spawn_from_ids(hub, npcs_list, [str(x) for x in ids])
                     except Exception:
                         pass
@@ -757,7 +783,21 @@ async def _spawn_from_ids(hub: MsgHub, npcs_list: list[ReActAgent], ids: list[st
     # Enter combat automatically when enemies出现
     try:
         from world.tools import start_combat as _start_combat
-        _start_combat()
+        res = _start_combat()
+        try:
+            meta = res.metadata or {}
+            order = meta.get('initiative') or []
+            scores = meta.get('scores') or {}
+            parts = []
+            for n in order:
+                sc = scores.get(n)
+                parts.append(f"{n}({sc})")
+            _log_tag('COMBAT-START', 'initiative=' + ', '.join(parts))
+        except Exception:
+            pass
+        for blk in res.content or []:
+            if isinstance(blk, dict) and blk.get('type') == 'text':
+                await _bcast(Msg('Host', blk.get('text'), 'assistant'))
     except Exception:
         pass
 

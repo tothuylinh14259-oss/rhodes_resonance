@@ -86,6 +86,8 @@ class KPAgent(AgentBase):
         self._auto_accept: bool = False      # 是否直接接受，无需 /yes（默认否）
         self._loose_target: bool = False     # 缺少 target 时是否不阻塞澄清（默认否）
         self._preserve_text: bool = True     # 是否尽量保留玩家原文，不做语义改写（默认是）
+        # Optional debug logger (callable(str)) for run.log summaries
+        self._debug_log = None
     async def observe(self, msg: Msg | List[Msg] | None) -> None:
         if msg is None:
             return
@@ -138,6 +140,14 @@ class KPAgent(AgentBase):
                     pass
                 final_msg = Msg(name=self.player_name, content=content, role="user")
                 await self.print(final_msg)
+                try:
+                    self._dbg(f"[PLAYER-CONFIRM] {'empty' if (raw.strip()=='' ) else norm}")
+                    prev = content
+                    if len(prev) > 120:
+                        prev = prev[:120] + '…'
+                    self._dbg(f"[PLAYER-FINAL] {prev}")
+                except Exception:
+                    pass
                 self._awaiting_confirm = False
                 self._awaiting_player = False
                 self._pending_sanitized = None
@@ -196,6 +206,17 @@ class KPAgent(AgentBase):
         # Call Kimi to rewrite/judge the latest player input
         judged = await self._judge_player_input(player_msg)
         decision = judged.get("decision")
+        try:
+            # Log a concise decision line for debugging
+            it = judged.get("intent") if isinstance(judged.get("intent"), dict) else {}
+            it_kind = str((it or {}).get("intent") or "")
+            it_tgt = str((it or {}).get("target") or "")
+            sani = (judged.get("sanitized") or (player_msg.get_text_content() or ""))
+            if sani and len(sani) > 120:
+                sani = sani[:120] + "…"
+            self._dbg(f"[KP-DECISION] decision={decision} intent={it_kind} target={it_tgt} sanitized={sani}")
+        except Exception:
+            pass
         if decision == "accept":
             raw_text = player_msg.get_text_content() or ""
             sanitized = judged.get("sanitized") or raw_text
@@ -228,6 +249,10 @@ class KPAgent(AgentBase):
             self._pending_intent = intent_obj
             confirm = Msg(name=self.name, content=f"我理解为：{sanitized}。若正确请回复 /yes 确认。", role="assistant")
             await self.print(confirm)
+            try:
+                self._dbg(f"[KP-CONFIRM] text={sanitized}")
+            except Exception:
+                pass
             return confirm
         if decision == "clarify":
             # Cache/merge partial intent for memory
@@ -267,6 +292,10 @@ class KPAgent(AgentBase):
             self._awaiting_confirm = False
             ask = Msg(name=self.name, content=q, role="assistant")
             await self.print(ask)
+            try:
+                self._dbg(f"[KP-CLARIFY] question={q}")
+            except Exception:
+                pass
             return ask
         # Fallback：当判定异常时，尽量保意愿接受，并提示一次澄清
         self._awaiting_player = True
@@ -1060,6 +1089,17 @@ class KPAgent(AgentBase):
                 v_pres = flags.get("kp_preserve_text")
                 if v_pres is not None:
                     self._preserve_text = bool(v_pres)
+        except Exception:
+            pass
+
+    def set_debug_logger(self, fn) -> None:
+        """Set a callable(str) used to write concise debug lines to run.log."""
+        self._debug_log = fn
+
+    def _dbg(self, line: str) -> None:
+        try:
+            if callable(self._debug_log):
+                self._debug_log(line)
         except Exception:
             pass
 
