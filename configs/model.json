@@ -1,6 +1,16 @@
 {
   "base_url": "https://api.moonshot.cn/v1",
-  "kp": { "model": "kimi-k2-turbo-preview", "temperature": 0.2, "stream": false },
-  "npc": { "model": "kimi-k2-turbo-preview", "temperature": 0.7, "stream": true }
+  "npc": {
+    "model": "kimi-k2-turbo-preview",
+    "temperature": 0.7,
+    "stream": true
+  },
+  "narration": {
+    "model": "kimi-k2-turbo-preview",
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "presence_penalty": 0.2,
+    "frequency_penalty": 0.2,
+    "stream": false
+  }
 }
-

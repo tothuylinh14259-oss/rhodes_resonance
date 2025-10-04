@@ -2,11 +2,10 @@
 
 目标
 - 以 MsgHub 管理 NPC 群聊，支持轮流发言与动态插入事件/敌人。
-- 提供可扩展骨架：KP 审判（意图→工具）、旁白、D&D 检定/攻击、剧情节拍与配置化。
+- 提供可扩展骨架：旁白、D&D 检定/攻击、剧情节拍与配置化（已移除 KP/裁决）。
 
 组件角色
-- Player：人类玩家；支持 `/quit`、`/skip`。
-- KP（主持/GM）：改写/澄清/确认玩家意图；裁决工具；基于策略与剧情插入事件/敌人。
+- KP：已移除（本分支不包含主持/裁决/导演能力）。
 - NPC Agent：由 LLM 生成对白并输出结构化意图 JSON（不直接调用工具）。
 - MsgHub：集中管理参与者与消息；`sequential_pipeline` 顺序发言。
 - World/Tools：世界状态与规则工具（时间、关系、物品、D&D、事件时钟、目标）。
@@ -14,9 +13,9 @@
 
 接口与约定
 - 消息对象：`Msg(sender: str, content: str|List[Block], role: 'assistant'|'user')`。
-- 握手：Player↔KP 在 Hub 的 auto-broadcast 关闭下单独交流；确认后再广播最终 Player 消息。
+- 握手：KP 已移除；NPC 直接输出对白与意图 JSON。
 - NPC 意图：`await agent.step(transcript)->Msg|str|dict`；推荐输出结构化 JSON（下）。
-- KP 裁决：解析 Player/NPC 意图，选择/调用相应工具，广播文本块并更新世界状态。
+- 裁决：已移除；当前仅展示 NPC 对白与意图，不自动调用工具。
 
 建议的结构化意图 JSON
 ```json
@@ -44,14 +43,16 @@
 目录结构
 ```
 src/
-  main.py              # 入口：回合、KP 审判、导演动作、日志
-  agents/
-    player.py          # 玩家输入
-    kp.py              # KP（改写/澄清/确认 + 裁决 + 导演）
-    npc.py             # 简单 Agent 基类实现（目前未用）
-    narrator.py        # 旁白
-  world/
-    tools.py           # 世界状态与工具
+  main.py             # 兼容入口
+  npc_talk/
+    cli.py            # 真正入口
+    app.py            # 回合驱动
+    agents/
+      npc.py          # 简单 Agent 基类实现（目前未用）
+      narrator.py     # 旁白
+      factory.py      # Agent 构造
+    world/
+      tools.py        # 世界状态与工具
 configs/               # 角色、模型、提示词、旁白策略、规则、特性开关
 docs/
   plot.story.json      # 可选：剧情节拍（acts/beats/conditions/actions）

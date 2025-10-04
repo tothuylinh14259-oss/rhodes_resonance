@@ -1,19 +1,42 @@
 {
-  "participants": ["Amiya", "Doctor"],
-
+  "participants": [
+    "Amiya",
+    "Doctor",
+    "Raider1",
+    "Raider2",
+    "Sniper1"
+  ],
   "Doctor": {
-    "type": "player",
-    "cli_prompt": "博士> ",
+    "type": "npc",
+    "persona": "罗德岛‘博士’：战术协调与决策核心，偏好整合情报、分配资源，在压力下保持冷静并快速下达指令。",
     "dnd": {
       "level": 1,
       "ac": 14,
       "max_hp": 12,
-      "abilities": {"STR":12,"DEX":16,"CON":14,"INT":10,"WIS":14,"CHA":10},
-      "proficient_skills": ["perception","stealth","survival","athletics"],
-      "proficient_saves": ["STR","DEX"]
-    }
+      "abilities": {
+        "STR": 12,
+        "DEX": 16,
+        "CON": 14,
+        "INT": 10,
+        "WIS": 14,
+        "CHA": 10
+      },
+      "proficient_skills": [
+        "athletics",
+        "insight",
+        "medicine"
+      ],
+      "proficient_saves": [
+        "STR",
+        "DEX"
+      ],
+      "move_speed": 6
+    },
+    "position": [
+      0,
+      0
+    ]
   },
-
   "Amiya": {
     "type": "npc",
     "persona": "罗德岛公开领导人阿米娅。温柔而坚定，理性克制，关切同伴；擅长源石技艺（术师），发言简洁不夸张。",
@@ -21,9 +44,139 @@
       "level": 1,
       "ac": 12,
       "max_hp": 10,
-      "abilities": {"STR":8,"DEX":14,"CON":12,"INT":16,"WIS":12,"CHA":12},
-      "proficient_skills": ["arcana","history","persuasion"],
-      "proficient_saves": ["INT","WIS"]
+      "abilities": {
+        "STR": 8,
+        "DEX": 14,
+        "CON": 12,
+        "INT": 16,
+        "WIS": 12,
+        "CHA": 12
+      },
+      "proficient_skills": [
+        "arcana",
+        "history",
+        "persuasion"
+      ],
+      "proficient_saves": [
+        "INT",
+        "WIS"
+      ],
+      "move_speed": 6
+    },
+    "position": [
+      0,
+      1
+    ]
+  },
+  "Raider1": {
+    "type": "npc",
+    "persona": "旧城区的前线武者，擅长近距离压制。",
+    "dnd": {
+      "level": 1,
+      "ac": 13,
+      "max_hp": 9,
+      "abilities": {
+        "STR": 12,
+        "DEX": 12,
+        "CON": 12,
+        "INT": 8,
+        "WIS": 10,
+        "CHA": 8
+      },
+      "proficient_skills": [
+        "athletics",
+        "intimidation"
+      ],
+      "proficient_saves": [
+        "STR",
+        "CON"
+      ],
+      "move_speed": 6
+    },
+    "position": [
+      6,
+      1
+    ]
+  },
+  "Raider2": {
+    "type": "npc",
+    "persona": "旧城区的协同战士，惯于夹击推进。",
+    "dnd": {
+      "level": 1,
+      "ac": 13,
+      "max_hp": 9,
+      "abilities": {
+        "STR": 12,
+        "DEX": 12,
+        "CON": 12,
+        "INT": 8,
+        "WIS": 10,
+        "CHA": 8
+      },
+      "proficient_skills": [
+        "athletics",
+        "intimidation"
+      ],
+      "proficient_saves": [
+        "STR",
+        "CON"
+      ],
+      "move_speed": 6
+    },
+    "position": [
+      6,
+      -1
+    ]
+  },
+  "Sniper1": {
+    "type": "npc",
+    "persona": "远程火力手，专注截断暴露目标。",
+    "dnd": {
+      "level": 1,
+      "ac": 14,
+      "max_hp": 8,
+      "abilities": {
+        "STR": 10,
+        "DEX": 16,
+        "CON": 10,
+        "INT": 10,
+        "WIS": 12,
+        "CHA": 8
+      },
+      "proficient_skills": [
+        "acrobatics",
+        "insight"
+      ],
+      "proficient_saves": [
+        "DEX",
+        "WIS"
+      ],
+      "move_speed": 6
+    },
+    "position": [
+      10,
+      2
+    ]
+  },
+  "relations": {
+    "Doctor": {
+      "Amiya": 60,
+      "Raider1": -70,
+      "Raider2": -70,
+      "Sniper1": -80
+    },
+    "Amiya": {
+      "Doctor": 60,
+      "Raider1": -60,
+      "Raider2": -60,
+      "Sniper1": -75
+    },
+    "Raider1": {
+      "Raider2": 40,
+      "Sniper1": 30
+    },
+    "Raider2": {
+      "Sniper1": 30
     }
   }
 }

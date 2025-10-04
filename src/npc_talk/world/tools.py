@@ -18,6 +18,9 @@ class World:
     relations: Dict[Tuple[str, str], int] = field(default_factory=dict)
     inventory: Dict[str, Dict[str, int]] = field(default_factory=dict)
     characters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    positions: Dict[str, Tuple[int, int]] = field(default_factory=dict)
+    objective_positions: Dict[str, Tuple[int, int]] = field(default_factory=dict)
+    hidden_enemies: Dict[str, Tuple[int, int]] = field(default_factory=dict)
     location: str = "罗德岛·会议室"
     objectives: List[str] = field(default_factory=list)
     objective_status: Dict[str, str] = field(default_factory=dict)
@@ -51,6 +54,9 @@ class World:
             "relations": {f"{a}&{b}": v for (a, b), v in self.relations.items()},
             "inventory": self.inventory,
             "characters": self.characters,
+            "positions": {k: list(v) for k, v in self.positions.items()},
+            "objective_positions": {k: list(v) for k, v in self.objective_positions.items()},
+            "hidden_enemies": {k: list(v) for k, v in self.hidden_enemies.items()},
             "location": self.location,
             "objectives": list(self.objectives),
             "objective_status": dict(self.objective_status),
@@ -116,6 +122,16 @@ def change_relation(a: str, b: str, delta: int, reason: str = ""):
     )
 
 
+def set_relation(a: str, b: str, value: int, reason: str = "初始化") -> ToolResponse:
+    k = _rel_key(a, b)
+    WORLD.relations[k] = int(value)
+    res = {"ok": True, "pair": list(k), "score": WORLD.relations[k], "reason": reason}
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"关系设定 {k[0]}↔{k[1]} = {WORLD.relations[k]}。原因：{reason}")],
+        metadata=res,
+    )
+
+
 def grant_item(target: str, item: str, n: int = 1):
     """Give items to a target's inventory.
 
@@ -133,6 +149,100 @@ def grant_item(target: str, item: str, n: int = 1):
     return ToolResponse(
         content=[TextBlock(type="text", text=f"给予 {target} 物品 {item} x{int(n)}，现有数量={bag[item]}")],
         metadata=res,
+    )
+
+
+def set_position(name: str, x: int, y: int) -> ToolResponse:
+    """Set or update the grid position of an actor."""
+    WORLD.positions[str(name)] = (int(x), int(y))
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"设定 {name} 位置 -> ({int(x)}, {int(y)})")],
+        metadata={"name": name, "position": [int(x), int(y)]},
+    )
+
+
+def get_position(name: str) -> ToolResponse:
+    pos = WORLD.positions.get(str(name))
+    if pos is None:
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"未记录 {name} 的坐标")],
+            metadata={"found": False},
+        )
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"{name} 当前位置：({pos[0]}, {pos[1]})")],
+        metadata={"found": True, "position": list(pos)},
+    )
+
+
+def set_objective_position(name: str, x: int, y: int) -> ToolResponse:
+    WORLD.objective_positions[str(name)] = (int(x), int(y))
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"目标 {name} 坐标设为 ({int(x)}, {int(y)})")],
+        metadata={"name": name, "position": [int(x), int(y)]},
+    )
+
+
+def register_hidden_enemy(name: str, x: int, y: int) -> ToolResponse:
+    WORLD.hidden_enemies[str(name)] = (int(x), int(y))
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"隐藏敌人 {name} 坐标登记 ({int(x)}, {int(y)})")],
+        metadata={"name": name, "position": [int(x), int(y)]},
+    )
+
+
+def reveal_hidden_enemy(name: str) -> ToolResponse:
+    pos = WORLD.hidden_enemies.pop(str(name), None)
+    if pos is None:
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"未找到隐藏的 {name}")],
+            metadata={"revealed": False},
+        )
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"{name} 从 ({pos[0]}, {pos[1]}) 暴露。")],
+        metadata={"revealed": True, "position": list(pos)},
+    )
+
+
+def _grid_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse:
+    """Move an actor toward target grid up to `steps` 4-way steps."""
+    steps = max(0, int(steps))
+    if steps == 0:
+        pos = WORLD.positions.get(str(name)) or (0, 0)
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"{name} 保持在 ({pos[0]}, {pos[1]})。")],
+            metadata={"moved": 0, "position": list(pos)},
+        )
+    current = WORLD.positions.get(str(name))
+    if current is None:
+        current = WORLD.positions[str(name)] = (0, 0)
+    x, y = current
+    tx, ty = int(target[0]), int(target[1])
+    moved = 0
+    while moved < steps and (x, y) != (tx, ty):
+        if x != tx:
+            x += 1 if tx > x else -1
+        elif y != ty:
+            y += 1 if ty > y else -1
+        moved += 1
+    WORLD.positions[str(name)] = (x, y)
+    remaining = _grid_distance((x, y), (tx, ty))
+    reached = (x, y) == (tx, ty)
+    text = (
+        f"{name} 向 ({tx}, {ty}) 移动 {moved} 步，现位于 ({x}, {y})。"
+        + (" 已抵达目标。" if reached else f" 距目标还差 {remaining} 步。")
+    )
+    return ToolResponse(
+        content=[TextBlock(type="text", text=text)],
+        metadata={
+            "moved": moved,
+            "reached": reached,
+            "remaining": remaining,
+            "position": [x, y],
+        },
     )
 
 
@@ -838,6 +948,7 @@ def set_dnd_character(
     max_hp: int,
     proficient_skills: Optional[List[str]] = None,
     proficient_saves: Optional[List[str]] = None,
+    move_speed: Optional[int] = None,
 ) -> ToolResponse:
     """Create/update a D&D-style character sheet (simplified).
 
@@ -854,6 +965,13 @@ def set_dnd_character(
         "proficient_skills": [s.lower() for s in (proficient_skills or [])],
         "proficient_saves": [s.upper() for s in (proficient_saves or [])],
     })
+    if move_speed is not None:
+        try:
+            sheet["move_speed"] = int(move_speed)
+        except Exception:
+            sheet["move_speed"] = move_speed
+    else:
+        sheet.setdefault("move_speed", 6)
     # Keep legacy keys for compatibility
     WORLD.characters[name]["hp"] = sheet["hp"]
     WORLD.characters[name]["max_hp"] = sheet["max_hp"]

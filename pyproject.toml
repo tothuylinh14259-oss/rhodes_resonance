@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "npc-talk-demo"
+version = "0.1.0"
+description = "Minimal NPC group chat demo (Agentscope, Kimi) with world tools"
+requires-python = ">=3.11"
+readme = "README.md"
+authors = [{ name = "npc-talk maintainers" }]
+dependencies = [
+    # Agentscope from Git (prefer conda env per README, but keep here for pip workflows)
+    "agentscope @ git+https://github.com/agentscope-ai/agentscope.git",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.9",
+    "pytest>=8.0",
+    "types-setuptools",
+]
+
+[project.scripts]
+npc-talk = "npc_talk.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["src/npc_talk/world/tools.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I" ]
+ignore = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+exclude = ["src/npc_talk/world/tools.py"]
+

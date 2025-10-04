@@ -1,7 +1,6 @@
 # OS
 .DS_Store
 Thumbs.db
-AGENTS.md
 
 # Python bytecode / cache
 __pycache__/

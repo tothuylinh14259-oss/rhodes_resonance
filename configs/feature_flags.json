@@ -4,5 +4,6 @@
   "strict_spawn": true,
   "kp_auto_accept": false,
   "kp_loose_target": false,
-  "kp_preserve_text": false
+  "kp_preserve_text": false,
+  "kp_enforce_inventory_items": true
 }
