@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 npc-talk = "npc_talk.cli:main"
+npc-talk-logs = "npc_talk.logging.cli:main"
 
 [tool.ruff]
 line-length = 100
@@ -41,4 +42,3 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unreachable = true
 exclude = ["src/npc_talk/world/tools.py"]
-

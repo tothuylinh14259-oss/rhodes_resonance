@@ -1,44 +1,26 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-from logging import Logger
-from pathlib import Path
+from typing import Optional
 
 from npc_talk.app import run_demo
-from npc_talk.config import project_root
-
-
-def _setup_logger() -> Logger:
-    root = project_root()
-    log_path = root / "run.log"
-    logger = logging.getLogger("npc_talk_demo")
-    logger.setLevel(logging.INFO)
-    # Replace handlers
-    for h in list(logger.handlers):
-        logger.removeHandler(h)
-    fh = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-    fmt = logging.Formatter("%(message)s")
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
-    # Console minimal
-    ch = logging.StreamHandler()
-    ch.setFormatter(logging.Formatter("%(message)s"))
-    logger.addHandler(ch)
-    return logger
+from npc_talk.logging import LoggingContext, create_logging_context
 
 
 def main() -> None:
     print("============================================================")
     print("NPC Talk Demo (Agentscope) [packaged]")
     print("============================================================")
-    logger = _setup_logger()
+    log_ctx: Optional[LoggingContext] = None
     try:
-        asyncio.run(run_demo(logger=logger))
+        log_ctx = create_logging_context()
+        asyncio.run(run_demo(log_ctx=log_ctx))
     except KeyboardInterrupt:
         pass
+    finally:
+        if log_ctx:
+            log_ctx.close()
 
 
 if __name__ == "__main__":
     main()
-

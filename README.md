@@ -22,7 +22,7 @@ python src/main.py      # 兼容入口（推荐）
 # PYTHONPATH=src python -m npc_talk.cli
 ```
 
-运行期望：两个 NPC 在“旧城区·北侧仓棚”进行回合制对话，每回合输出对白与一个意图 JSON（不执行裁决/导演动作）；过程写入 `run.log`。
+运行期望：两个 NPC 在“旧城区·北侧仓棚”进行回合制对话，每回合输出对白与一个意图 JSON（不执行裁决/导演动作）；过程写入 `logs/run_events.jsonl`（结构化事件）与 `logs/run_story.log`（叙事文本）。
 
 ## 目录结构（已重构）
 
@@ -54,7 +54,9 @@ npc_talk_demo/
     plot.story.json       # 可选：剧情节拍（当前不启用导演）
   environment.yml         # Conda 环境（Python 3.11 + Agentscope）
   pyproject.toml          # 打包/开发工具（ruff/mypy/pytest），可 `pip install -e .[dev]`
-  run.log                 # 运行日志（每次覆盖）
+  logs/
+    run_events.jsonl      # 结构化事件日志（JSONL）
+    run_story.log         # 人类可读叙事日志
 ```
 
 ## 运行时交互
@@ -64,6 +66,12 @@ npc_talk_demo/
   1) 主持信息 + 世界概要
   2) NPC 依序行动（不进行裁决/导演动作）
   3) 回合推进（默认最多 3 回合后终止）
+
+## 日志输出
+
+- `logs/run_events.jsonl`：结构化事件流（JSONL）。可通过 `npc-talk-logs --actor Amiya --turn 2 --pretty` 快速筛选。
+- `logs/run_story.log`：面向玩家的叙事文本；与游戏内广播一致。
+- 初次运行会覆盖旧日志；如需长期存档可在 `logs/` 下按运行复制备份。
 
 ## 必要环境变量
 
@@ -84,7 +92,7 @@ npc_talk_demo/
 - `relation_rules.json`：默认关系变更策略
 - `narration_policy.json`：旁白生成策略（长度/候选/焦点循环等）
 - `narration_env.json`：按场景配置视觉/声响/空气/道具关键词
-- `feature_flags.json`：如 `log_narrator_debug`（将旁白调试写入 run.log）
+- `feature_flags.json`：如 `log_narrator_debug`（将旁白调试写入 `logs/run_story.log`）
 
 ## 世界工具（节选）
 

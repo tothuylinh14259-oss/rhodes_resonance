@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from agentscope.agent import AgentBase, ReActAgent  # type: ignore
 from agentscope.message import Msg  # type: ignore
@@ -18,6 +17,7 @@ from npc_talk.config import (
     load_prompts,
 )
 from npc_talk.agents.factory import make_kimi_npc, TOOL_DISPATCH
+from npc_talk.logging import Event, EventType, LoggingContext, create_logging_context
 from npc_talk.world.tools import (
     WORLD,
     add_objective,
@@ -62,8 +62,10 @@ def _join_lines(tpl):
     return tpl
 
 
-async def run_demo(logger=None) -> None:
+async def run_demo(log_ctx: LoggingContext | None = None) -> None:
     """Run the NPC talk demo (sequential group chat, no GM/adjudication)."""
+    log_ctx = log_ctx or create_logging_context()
+
     # Load configs (all optional and resilient)
     prompts = load_prompts()
     model_cfg = load_model_config()
@@ -93,6 +95,41 @@ async def run_demo(logger=None) -> None:
     all_actor_names = list({*allowed_names, *actor_entries.keys()})
     allowed_names_str = ", ".join(all_actor_names) if all_actor_names else "Amiya, Doctor"
 
+    rel_cfg_raw = char_cfg.get("relations") if isinstance(char_cfg, dict) else {}
+
+    def _relation_category(score: int) -> str:
+        if score >= 60:
+            return "挚友"
+        if score >= 40:
+            return "亲密同伴"
+        if score >= 10:
+            return "盟友"
+        if score <= -60:
+            return "死敌"
+        if score <= -40:
+            return "仇视"
+        if score <= -10:
+            return "敌对"
+        return "中立"
+
+    def _relation_brief(name: str) -> str:
+        if not isinstance(rel_cfg_raw, dict):
+            return ""
+        mapping = rel_cfg_raw.get(str(name))
+        if not isinstance(mapping, dict) or not mapping:
+            return ""
+        entries: List[str] = []
+        for dst, raw in mapping.items():
+            if str(dst) == str(name):
+                continue
+            try:
+                score = int(raw)
+            except Exception:
+                continue
+            label = _relation_category(score)
+            entries.append(f"{dst}:{score:+d}（{label}）")
+        return "；".join(entries)
+
     if allowed_names:
         for name in allowed_names:
             entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
@@ -119,7 +156,18 @@ async def run_demo(logger=None) -> None:
                 except Exception:
                     pass
             persona = entry.get("persona") or (doctor_persona if name == "Doctor" else "一个简短的人设描述")
-            agent = make_kimi_npc(name, persona, model_cfg, prompt_template=npc_prompt_tpl, allowed_names=allowed_names_str)
+            appearance = entry.get("appearance")
+            quotes = entry.get("quotes")
+            agent = make_kimi_npc(
+                name,
+                persona,
+                model_cfg,
+                prompt_template=npc_prompt_tpl,
+                allowed_names=allowed_names_str,
+                appearance=appearance,
+                quotes=quotes,
+                relation_brief=_relation_brief(name),
+            )
             npcs_list.append(agent)
             participants_order.append(agent)
         # preload non-participant actors (e.g., enemies) into world sheets
@@ -175,8 +223,7 @@ async def run_demo(logger=None) -> None:
             pass
 
     # Initialize relations from config
-    rel_cfg = char_cfg.get("relations") or {}
-    seen_pairs: set[tuple[str, str]] = set()
+    rel_cfg = rel_cfg_raw or {}
     if isinstance(rel_cfg, dict):
         for src, mapping in rel_cfg.items():
             if not isinstance(mapping, dict):
@@ -186,10 +233,6 @@ async def run_demo(logger=None) -> None:
                     score = max(-100, min(100, int(val)))
                 except Exception:
                     continue
-                pair = tuple(sorted([str(src), str(dst)]))
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
                 try:
                     set_relation(str(src), str(dst), score, reason="配置设定")
                 except Exception:
@@ -211,28 +254,38 @@ async def run_demo(logger=None) -> None:
     # Scene setup
     set_scene("旧城区·北侧仓棚", ["冲突终结"])  # single victory condition objective
 
-    # Logging helpers
-    def _log_tag(tag: str, text: str):
-        try:
-            if logger:
-                logger.info(f"[{tag}] {text}")
-        except Exception:
-            pass
+    bus = log_ctx.bus if log_ctx else None
+    current_round = 0
 
-    async def _bcast(hub: MsgHub, msg: Msg):
+    def _emit(
+        event_type: EventType,
+        *,
+        actor: Optional[str] = None,
+        phase: Optional[str] = None,
+        turn: Optional[int] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not bus:
+            return
+        payload = dict(data or {})
+        event = Event(
+            event_type=event_type,
+            actor=actor,
+            phase=phase,
+            turn=turn if turn is not None else (current_round or None),
+            data=payload,
+        )
+        bus.publish(event)
+
+    async def _bcast(hub: MsgHub, msg: Msg, *, phase: Optional[str] = None):
         await hub.broadcast(msg)
-        try:
-            if logger:
-                try:
-                    text = msg.get_text_content()
-                except Exception:
-                    text = None
-                if text is None:
-                    c = getattr(msg, "content", "")
-                    text = c if isinstance(c, str) else str(c)
-                logger.info(f"{msg.name}: {text}")
-        except Exception:
-            pass
+        text = _safe_text(msg)
+        _emit(
+            EventType.NARRATIVE,
+            actor=msg.name,
+            phase=phase,
+            data={"text": text, "role": getattr(msg, "role", None)},
+        )
 
     TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<body>.*)\)")
 
@@ -298,17 +351,54 @@ async def run_demo(logger=None) -> None:
         if not tool_calls:
             return
         for tool_name, params in tool_calls:
+            phase = f"tool:{tool_name}"
             func = TOOL_DISPATCH.get(tool_name)
             if not func:
-                _log_tag("TOOL", f"未知工具调用：{tool_name} params={params}")
+                _emit(
+                    EventType.ERROR,
+                    actor=origin.name,
+                    phase=phase,
+                    data={
+                        "message": f"未知工具调用 {tool_name}",
+                        "tool": tool_name,
+                        "params": params,
+                        "error_type": "tool_not_found",
+                    },
+                )
                 continue
+            _emit(
+                EventType.TOOL_CALL,
+                actor=origin.name,
+                phase=phase,
+                data={"tool": tool_name, "params": params},
+            )
             try:
                 resp = func(**params)
             except TypeError as exc:
-                _log_tag("TOOL", f"工具参数错误 {tool_name}: {exc}")
+                _emit(
+                    EventType.ERROR,
+                    actor=origin.name,
+                    phase=phase,
+                    data={
+                        "message": str(exc),
+                        "tool": tool_name,
+                        "params": params,
+                        "error_type": "invalid_parameters",
+                    },
+                )
                 continue
             except Exception as exc:  # pylint: disable=broad-except
-                _log_tag("TOOL", f"工具执行异常 {tool_name}: {exc}")
+                _emit(
+                    EventType.ERROR,
+                    actor=origin.name,
+                    phase=phase,
+                    data={
+                        "message": str(exc),
+                        "tool": tool_name,
+                        "params": params,
+                        "error_type": exc.__class__.__name__,
+                    },
+                )
                 continue
             text_blocks = getattr(resp, "content", None)
             lines: List[str] = []
@@ -321,11 +411,12 @@ async def run_demo(logger=None) -> None:
                     else:
                         lines.append(str(blk))
             meta = getattr(resp, "metadata", None)
-            if not lines and meta:
-                try:
-                    lines.append(json.dumps(meta, ensure_ascii=False))
-                except Exception:
-                    lines.append(str(meta))
+            _emit(
+                EventType.TOOL_RESULT,
+                actor=origin.name,
+                phase=phase,
+                data={"tool": tool_name, "metadata": meta, "text": lines},
+            )
             if not lines:
                 continue
             tool_msg = Msg(
@@ -333,7 +424,7 @@ async def run_demo(logger=None) -> None:
                 content="\n".join(line for line in lines if line),
                 role="assistant",
             )
-            await _bcast(hub, tool_msg)
+            await _bcast(hub, tool_msg, phase=phase)
 
     async with MsgHub(
         participants=list(participants_order),
@@ -344,36 +435,80 @@ async def run_demo(logger=None) -> None:
         ),
     ) as hub:
         await sequential_pipeline(npcs_list)
+        _emit(EventType.STATE_UPDATE, phase="initial", data={"state": WORLD.snapshot()})
         round_idx = 1
         MAX_ROUNDS = 3
         while round_idx <= MAX_ROUNDS:
-            await _bcast(hub, Msg("Host", f"第{round_idx}回合：小队行动", "assistant"))
+            current_round = round_idx
+            await _bcast(
+                hub,
+                Msg("Host", f"第{round_idx}回合：小队行动", "assistant"),
+                phase="round-start",
+            )
             try:
                 turn = get_turn()
                 meta = turn.metadata or {}
+                rnd = int(meta.get("round") or round_idx)
+                current_round = rnd
                 actor = meta.get("actor")
-                rnd = meta.get("round")
                 state = meta.get("state") or {}
                 mv = state.get("move_left")
                 a_used = state.get("action_used")
                 b_used = state.get("bonus_used")
                 r_avail = state.get("reaction_available")
-                _log_tag("TURN", f"R{rnd} actor={actor} move_left={mv} action_used={a_used} bonus_used={b_used} reaction_avail={r_avail}")
-            except Exception:
-                pass
+                _emit(
+                    EventType.TURN_START,
+                    actor=actor,
+                    turn=rnd,
+                    phase="turn-state",
+                    data={
+                        "round": rnd,
+                        "turn_index": meta.get("turn_idx"),
+                        "order": meta.get("order"),
+                        "move_left": mv,
+                        "action_used": a_used,
+                        "bonus_used": b_used,
+                        "reaction_available": r_avail,
+                    },
+                )
+            except Exception as exc:
+                _emit(
+                    EventType.ERROR,
+                    phase="turn-state",
+                    data={
+                        "message": f"获取回合信息失败: {exc}",
+                        "error_type": "turn_snapshot",
+                    },
+                )
 
-            await _bcast(hub, Msg("Host", _world_summary_text(WORLD.snapshot()), "assistant"))
+            snapshot = WORLD.snapshot()
+            _emit(EventType.STATE_UPDATE, phase="world", turn=current_round, data={"state": snapshot})
+            await _bcast(
+                hub,
+                Msg("Host", _world_summary_text(snapshot), "assistant"),
+                phase="world-summary",
+            )
 
             # Each NPC acts once
-            for a in npcs_list:
-                out = await a(None)
-                await _bcast(hub, out)
+            for agent in npcs_list:
+                out = await agent(None)
+                await _bcast(
+                    hub,
+                    out,
+                    phase=f"npc:{getattr(agent, 'name', agent.__class__.__name__)}",
+                )
                 await _handle_tool_calls(out, hub)
 
-            print("[system] world:", WORLD.snapshot())
+            _emit(EventType.TURN_END, phase="round", turn=current_round, data={"round": current_round})
             round_idx += 1
 
-        await _bcast(hub, Msg("Host", "自动演算结束。", "assistant"))
+        final_snapshot = WORLD.snapshot()
+        _emit(EventType.STATE_UPDATE, phase="final", data={"state": final_snapshot})
+        await _bcast(
+            hub,
+            Msg("Host", "自动演算结束。", "assistant"),
+            phase="system",
+        )
 
 
 def _world_summary_text(snap: dict) -> str:
@@ -386,11 +521,6 @@ def _world_summary_text(snap: dict) -> str:
     location = snap.get("location", "未知")
     objectives = snap.get("objectives", []) or []
     obj_status = snap.get("objective_status", {}) or {}
-    rels = snap.get("relations", {}) or {}
-    try:
-        rel_lines = [f"{k}:{v}" for k, v in rels.items()]
-    except Exception:
-        rel_lines = []
     inv = snap.get("inventory", {}) or {}
     inv_lines = []
     try:
@@ -421,7 +551,7 @@ def _world_summary_text(snap: dict) -> str:
     lines = [
         f"环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}",
         ("目标：" + "; ".join((f"{str(o)}({obj_status.get(str(o))})" if obj_status.get(str(o)) else str(o)) for o in objectives)) if objectives else "目标：无",
-        ("关系：" + "; ".join(rel_lines)) if rel_lines else "关系：无变动",
+        "关系：参见系统提示，避免违背己方立场",
         ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
         ("坐标：" + "; ".join(pos_lines)) if pos_lines else "坐标：未记录",
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",

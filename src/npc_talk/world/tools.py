@@ -2,13 +2,56 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Tuple, Any, List, Optional, Set
+import math
 import random
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
 
 
+# --- Core grid configuration ---
+GRID_SIZE_M = 1.0  # each grid step is 1 meter
+DEFAULT_MOVE_SPEED_M = 6.0  # standard humanoid walk in meters per turn
+DEFAULT_REACH_M = 1.0  # default melee reach in meters
+
+
+def steps_to_meters(steps: int) -> float:
+    """Convert integer grid steps to meters."""
+    return float(max(0, steps)) * GRID_SIZE_M
+
+
+def meters_to_steps_floor(meters: float) -> int:
+    """Convert meters to whole grid steps (floor; ignores sub-meter movement)."""
+    if meters <= 0:
+        return 0
+    steps = int(math.floor(meters / GRID_SIZE_M))
+    return max(0, steps)
+
+
+def meters_to_steps_ceil(meters: float) -> int:
+    """Convert meters to minimal steps needed to cover the distance (ceil)."""
+    if meters <= 0:
+        return 0
+    return max(0, int(math.ceil(meters / GRID_SIZE_M)))
+
+
+def format_distance_steps(steps: int) -> str:
+    meters = steps_to_meters(steps)
+    return f"{steps}格（{meters:.1f}米）"
+
+
+def _default_move_steps() -> int:
+    steps = meters_to_steps_floor(DEFAULT_MOVE_SPEED_M)
+    return steps if steps > 0 else 1
+
+
+def _pair_key(a: str, b: str) -> Tuple[str, str]:
+    """Return a sorted key for undirected pair-based state."""
+    return tuple(sorted([str(a), str(b)]))
+
+
 def _rel_key(a: str, b: str) -> Tuple[str, str]:
-    return tuple(sorted([a, b]))  # undirected relation
+    """Return a directed key representing a->b relation."""
+    return str(a), str(b)
 
 
 @dataclass
@@ -36,7 +79,7 @@ class World:
     initiative_scores: Dict[str, int] = field(default_factory=dict)
     # per-turn tokens/state for each name
     turn_state: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    # default walking speeds (ft). If empty, 30ft is assumed.
+    # default walking speeds stored as grid steps (1 step = 1m by default)
     speeds: Dict[str, int] = field(default_factory=dict)
     # range bands between pairs (engaged/near/far/long)
     range_bands: Dict[Tuple[str, str], str] = field(default_factory=dict)
@@ -51,7 +94,7 @@ class World:
         return {
             "time_min": self.time_min,
             "weather": self.weather,
-            "relations": {f"{a}&{b}": v for (a, b), v in self.relations.items()},
+            "relations": {f"{a}->{b}": v for (a, b), v in self.relations.items()},
             "inventory": self.inventory,
             "characters": self.characters,
             "positions": {k: list(v) for k, v in self.positions.items()},
@@ -117,7 +160,7 @@ def change_relation(a: str, b: str, delta: int, reason: str = ""):
     WORLD.relations[k] = WORLD.relations.get(k, 0) + int(delta)
     res = {"ok": True, "pair": list(k), "score": WORLD.relations[k], "reason": reason}
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"关系调整 {k[0]}↔{k[1]}：{int(delta)}，当前分数={WORLD.relations[k]}。原因：{reason}")],
+        content=[TextBlock(type="text", text=f"关系调整 {k[0]}->{k[1]}：{int(delta)}，当前分数={WORLD.relations[k]}。原因：{reason}")],
         metadata=res,
     )
 
@@ -127,7 +170,7 @@ def set_relation(a: str, b: str, value: int, reason: str = "初始化") -> ToolR
     WORLD.relations[k] = int(value)
     res = {"ok": True, "pair": list(k), "score": WORLD.relations[k], "reason": reason}
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"关系设定 {k[0]}↔{k[1]} = {WORLD.relations[k]}。原因：{reason}")],
+        content=[TextBlock(type="text", text=f"关系设定 {k[0]}->{k[1]} = {WORLD.relations[k]}。原因：{reason}")],
         metadata=res,
     )
 
@@ -155,6 +198,7 @@ def grant_item(target: str, item: str, n: int = 1):
 def set_position(name: str, x: int, y: int) -> ToolResponse:
     """Set or update the grid position of an actor."""
     WORLD.positions[str(name)] = (int(x), int(y))
+    refresh_range_bands_for(str(name))
     return ToolResponse(
         content=[TextBlock(type="text", text=f"设定 {name} 位置 -> ({int(x)}, {int(y)})")],
         metadata={"name": name, "position": [int(x), int(y)]},
@@ -207,13 +251,79 @@ def _grid_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
+def get_distance_steps_between(name_a: str, name_b: str) -> Optional[int]:
+    """Return grid steps between two actors; None if any position missing."""
+    pa = WORLD.positions.get(str(name_a))
+    pb = WORLD.positions.get(str(name_b))
+    if pa is None or pb is None:
+        return None
+    return _grid_distance(pa, pb)
+
+
+def get_distance_m_between(name_a: str, name_b: str) -> Optional[float]:
+    steps = get_distance_steps_between(name_a, name_b)
+    if steps is None:
+        return None
+    return steps_to_meters(steps)
+
+
+def _band_for_steps(steps: int) -> str:
+    if steps <= 1:
+        return "engaged"
+    if steps <= 6:
+        return "near"
+    if steps <= 12:
+        return "far"
+    return "long"
+
+
+def refresh_range_bands_for(name: str) -> None:
+    pos = WORLD.positions.get(str(name))
+    if pos is None:
+        return
+    for other, o_pos in WORLD.positions.items():
+        if other == str(name) or o_pos is None:
+            continue
+        band = _band_for_steps(_grid_distance(pos, o_pos))
+        WORLD.range_bands[_pair_key(name, other)] = band
+
+
+def get_move_speed_steps(name: str) -> int:
+    sheet = WORLD.characters.get(name, {})
+    try:
+        val = sheet.get("move_speed_steps")
+        if val is not None:
+            return int(val)
+    except Exception:
+        pass
+    return int(WORLD.speeds.get(name, _default_move_steps()))
+
+
+def get_reach_steps(name: str) -> int:
+    sheet = WORLD.characters.get(name, {})
+    try:
+        val = sheet.get("reach_steps")
+        if val is not None:
+            return max(1, int(val))
+    except Exception:
+        pass
+    try:
+        reach_m = sheet.get("reach_m")
+        if reach_m is not None:
+            steps = meters_to_steps_ceil(float(reach_m))
+            return max(1, steps)
+    except Exception:
+        pass
+    return max(1, meters_to_steps_ceil(DEFAULT_REACH_M))
+
+
 def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse:
     """Move an actor toward target grid up to `steps` 4-way steps."""
     steps = max(0, int(steps))
     if steps == 0:
         pos = WORLD.positions.get(str(name)) or (0, 0)
         return ToolResponse(
-            content=[TextBlock(type="text", text=f"{name} 保持在 ({pos[0]}, {pos[1]})。")],
+            content=[TextBlock(type="text", text=f"{name} 保持在 ({pos[0]}, {pos[1]})，未移动。")],
             metadata={"moved": 0, "position": list(pos)},
         )
     current = WORLD.positions.get(str(name))
@@ -229,11 +339,12 @@ def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse
             y += 1 if ty > y else -1
         moved += 1
     WORLD.positions[str(name)] = (x, y)
+    refresh_range_bands_for(str(name))
     remaining = _grid_distance((x, y), (tx, ty))
     reached = (x, y) == (tx, ty)
     text = (
-        f"{name} 向 ({tx}, {ty}) 移动 {moved} 步，现位于 ({x}, {y})。"
-        + (" 已抵达目标。" if reached else f" 距目标还差 {remaining} 步。")
+        f"{name} 向 ({tx}, {ty}) 移动 {format_distance_steps(moved)}，现位于 ({x}, {y})。"
+        + (" 已抵达目标。" if reached else f" 距目标还差 {format_distance_steps(remaining)}。")
     )
     return ToolResponse(
         content=[TextBlock(type="text", text=text)],
@@ -242,6 +353,8 @@ def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse
             "reached": reached,
             "remaining": remaining,
             "position": [x, y],
+            "moved_m": steps_to_meters(moved),
+            "remaining_m": steps_to_meters(remaining),
         },
     )
 
@@ -256,19 +369,15 @@ def describe_world(detail: bool = False):
         ToolResponse with a text summary and metadata as the raw snapshot dict.
     """
     snap = WORLD.snapshot()
+    view = dict(snap)
+    view.pop("relations", None)
     # Format time
-    t = int(snap.get("time_min", 0))
+    t = int(view.get("time_min", 0))
     hh, mm = t // 60, t % 60
     time_str = f"{hh:02d}:{mm:02d}"
-    weather = snap.get("weather", "unknown")
-    # Relations
-    rels = snap.get("relations", {}) or {}
-    try:
-        rel_lines = [f"{k}:{v}" for k, v in rels.items()]
-    except Exception:
-        rel_lines = []
+    weather = view.get("weather", "unknown")
     # Inventory
-    inv = snap.get("inventory", {}) or {}
+    inv = view.get("inventory", {}) or {}
     inv_lines = []
     try:
         for who, bag in inv.items():
@@ -281,9 +390,9 @@ def describe_world(detail: bool = False):
         pass
 
     # Scene & objectives
-    loc = snap.get("location", "未知")
-    objs = snap.get("objectives", []) or []
-    stmap = snap.get("objective_status", {}) or {}
+    loc = view.get("location", "未知")
+    objs = view.get("objectives", []) or []
+    stmap = view.get("objective_status", {}) or {}
     def _fmt_obj(o):
         name = o if isinstance(o, str) else str(o)
         st = stmap.get(name)
@@ -291,7 +400,7 @@ def describe_world(detail: bool = False):
     obj_line = "; ".join(_fmt_obj(o) for o in objs) if objs else "(无)"
 
     # Characters summary
-    chars = snap.get("characters", {}) or {}
+    chars = view.get("characters", {}) or {}
     char_lines: List[str] = []
     try:
         for nm, st in chars.items():
@@ -303,7 +412,7 @@ def describe_world(detail: bool = False):
         pass
 
     # Combat line (if any)
-    combat = snap.get("combat") or {}
+    combat = view.get("combat") or {}
     combat_line = None
     try:
         if combat.get("in_combat") and combat.get("initiative"):
@@ -321,7 +430,7 @@ def describe_world(detail: bool = False):
         f"目标：{obj_line}",
         f"时间：{time_str}",
         f"天气：{weather}",
-        ("关系：" + "; ".join(rel_lines)) if rel_lines else "关系：无变动",
+        "关系：请回顾系统提示（按己方立场慎重行动）",
         ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
     ]
@@ -331,7 +440,7 @@ def describe_world(detail: bool = False):
         lines.append("(详情见元数据)")
 
     text = "\n".join(lines)
-    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=snap)
+    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=view)
 
 
 def set_scene(location: str, objectives: Optional[List[str]] = None, append: bool = False):
@@ -374,9 +483,40 @@ def _dex_mod_of(name: str) -> int:
     return _mod(dex)
 
 
-def set_speed(name: str, feet: int = 30):
-    WORLD.speeds[str(name)] = int(feet)
-    return ToolResponse(content=[TextBlock(type="text", text=f"速度设定：{name} {int(feet)}ft")], metadata={"name": name, "speed": int(feet)})
+def set_speed(name: str, value: float = DEFAULT_MOVE_SPEED_M, unit: str = "meters"):
+    """Set walking speed for an actor.
+
+    Args:
+        name: Actor identifier.
+        value: Numeric speed.
+        unit: 'meters', 'feet', or 'steps'. If omitted and value>15, assume feet.
+    """
+
+    unit_norm = (unit or "meters").lower()
+    if unit_norm not in {"meters", "feet", "steps"}:
+        unit_norm = "meters"
+
+    # Heuristic: legacy calls passed feet without specifying unit.
+    if (unit is None or unit_norm == "meters") and value > 15:
+        unit_norm = "feet"
+
+    if unit_norm == "feet":
+        meters = float(value) * 0.3048
+        steps = meters_to_steps_floor(meters)
+    elif unit_norm == "steps":
+        steps = max(0, int(round(value)))
+        meters = steps_to_meters(steps)
+    else:
+        meters = float(value)
+        steps = meters_to_steps_floor(meters)
+
+    if meters > 0 and steps == 0:
+        steps = 1
+    WORLD.speeds[str(name)] = steps
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"速度设定：{name} {format_distance_steps(steps)}")],
+        metadata={"name": name, "speed_steps": steps, "speed_m": meters},
+    )
 
 
 def roll_initiative(participants: Optional[List[str]] = None):
@@ -435,7 +575,7 @@ def _current_actor_name() -> Optional[str]:
 def _reset_turn_tokens_for(name: Optional[str]):
     if not name:
         return
-    spd = int(WORLD.speeds.get(name, 30))
+    spd = int(WORLD.speeds.get(name, _default_move_steps()))
     WORLD.turn_state[name] = {
         "action_used": False,
         "bonus_used": False,
@@ -496,18 +636,84 @@ def use_action(name: str, kind: str = "action") -> ToolResponse:
     return ToolResponse(content=[TextBlock(type="text", text=f"未知动作类型 {kind}")], metadata={"ok": False})
 
 
-def consume_movement(name: str, feet: int) -> ToolResponse:
+def consume_movement(name: str, distance_steps: float) -> ToolResponse:
+    """Spend movement measured in grid steps."""
+
     nm = str(name)
     st = WORLD.turn_state.setdefault(nm, {})
-    left = int(st.get("move_left", WORLD.speeds.get(nm, 30)))
-    feet = int(feet)
-    if feet <= 0:
-        return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 不移动")], metadata={"ok": True, "left": left})
-    if feet > left:
+    default_steps = int(WORLD.speeds.get(nm, _default_move_steps()))
+    left = int(st.get("move_left", default_steps))
+    steps = int(math.ceil(max(0.0, float(distance_steps))))
+    if steps <= 0:
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"{nm} 不移动")],
+            metadata={"ok": True, "left_steps": left, "left_m": steps_to_meters(left)},
+        )
+    if steps > left:
         st["move_left"] = 0
-        return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 试图移动 {feet}ft，但仅剩 {left}ft；按 {left}ft 计算")], metadata={"ok": False, "left": 0})
-    st["move_left"] = left - feet
-    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 移动 {feet}ft（剩余 {st['move_left']}ft）")], metadata={"ok": True, "left": st["move_left"]})
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"{nm} 试图移动 {format_distance_steps(steps)}，但仅剩 {format_distance_steps(left)}；按剩余移动结算")],
+            metadata={"ok": False, "left_steps": 0, "attempted_steps": steps},
+        )
+    st["move_left"] = left - steps
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"{nm} 移动 {format_distance_steps(steps)}（剩余 {format_distance_steps(st['move_left'])}）")],
+        metadata={"ok": True, "left_steps": st["move_left"], "left_m": steps_to_meters(st["move_left"]), "spent_steps": steps},
+    )
+
+
+def auto_move_into_reach(attacker: str, defender: str, reach_steps: Optional[int] = None) -> ToolResponse:
+    """Attempt to move attacker into melee reach of defender."""
+
+    atk = str(attacker)
+    dfd = str(defender)
+    reach = max(1, int(reach_steps if reach_steps is not None else get_reach_steps(atk)))
+    distance_before = get_distance_steps_between(atk, dfd)
+    out: List[TextBlock] = []
+
+    if distance_before is None:
+        out.append(TextBlock(type="text", text=f"{atk} 未知与 {dfd} 的距离，无法自动靠近。"))
+        return ToolResponse(content=out, metadata={"ok": False, "reason": "distance_unknown", "reach_steps": reach})
+
+    if distance_before <= reach:
+        out.append(TextBlock(type="text", text=f"{atk} 已处于攻击距离内（距离 {format_distance_steps(distance_before)}）。"))
+        return ToolResponse(content=out, metadata={"ok": True, "moved_steps": 0, "distance_before": distance_before, "distance_after": distance_before, "reach_steps": reach})
+
+    target_pos = WORLD.positions.get(dfd)
+    if target_pos is None:
+        out.append(TextBlock(type="text", text=f"尚未记录 {dfd} 的坐标，无法靠近。"))
+        return ToolResponse(content=out, metadata={"ok": False, "reason": "target_position_missing", "reach_steps": reach})
+
+    need = distance_before - reach
+    turn_state = WORLD.turn_state.setdefault(atk, {})
+    left = int(turn_state.get("move_left", get_move_speed_steps(atk)))
+    if left <= 0:
+        out.append(TextBlock(type="text", text=f"{atk} 移动力耗尽，仍距 {dfd} {format_distance_steps(distance_before)}。"))
+        return ToolResponse(content=out, metadata={"ok": False, "reason": "no_movement", "needed_steps": need, "distance_before": distance_before, "reach_steps": reach})
+
+    move_steps = min(need, left)
+    consume_res = consume_movement(atk, move_steps)
+    move_res = move_towards(atk, target_pos, move_steps)
+    out.extend(consume_res.content or [])
+    out.extend(move_res.content or [])
+
+    distance_after = get_distance_steps_between(atk, dfd)
+    in_reach = distance_after is not None and distance_after <= reach
+    if not in_reach and distance_after is not None:
+        out.append(TextBlock(type="text", text=f"仍距 {dfd} {format_distance_steps(distance_after)}，触及范围 {format_distance_steps(reach)}。"))
+    elif distance_after is None:
+        out.append(TextBlock(type="text", text=f"无法确认与 {dfd} 的最终距离。"))
+
+    meta = {
+        "ok": bool(in_reach),
+        "distance_before": distance_before,
+        "distance_after": distance_after,
+        "reach_steps": reach,
+        "needed_steps": need,
+        "moved_steps": move_res.metadata.get("moved") if move_res.metadata else move_steps,
+        "movement": consume_res.metadata,
+    }
+    return ToolResponse(content=out, metadata=meta)
 
 
 # ---- Range bands & cover/conditions ----
@@ -518,13 +724,13 @@ def set_range_band(a: str, b: str, band: str):
     band = str(band)
     if band not in BANDS:
         return ToolResponse(content=[TextBlock(type="text", text=f"未知距离带 {band}")], metadata={"ok": False})
-    k = _rel_key(a, b)
+    k = _pair_key(a, b)
     WORLD.range_bands[k] = band
     return ToolResponse(content=[TextBlock(type="text", text=f"距离：{k[0]}↔{k[1]} = {band}")], metadata={"ok": True, "pair": list(k), "band": band})
 
 
 def get_range_band(a: str, b: str) -> str:
-    return WORLD.range_bands.get(_rel_key(a, b), "near")
+    return WORLD.range_bands.get(_pair_key(a, b), "near")
 
 
 def _band_steps(fr: str, to: str) -> int:
@@ -545,11 +751,11 @@ def _band_cost(fr: str, to: str) -> int:
     for i in range(lo, hi):
         a = BANDS[i]; b = BANDS[i + 1]
         if (a, b) == ("engaged", "near"):
-            cost += 5
+            cost += 1
         elif (a, b) == ("near", "far"):
-            cost += 30
+            cost += 6
         else:
-            cost += 60
+            cost += 12
     return cost
 
 
@@ -650,9 +856,12 @@ def act_dash(name: str):
     nm = str(name)
     use_action(nm, "action")
     st = WORLD.turn_state.setdefault(nm, {})
-    spd = int(WORLD.speeds.get(nm, 30))
-    st["move_left"] = int(st.get("move_left", spd)) + spd
-    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 冲刺（移动力+{spd}ft）")], metadata={"ok": True, "move_left": st["move_left"]})
+    spd_steps = int(WORLD.speeds.get(nm, _default_move_steps()))
+    st["move_left"] = int(st.get("move_left", spd_steps)) + spd_steps
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"{nm} 冲刺（移动力+{format_distance_steps(spd_steps)}）")],
+        metadata={"ok": True, "move_left_steps": st["move_left"], "move_left_m": steps_to_meters(st["move_left"])}
+    )
 
 
 def act_disengage(name: str):
@@ -948,11 +1157,12 @@ def set_dnd_character(
     max_hp: int,
     proficient_skills: Optional[List[str]] = None,
     proficient_saves: Optional[List[str]] = None,
-    move_speed: Optional[int] = None,
+    move_speed: Optional[float] = None,
+    reach: Optional[float] = None,
 ) -> ToolResponse:
     """Create/update a D&D-style character sheet (simplified).
 
-    abilities: dict with STR/DEX/CON/INT/WIS/CHA as keys.
+    Units use meters (1格=1米)。abilities: dict with STR/DEX/CON/INT/WIS/CHA as keys.
     """
     sheet = WORLD.characters.setdefault(name, {})
     sheet.update({
@@ -965,18 +1175,35 @@ def set_dnd_character(
         "proficient_skills": [s.lower() for s in (proficient_skills or [])],
         "proficient_saves": [s.upper() for s in (proficient_saves or [])],
     })
-    if move_speed is not None:
-        try:
-            sheet["move_speed"] = int(move_speed)
-        except Exception:
-            sheet["move_speed"] = move_speed
-    else:
-        sheet.setdefault("move_speed", 6)
+    # Movement (meters per turn -> steps)
+    move_val = move_speed if move_speed is not None else sheet.get("move_speed", DEFAULT_MOVE_SPEED_M)
+    try:
+        move_m = float(move_val)
+    except Exception:
+        move_m = DEFAULT_MOVE_SPEED_M
+    move_steps = meters_to_steps_floor(move_m)
+    if move_m > 0 and move_steps == 0:
+        move_steps = 1
+    sheet["move_speed_m"] = move_m
+    sheet["move_speed_steps"] = move_steps
+    sheet["move_speed"] = move_m  # legacy key now expressed in meters
+    WORLD.speeds[name] = move_steps
+
+    # Reach (meters)
+    reach_val = reach if reach is not None else sheet.get("reach_m", sheet.get("reach", DEFAULT_REACH_M))
+    try:
+        reach_m = float(reach_val)
+    except Exception:
+        reach_m = DEFAULT_REACH_M
+    reach_steps = max(1, meters_to_steps_ceil(reach_m))
+    sheet["reach_m"] = reach_m
+    sheet["reach_steps"] = reach_steps
+
     # Keep legacy keys for compatibility
     WORLD.characters[name]["hp"] = sheet["hp"]
     WORLD.characters[name]["max_hp"] = sheet["max_hp"]
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"设定 {name}（Lv{sheet['level']} AC {sheet['ac']} HP {sheet['hp']}/{sheet['max_hp']}）")],
+        content=[TextBlock(type="text", text=f"设定 {name}（Lv{sheet['level']} AC {sheet['ac']} HP {sheet['hp']}/{sheet['max_hp']}，移动 {format_distance_steps(move_steps)}，触及 {format_distance_steps(reach_steps)}）")],
         metadata={"name": name, **sheet},
     )
 
@@ -1047,6 +1274,7 @@ def attack_roll_dnd(
     target_ac: Optional[int] = None,
     damage_expr: str = "1d4+STR",
     advantage: str = "none",
+    auto_move: bool = False,
 ) -> ToolResponse:
     """D&D-like attack roll: d20 + ability mod (+prof) vs AC, on hit apply damage.
     damage_expr 支持 +STR/+DEX/+CON 等修正占位符。
@@ -1057,10 +1285,70 @@ def attack_roll_dnd(
     mod = _mod(int(atk.get("abilities", {}).get(ability.upper(), 10)))
     prof = int(atk.get("prof", 2)) if proficient else 0
     base = mod + prof
+
+    def _fmt_distance(steps: Optional[int]) -> str:
+        if steps is None:
+            return "未知"
+        return format_distance_steps(int(steps))
+
+    reach_steps = get_reach_steps(attacker)
+    distance_before = get_distance_steps_between(attacker, defender)
+    distance_after = distance_before
+    pre_logs: List[TextBlock] = []
+    auto_meta: Optional[Dict[str, Any]] = None
+
+    if distance_before is not None and distance_before > reach_steps:
+        if auto_move:
+            move_res = auto_move_into_reach(attacker, defender, reach_steps)
+            pre_logs.extend(move_res.content or [])
+            auto_meta = move_res.metadata or {}
+            distance_after = get_distance_steps_between(attacker, defender)
+        else:
+            pre_logs.append(
+                TextBlock(
+                    type="text",
+                    text=f"距离不足：{attacker} 与 {defender} 相距 {_fmt_distance(distance_before)}，触及范围 {_fmt_distance(reach_steps)}。",
+                )
+            )
+            return ToolResponse(
+                content=pre_logs,
+                metadata={
+                    "attacker": attacker,
+                    "defender": defender,
+                    "hit": False,
+                    "reach_ok": False,
+                    "distance_before": distance_before,
+                    "distance_after": distance_before,
+                    "reach_steps": reach_steps,
+                    "auto_move": auto_meta,
+                },
+            )
+
+    if distance_after is not None and distance_after > reach_steps:
+        pre_logs.append(
+            TextBlock(
+                type="text",
+                text=f"{attacker} 仍未进入触及范围（当前距离 {_fmt_distance(distance_after)}，触及 {_fmt_distance(reach_steps)}）。",
+            )
+        )
+        return ToolResponse(
+            content=pre_logs,
+            metadata={
+                "attacker": attacker,
+                "defender": defender,
+                "hit": False,
+                "reach_ok": False,
+                "distance_before": distance_before,
+                "distance_after": distance_after,
+                "reach_steps": reach_steps,
+                "auto_move": auto_meta,
+            },
+        )
+
     # Attack roll
     atk_res = skill_check(target=int(ac), modifier=base, advantage=advantage)
     success = bool(atk_res.metadata.get("success")) if atk_res.metadata else False
-    parts: List[TextBlock] = []
+    parts: List[TextBlock] = list(pre_logs)
     parts.append(TextBlock(type="text", text=f"攻击：{attacker} d20{_signed(base)} vs AC {ac} -> {'命中' if success else '未中'}"))
     hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
     dmg_total = 0
@@ -1084,6 +1372,11 @@ def attack_roll_dnd(
         "damage_total": int(dmg_total),
         "hp_before": int(hp_before),
         "hp_after": int(hp_after),
+        "reach_ok": True,
+        "distance_before": distance_before,
+        "distance_after": distance_after,
+        "reach_steps": reach_steps,
+        "auto_move": auto_meta,
     })
 
 
