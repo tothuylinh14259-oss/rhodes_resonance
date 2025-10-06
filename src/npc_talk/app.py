@@ -13,8 +13,8 @@ from npc_talk.config import (
     load_characters,
     load_feature_flags,
     load_model_config,
-    load_narration_policy,
     load_prompts,
+    load_story_config,
 )
 from npc_talk.agents.factory import make_kimi_npc, TOOL_DISPATCH
 from npc_talk.logging import Event, EventType, LoggingContext, create_logging_context
@@ -69,8 +69,36 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
     # Load configs (all optional and resilient)
     prompts = load_prompts()
     model_cfg = load_model_config()
-    narr_policy = load_narration_policy()
     feature_flags = load_feature_flags()
+    story_cfg = load_story_config()
+
+    story_positions: Dict[str, Tuple[int, int]] = {}
+
+    def _ingest_positions(raw: Any) -> None:
+        if not isinstance(raw, dict):
+            return
+        for actor_name, pos in raw.items():
+            if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                try:
+                    story_positions[str(actor_name)] = (int(pos[0]), int(pos[1]))
+                except Exception:
+                    continue
+
+    if isinstance(story_cfg, dict):
+        _ingest_positions(story_cfg.get("initial_positions") or {})
+        _ingest_positions(story_cfg.get("positions") or {})
+        initial_section = story_cfg.get("initial")
+        if isinstance(initial_section, dict):
+            _ingest_positions(initial_section.get("positions") or {})
+
+    def _apply_story_position(name: str) -> None:
+        pos = story_positions.get(str(name))
+        if not pos:
+            return
+        try:
+            set_position(name, pos[0], pos[1])
+        except Exception:
+            pass
 
     doctor_persona = prompts.get("player_persona") or _DEFAULT_DOCTOR_PERSONA
     npc_prompt_tpl = _join_lines(prompts.get("npc_prompt_template"))
@@ -133,7 +161,7 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
     if allowed_names:
         for name in allowed_names:
             entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
-            # Stat block & position
+            # Stat block
             dnd = entry.get("dnd") or {}
             if dnd:
                 try:
@@ -149,12 +177,7 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
                     )
                 except Exception:
                     pass
-            pos = entry.get("position")
-            if isinstance(pos, (list, tuple)) and len(pos) >= 2:
-                try:
-                    set_position(name, int(pos[0]), int(pos[1]))
-                except Exception:
-                    pass
+            _apply_story_position(name)
             persona = entry.get("persona") or (doctor_persona if name == "Doctor" else "一个简短的人设描述")
             appearance = entry.get("appearance")
             quotes = entry.get("quotes")
@@ -189,12 +212,7 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
                     )
                 except Exception:
                     pass
-            pos = entry.get("position")
-            if isinstance(pos, (list, tuple)) and len(pos) >= 2:
-                try:
-                    set_position(name, int(pos[0]), int(pos[1]))
-                except Exception:
-                    pass
+            _apply_story_position(name)
     else:
         # Fallback to Amiya + Doctor
         allowed_names_str = ", ".join(["Amiya", "Doctor"])  # fallback visible names
@@ -216,11 +234,19 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
         )
         npcs_list = [amiya, doctor]
         participants_order = [amiya, doctor]
-        try:
-            set_position("Amiya", 0, 1)
-            set_position("Doctor", 0, 0)
-        except Exception:
-            pass
+        for nm, default in (("Amiya", (0, 1)), ("Doctor", (0, 0))):
+            if story_positions.get(nm):
+                _apply_story_position(nm)
+                continue
+            try:
+                set_position(nm, default[0], default[1])
+            except Exception:
+                pass
+
+    for nm in story_positions:
+        if nm in WORLD.positions:
+            continue
+        _apply_story_position(nm)
 
     # Initialize relations from config
     rel_cfg = rel_cfg_raw or {}
@@ -251,8 +277,24 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
             move_speed=6,
         )
 
-    # Scene setup
-    set_scene("旧城区·北侧仓棚", ["冲突终结"])  # single victory condition objective
+    # Scene setup sourced from story config if possible
+    scene_cfg = story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
+    scene_name = None
+    scene_objectives: List[str] = []
+    if isinstance(scene_cfg, dict):
+        name_candidate = scene_cfg.get("name")
+        if isinstance(name_candidate, str) and name_candidate.strip():
+            scene_name = name_candidate.strip()
+        objs = scene_cfg.get("objectives")
+        if isinstance(objs, list):
+            for obj in objs:
+                if isinstance(obj, str) and obj.strip():
+                    scene_objectives.append(obj.strip())
+    if not scene_name:
+        scene_name = "旧城区·北侧仓棚"
+    if not scene_objectives:
+        scene_objectives = ["冲突终结"]
+    set_scene(scene_name, scene_objectives)
 
     bus = log_ctx.bus if log_ctx else None
     current_round = 0

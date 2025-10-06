@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 import json
 
 
@@ -37,14 +37,12 @@ def load_json(path: Path) -> dict:
 class ModelConfig:
     base_url: str = "https://api.moonshot.cn/v1"
     npc: Dict[str, Any] = field(default_factory=dict)
-    narration: Dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
     def from_dict(d: dict) -> "ModelConfig":
         return ModelConfig(
             base_url=str(d.get("base_url", "https://api.moonshot.cn/v1")),
             npc=dict(d.get("npc") or {}),
-            narration=dict(d.get("narration") or {}),
         )
 
 
@@ -64,14 +62,6 @@ def load_prompts() -> dict:
     return load_json(configs_dir() / "prompts.json")
 
 
-def load_narration_policy() -> dict:
-    return load_json(configs_dir() / "narration_policy.json")
-
-
-def load_narration_env() -> dict:
-    return load_json(configs_dir() / "narration_env.json")
-
-
 def load_feature_flags() -> dict:
     return load_json(configs_dir() / "feature_flags.json")
 
@@ -79,3 +69,10 @@ def load_feature_flags() -> dict:
 def load_characters() -> dict:
     return load_json(configs_dir() / "characters.json")
 
+
+def load_story_config() -> dict:
+    story_path = configs_dir() / "story.json"
+    data = load_json(story_path)
+    if data:
+        return data
+    return load_json(project_root() / "docs" / "plot.story.json")

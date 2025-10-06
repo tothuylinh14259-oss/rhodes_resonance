@@ -3,6 +3,18 @@
     "title": "仓棚死斗",
     "style": "正面交战、紧张对峙"
   },
+  "scene": {
+    "name": "旧城区·北侧仓棚",
+    "objectives": [
+      "冲突终结"
+    ]
+  },
+  "initial_positions": {
+    "Doctor": [0, 0],
+    "Amiya": [0, 1],
+    "Mephisto": [6, -1],
+    "Faust": [10, 2]
+  },
   "acts": [
     {
       "id": "scene_brawl",

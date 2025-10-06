@@ -53,9 +53,9 @@ src/
       factory.py      # Agent 构造
     world/
       tools.py        # 世界状态与工具
-configs/               # 角色、模型、提示词、旁白策略、规则、特性开关
+configs/               # 角色、模型、提示词、旁白策略、规则、剧情设定
+  story.json          # 场景/位置/剧情节拍
 docs/
-  plot.story.json      # 可选：剧情节拍（acts/beats/conditions/actions）
 ```
 
 运行与环境

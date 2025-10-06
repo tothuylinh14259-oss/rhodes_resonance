@@ -37,7 +37,6 @@ dist/
 # Logs / temp
 .tmp/
 tmp/
-logs/
 
 # Node (if any tooling added later)
 node_modules/

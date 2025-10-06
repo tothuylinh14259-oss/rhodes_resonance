@@ -1,6 +1,6 @@
 # NPC Talk Demo (Agentscope)
 
-NPC 群聊（无 KP）+ 微旁白的最小可跑通 Demo。基于真实 Agentscope（`agentscope.pipeline`），通过 Kimi 的 OpenAI 兼容接口驱动 LLM NPC。
+NPC 群聊（无 KP）的最小可跑通 Demo。基于真实 Agentscope（`agentscope.pipeline`），通过 Kimi 的 OpenAI 兼容接口驱动 LLM NPC。
 
 ## Quick Start（推荐 Conda）
 
@@ -22,7 +22,7 @@ python src/main.py      # 兼容入口（推荐）
 # PYTHONPATH=src python -m npc_talk.cli
 ```
 
-运行期望：两个 NPC 在“旧城区·北侧仓棚”进行回合制对话，每回合输出对白与一个意图 JSON（不执行裁决/导演动作）；过程写入 `logs/run_events.jsonl`（结构化事件）与 `logs/run_story.log`（叙事文本）。
+运行期望：两个 NPC 在“旧城区·北侧仓棚”进行回合制对话，每回合输出对白与一个意图 JSON（不执行裁决/导演动作）；过程写入 `logs/run_events.jsonl`（结构化事件）与 `logs/run_story.log`（对话文本，来自广播内容）。
 
 ## 目录结构（已重构）
 
@@ -36,27 +36,25 @@ npc_talk_demo/
       config.py          # 配置加载与项目路径工具
       agents/
         npc.py           # SimpleNPCAgent（保留最简基类实现，当前未用）
-        narrator.py      # 旁白（LLM 生成微叙事）
         factory.py       # Kimi ReActAgent 构造器（系统提示拼装）
       world/
         tools.py         # 世界状态与工具（时间、关系、物品、D&D、事件时钟…）
   configs/
     characters.json       # 参与者/人设/D&D数值/出场顺序
+    story.json            # 场景配置、初始位置、剧情节拍
     model.json            # LLM 接入（base_url、npc 模型等）
     prompts.json          # 可选：玩家人设、NPC提示词模板、名称映射（示例见 prompts.json.example）
-    narration_policy.json # 旁白策略（长度/候选/焦点轮换…）
-    narration_env.json    # 场景关键词（visual/sound/air/props）
     time_rules.json       # 意图用时规则
     relation_rules.json   # 关系变更规则
     feature_flags.json    # 特性开关
   docs/
     spec.md               # 项目规范（设计/接口/约定）
-    plot.story.json       # 可选：剧情节拍（当前不启用导演）
+    plot.story.json       # 示例/历史剧情（已迁移到 configs/story.json）
   environment.yml         # Conda 环境（Python 3.11 + Agentscope）
   pyproject.toml          # 打包/开发工具（ruff/mypy/pytest），可 `pip install -e .[dev]`
   logs/
     run_events.jsonl      # 结构化事件日志（JSONL）
-    run_story.log         # 人类可读叙事日志
+    run_story.log         # 人类可读对话日志
 ```
 
 ## 运行时交互
@@ -70,7 +68,7 @@ npc_talk_demo/
 ## 日志输出
 
 - `logs/run_events.jsonl`：结构化事件流（JSONL）。可通过 `npc-talk-logs --actor Amiya --turn 2 --pretty` 快速筛选。
-- `logs/run_story.log`：面向玩家的叙事文本；与游戏内广播一致。
+- `logs/run_story.log`：面向玩家的对话文本，直接镜像游戏内广播。
 - 初次运行会覆盖旧日志；如需长期存档可在 `logs/` 下按运行复制备份。
 
 ## 必要环境变量
@@ -85,14 +83,13 @@ npc_talk_demo/
 
 - `characters.json`：决定参与者顺序与类型
   - `participants`: 出场顺序（如 ["Amiya","Doctor", ...]）
-  - 角色项：`type: "player"|"npc"`，`persona`（人设），`dnd`（AC/HP/能力/熟练），`position`（起始坐标）
+  - 角色项：`type: "player"|"npc"`，`persona`（人设），`dnd`（AC/HP/能力/熟练）
+- `story.json`：场景名称、胜利条件、初始坐标与剧情节拍（acts/beats）
 - `prompts.json`（可选）：玩家人设、名称映射、NPC/敌人提示词模板（示例见 `prompts.json.example`）
 - `model.json`：`base_url`、`npc` 模型名、温度、是否流式
 - `time_rules.json`：各意图的时间消耗（分钟）
 - `relation_rules.json`：默认关系变更策略
-- `narration_policy.json`：旁白生成策略（长度/候选/焦点循环等）
-- `narration_env.json`：按场景配置视觉/声响/空气/道具关键词
-- `feature_flags.json`：如 `log_narrator_debug`（将旁白调试写入 `logs/run_story.log`）
+- `feature_flags.json`：如 `strict_spawn`、`kp_*` 等特性开关
 
 ## 世界工具（节选）
 
@@ -115,9 +112,8 @@ npc_talk_demo/
 
 - `ModuleNotFoundError: agentscope`：确认已在 `npc-talk` 环境中，并已按 `environment.yml` 安装。
 - Kimi 报错/无响应：检查 `MOONSHOT_API_KEY`、网络连通、`KIMI_BASE_URL` 与模型名。
-- 中文输出不稳定/重复：可在 `configs/narration_policy.json` 调整策略或关闭 `no_filter/raw_pick/disable_fallback` 等策略开关。
 
 ## 后续可做
-- 扩展剧情 JSON（docs/plot.story.json），若未来恢复导演逻辑可用于触发事件
+- 扩展剧情 JSON（configs/story.json），若未来恢复导演逻辑可用于触发事件
 - 引入结构化输出校验/重试与可视化
 - 接入游戏引擎（HTTP/MCP 工具）

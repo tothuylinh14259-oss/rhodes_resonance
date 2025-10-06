@@ -1,6 +1,4 @@
 {
-  "suppress_mech_narration": true,
-  "log_narrator_debug": true,
   "strict_spawn": true,
   "kp_auto_accept": false,
   "kp_loose_target": false,
