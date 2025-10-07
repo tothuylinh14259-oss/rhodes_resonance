@@ -42,6 +42,7 @@ from npc_talk.world.tools import (
     set_scene,
     skill_check,
     skill_check_dnd,
+    reset_actor_turn,
 )
 
 
@@ -479,19 +480,47 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
         await sequential_pipeline(npcs_list)
         _emit(EventType.STATE_UPDATE, phase="initial", data={"state": WORLD.snapshot()})
         round_idx = 1
-        MAX_ROUNDS = 3
-        while round_idx <= MAX_ROUNDS:
-            current_round = round_idx
+        # Optional cap via feature_flags.json: set "max_rounds": N (<=0 or absent means unlimited)
+        try:
+            _cfg_val = int(feature_flags.get("max_rounds")) if isinstance(feature_flags, dict) else None
+            max_rounds = _cfg_val if (_cfg_val is not None and _cfg_val > 0) else None
+        except Exception:
+            max_rounds = None
+
+        def _objectives_resolved() -> bool:
+            """Stop condition: all listed objectives are resolved (done/blocked)."""
+            snap = WORLD.snapshot()
+            objs = list(snap.get("objectives") or [])
+            if not objs:
+                return False
+            status = snap.get("objective_status") or {}
+            for nm in objs:
+                st = str(status.get(str(nm), "pending"))
+                if st not in {"done", "blocked"}:
+                    return False
+            return True
+
+        end_reason: Optional[str] = None
+        while True:
+            # Use a single source of truth for round counting in logs/events.
+            # Host header uses WORLD.round when combat is active; otherwise it
+            # uses the simple loop counter. We also seed `current_round` here so
+            # the first broadcast in this cycle has a consistent turn id.
+            hdr_round = int(getattr(WORLD, "round", round_idx)) if getattr(WORLD, "in_combat", False) else round_idx
+            current_round = hdr_round
             await _bcast(
                 hub,
-                Msg("Host", f"第{round_idx}回合：小队行动", "assistant"),
+                Msg("Host", f"第{hdr_round}回合：小队行动", "assistant"),
                 phase="round-start",
             )
             try:
                 turn = get_turn()
                 meta = turn.metadata or {}
+                # Only override with WORLD's round if combat is active; otherwise
+                # continue to use the host loop's round for consistent logging.
                 rnd = int(meta.get("round") or round_idx)
-                current_round = rnd
+                if getattr(WORLD, "in_combat", False):
+                    current_round = rnd
                 actor = meta.get("actor")
                 state = meta.get("state") or {}
                 mv = state.get("move_left")
@@ -501,10 +530,15 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
                 _emit(
                     EventType.TURN_START,
                     actor=actor,
-                    turn=rnd,
+                    # Emit with the resolved current_round so that all
+                    # subsequent events in this cycle share the same turn id.
+                    turn=current_round,
                     phase="turn-state",
                     data={
-                        "round": rnd,
+                        # Keep both for debugging; `turn` above is the log's
+                        # canonical round index for this run loop.
+                        "round": current_round,
+                        "world_round": rnd,
                         "turn_index": meta.get("turn_idx"),
                         "order": meta.get("order"),
                         "move_left": mv,
@@ -531,8 +565,30 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
                 phase="world-summary",
             )
 
-            # Each NPC acts once
+            # Each NPC acts once (unified turn rotation, no combat distinction)
             for agent in npcs_list:
+                # Reset per-turn tokens for this actor so movement/action economy
+                # behaves consistently across rounds without combat mode.
+                try:
+                    reset = reset_actor_turn(getattr(agent, 'name', ''))
+                except Exception:
+                    reset = None
+                # Emit a per-actor turn start event for better traceability
+                try:
+                    st_meta = (reset.metadata or {}).get('state') if reset else None
+                except Exception:
+                    st_meta = None
+                _emit(
+                    EventType.TURN_START,
+                    actor=getattr(agent, 'name', None),
+                    turn=current_round,
+                    phase="actor-turn",
+                    data={
+                        "round": current_round,
+                        "state": st_meta,
+                    },
+                )
+
                 out = await agent(None)
                 await _bcast(
                     hub,
@@ -540,15 +596,32 @@ async def run_demo(log_ctx: LoggingContext | None = None) -> None:
                     phase=f"npc:{getattr(agent, 'name', agent.__class__.__name__)}",
                 )
                 await _handle_tool_calls(out, hub)
+                # Emit per-actor turn end
+                _emit(
+                    EventType.TURN_END,
+                    actor=getattr(agent, 'name', None),
+                    turn=current_round,
+                    phase="actor-turn",
+                    data={"round": current_round},
+                )
 
             _emit(EventType.TURN_END, phase="round", turn=current_round, data={"round": current_round})
+            # Prepare next round
             round_idx += 1
+
+            # Check dynamic stop conditions
+            if _objectives_resolved():
+                end_reason = "所有目标均已解决"
+                break
+            if max_rounds is not None and round_idx > max_rounds:
+                end_reason = f"已达到最大回合 {max_rounds}"
+                break
 
         final_snapshot = WORLD.snapshot()
         _emit(EventType.STATE_UPDATE, phase="final", data={"state": final_snapshot})
         await _bcast(
             hub,
-            Msg("Host", "自动演算结束。", "assistant"),
+            Msg("Host", f"自动演算结束。{('(' + end_reason + ')') if end_reason else ''}", "assistant"),
             phase="system",
         )
 

@@ -540,10 +540,6 @@ def roll_initiative(participants: Optional[List[str]] = None):
     return ToolResponse(content=[TextBlock(type="text", text=txt)], metadata={"initiative": ordered, "scores": scores})
 
 
-def start_combat(participants: Optional[List[str]] = None):
-    res = roll_initiative(participants)
-    return ToolResponse(content=[TextBlock(type="text", text="进入战斗模式")] + (res.content or []), metadata=res.metadata)
-
 
 def end_combat():
     WORLD.in_combat = False
@@ -613,6 +609,21 @@ def get_turn() -> ToolResponse:
         "order": list(WORLD.initiative_order),
         "state": dict(WORLD.turn_state.get(_current_actor_name() or "", {})),
     })
+
+
+def reset_actor_turn(name: str) -> ToolResponse:
+    """Reset per-turn tokens for the given actor, regardless of combat mode.
+
+    This aligns the per-回合资源（移动/动作/反应）与 Host 的普通轮转一致，
+    不再依赖战斗状态或先攻顺序。
+    """
+    nm = str(name)
+    _reset_turn_tokens_for(nm)
+    st = dict(WORLD.turn_state.get(nm, {}))
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"[系统] {nm} 回合资源重置")],
+        metadata={"name": nm, "state": st},
+    )
 
 
 def use_action(name: str, kind: str = "action") -> ToolResponse:
