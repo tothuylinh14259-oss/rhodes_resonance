@@ -13,7 +13,7 @@ from agentscope.tool import Toolkit  # type: ignore
 
 
 DEFAULT_INTENT_SCHEMA = (
-    '{\n  "intent": "attack|talk|investigate|move|assist|use_item|skill_check|wait",\n'
+    '{\n  "intent": "attack|talk|investigate|move|assist|use_item|wait",\n'
     '  "target": "目标名称",\n  "skill": "perception|medicine|...",\n'
     '  "ability": "STR|DEX|CON|INT|WIS|CHA",\n  "proficient": true,\n  "dc_hint": 12,\n'
     '  "damage_expr": "1d4+STR",\n  "time_cost": 1\n}'
@@ -43,9 +43,8 @@ DEFAULT_PROMPT_TOOL_GUIDE = (
     "- describe_world(detail: bool = False)：获取当前环境、目标、位置等信息。\n"
     "- perform_attack(attacker, defender, ability='STR', proficient=False, target_ac=None, damage_expr='1d4+STR', advantage='none', auto_move=false)：发动攻击并自动结算伤害；若距离不足可令 auto_move=true 尝试先靠近。\n"
     "- auto_engage(attacker, defender, ability='STR', ...)：先移动到触及范围，再进行一次近战攻击。\n"
-    "- perform_skill_check(name, skill, dc, advantage='none')：执行技能检定。\n"
     "- advance_position(name, target:[x,y], steps:int)：朝指定坐标逐步接近。\n"
-    "- adjust_relation(a, b, delta, reason='')：在合适情境下调整关系。\n"
+    "- adjust_relation(a, b, value, reason='')：在合适情境下将关系直接设为目标值。\n"
     "- transfer_item(target, item, n=1)：移交或分配物资。\n"
 )
 

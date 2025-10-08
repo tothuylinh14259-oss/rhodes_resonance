@@ -34,7 +34,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
       - attack_roll_dnd(...)
       - skill_check_dnd(...)
       - move_towards(...)
-      - change_relation(...)
+      - set_relation(...)
       - grant_item(...)
     """
 
@@ -119,11 +119,12 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         )
         return resp
 
-    def adjust_relation(a, b, delta, reason: str = ""):
-        resp = world.change_relation(a=a, b=b, delta=int(delta), reason=reason)
+    def adjust_relation(a, b, value, reason: str = ""):
+        # Set relation to an absolute target value instead of applying a delta
+        resp = world.set_relation(a, b, int(value), reason or "")
         meta = resp.metadata or {}
         _log_action(
-            f"relation {a}->{b} delta={delta} score={meta.get('score')} reason={reason or '无'}"
+            f"relation {a}->{b} set={value} score={meta.get('score')} reason={reason or '无'}"
         )
         return resp
 
@@ -139,7 +140,6 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         describe_world,
         perform_attack,
         auto_engage,
-        perform_skill_check,
         advance_position,
         adjust_relation,
         transfer_item,
@@ -147,7 +147,6 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
     tool_dispatch: Dict[str, object] = {
         "describe_world": describe_world,
         "perform_attack": perform_attack,
-        "perform_skill_check": perform_skill_check,
         "advance_position": advance_position,
         "adjust_relation": adjust_relation,
         "transfer_item": transfer_item,
