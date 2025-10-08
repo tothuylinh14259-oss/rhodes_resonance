@@ -7,6 +7,13 @@
     "name": "旧城区·北侧仓棚",
     "objectives": [
       "冲突终结"
+    ],
+    "time": "08:00",
+    "weather": "overcast",
+    "details": [
+      "仓棚顶板破损，几缕晨光穿透尘埃",
+      "木箱凌乱堆叠，角落潮湿有拖拽痕迹",
+      "远处传来金属碰撞与杂音"
     ]
   },
   "initial_positions": {

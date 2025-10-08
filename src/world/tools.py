@@ -1,7 +1,7 @@
 # Minimal world state and tools for the demo; designed to be pure and easy to test.
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, Tuple, Any, List, Optional, Set
+from typing import Dict, Tuple, Any, List, Optional, Set, Union
 import math
 import random
 try:
@@ -79,6 +79,8 @@ class World:
     objectives: List[str] = field(default_factory=list)
     objective_status: Dict[str, str] = field(default_factory=dict)
     objective_notes: Dict[str, str] = field(default_factory=dict)
+    # Scene flavor/details lines to help agents ground their narration
+    scene_details: List[str] = field(default_factory=list)
     events: List[Dict[str, Any]] = field(default_factory=list)
     tension: int = 1  # 0-5
     marks: List[str] = field(default_factory=list)
@@ -115,6 +117,7 @@ class World:
             # removed hidden_enemies entirely per design (no implicit enemies)
             "location": self.location,
             "objectives": list(self.objectives),
+            "scene_details": list(self.scene_details),
             "objective_status": dict(self.objective_status),
             "objective_notes": dict(self.objective_notes),
             "tension": int(self.tension),
@@ -366,11 +369,14 @@ def describe_world(detail: bool = False):
     snap = WORLD.snapshot()
     view = dict(snap)
     view.pop("relations", None)
-    # Format time
+    # Format time (no longer shown in describe_world text, retained in metadata only)
     t = int(view.get("time_min", 0))
     hh, mm = t // 60, t % 60
     time_str = f"{hh:02d}:{mm:02d}"
     weather = view.get("weather", "unknown")
+    details = [
+        d for d in (view.get("scene_details") or []) if isinstance(d, str) and d.strip()
+    ]
     # Inventory
     inv = view.get("inventory", {}) or {}
     inv_lines = []
@@ -420,11 +426,9 @@ def describe_world(detail: bool = False):
     except Exception:
         combat_line = None
 
+    # As per latest requirement, hide location/time/weather/environment details from describe_world output
     lines = [
-        f"地点：{loc}",
         f"目标：{obj_line}",
-        f"时间：{time_str}",
-        f"天气：{weather}",
         "关系：请回顾系统提示（按己方立场慎重行动）",
         ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
@@ -438,13 +442,26 @@ def describe_world(detail: bool = False):
     return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=view)
 
 
-def set_scene(location: str, objectives: Optional[List[str]] = None, append: bool = False):
-    """Set the current scene location and optionally objectives list.
+def set_scene(
+    location: str,
+    objectives: Optional[List[str]] = None,
+    append: bool = False,
+    *,
+    time_min: Optional[int] = None,
+    time: Optional[str] = None,
+    weather: Optional[str] = None,
+    details: Optional[Union[str, List[str]]] = None,
+):
+    """Set the current scene and optionally update objectives/time/weather/details.
 
     Args:
         location: 新地点描述
         objectives: 目标列表；append=True 时为追加，否则替换
         append: 是否在现有目标后追加
+        time_min: 以分钟表示的时间
+        time: 字符串时间 "HH:MM"（若提供则优先生效）
+        weather: 天气文本
+        details: 细节文本或文本列表
     """
     WORLD.location = str(location)
     if objectives is not None:
@@ -455,6 +472,40 @@ def set_scene(location: str, objectives: Optional[List[str]] = None, append: boo
             WORLD.objectives = items
         for o in items:
             WORLD.objective_status[str(o)] = WORLD.objective_status.get(str(o), "pending")
+    # Optional updates: weather
+    if weather is not None:
+        w = str(weather).strip()
+        if w:
+            WORLD.weather = w
+    # Optional updates: time (prefer HH:MM string if provided)
+    if isinstance(time, str) and time:
+        s = time.strip()
+        try:
+            hh_str, mm_str = s.split(":")
+            hh, mm = int(hh_str), int(mm_str)
+            if 0 <= hh < 24 and 0 <= mm < 60:
+                WORLD.time_min = hh * 60 + mm
+        except Exception:
+            pass
+    elif time_min is not None:
+        try:
+            WORLD.time_min = max(0, int(time_min))
+        except Exception:
+            pass
+    # Optional updates: scene details
+    if details is not None:
+        vals: List[str] = []
+        if isinstance(details, str):
+            s = details.strip()
+            if s:
+                vals = [s]
+        elif isinstance(details, list):
+            for d in details:
+                if isinstance(d, (str, int, float)):
+                    s = str(d).strip()
+                    if s:
+                        vals.append(s)
+        WORLD.scene_details = vals
     text = f"设定场景：{WORLD.location}；目标：{'; '.join(WORLD.objectives) if WORLD.objectives else '(无)'}"
     return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=WORLD.snapshot())
 
@@ -1498,9 +1549,15 @@ def process_events():
                 elif kind == "block_objective":
                     block_objective(str(eff.get("name")), str(eff.get("reason", "")))
                 elif kind == "relation":
-                    a, b, d = eff.get("a"), eff.get("b"), int(eff.get("delta", 0))
+                    # Support absolute target (value/target) with delta fallback for compatibility
+                    a, b = eff.get("a"), eff.get("b")
                     if a and b:
-                        change_relation(str(a), str(b), d, reason=str(eff.get("reason", "")))
+                        if ("value" in eff) or ("target" in eff):
+                            v = eff.get("value", eff.get("target", 0))
+                            set_relation(str(a), str(b), int(v), reason=str(eff.get("reason", "")))
+                        else:
+                            d = int(eff.get("delta", 0))
+                            change_relation(str(a), str(b), d, reason=str(eff.get("reason", "")))
                 elif kind == "grant":
                     grant_item(str(eff.get("target")), str(eff.get("item")), int(eff.get("n", 1)))
                 elif kind == "damage":

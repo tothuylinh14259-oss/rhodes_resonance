@@ -243,10 +243,13 @@ async def run_demo(
             move_speed=6,
         )
 
-    # Scene setup sourced from story config if possible
+    # Scene setup sourced from story config (time/weather/details from JSON; no hardcoded defaults)
     scene_cfg = story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
     scene_name = None
     scene_objectives: List[str] = []
+    scene_details: List[str] = []
+    scene_weather: Optional[str] = None
+    scene_time_min: Optional[int] = None
     if isinstance(scene_cfg, dict):
         name_candidate = scene_cfg.get("name")
         if isinstance(name_candidate, str) and name_candidate.strip():
@@ -256,11 +259,46 @@ async def run_demo(
             for obj in objs:
                 if isinstance(obj, str) and obj.strip():
                     scene_objectives.append(obj.strip())
-    if not scene_name:
-        scene_name = "旧城区·北侧仓棚"
-    if not scene_objectives:
-        scene_objectives = ["冲突终结"]
-    world.set_scene(scene_name, scene_objectives)
+        details_val = scene_cfg.get("details")
+        if isinstance(details_val, str) and details_val.strip():
+            scene_details = [details_val.strip()]
+        elif isinstance(details_val, list):
+            for d in details_val:
+                if isinstance(d, str) and d.strip():
+                    scene_details.append(d.strip())
+        # Prefer HH:MM string if provided; fallback to time_min
+        tstr = scene_cfg.get("time")
+        if isinstance(tstr, str) and tstr:
+            m = re.match(r"^(\d{1,2}):(\d{2})$", tstr.strip())
+            if m:
+                hh, mm = int(m.group(1)), int(m.group(2))
+                if 0 <= hh < 24 and 0 <= mm < 60:
+                    scene_time_min = hh * 60 + mm
+        if scene_time_min is None:
+            tm = scene_cfg.get("time_min", None)
+            if isinstance(tm, (int, float)):
+                try:
+                    scene_time_min = int(tm)
+                except Exception:
+                    scene_time_min = None
+        w = scene_cfg.get("weather")
+        if isinstance(w, str) and w.strip():
+            scene_weather = w.strip()
+    # Apply story config if any; otherwise keep current world defaults
+    if any([scene_name, scene_objectives, scene_details, scene_weather, scene_time_min is not None]):
+        try:
+            snap0 = world.snapshot()
+            current_loc = str((snap0 or {}).get("location") or "")
+        except Exception:
+            current_loc = ""
+        world.set_scene(
+            scene_name or current_loc,
+            scene_objectives or None,
+            append=False,
+            details=scene_details or None,
+            time_min=scene_time_min,
+            weather=scene_weather,
+        )
 
     current_round = 0
 
@@ -823,6 +861,7 @@ def _world_summary_text(snap: dict) -> str:
     except Exception:
         pass
 
+    details = [d for d in (snap.get("scene_details") or []) if isinstance(d, str) and d.strip()]
     lines = [
         f"环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}",
         ("目标：" + "; ".join((f"{str(o)}({obj_status.get(str(o))})" if obj_status.get(str(o)) else str(o)) for o in objectives)) if objectives else "目标：无",
@@ -831,4 +870,7 @@ def _world_summary_text(snap: dict) -> str:
         ("坐标：" + "; ".join(pos_lines)) if pos_lines else "坐标：未记录",
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
     ]
+    if details:
+        # Insert details after the header line
+        lines.insert(1, "环境细节：" + "；".join(details))
     return "\n".join(lines)
