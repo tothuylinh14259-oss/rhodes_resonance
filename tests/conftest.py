@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from npc_talk.world.tools import WORLD
+from world.tools import WORLD
 
 # Add tests/_stubs to sys.path so imports fallback to local stubs when Agentscope
 # is not installed in the environment.

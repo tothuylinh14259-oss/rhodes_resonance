@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "npc-talk-demo"
+name = "npc-talk-demo-flat"
 version = "0.1.0"
 description = "Minimal NPC group chat demo (Agentscope, Kimi) with world tools"
 requires-python = ">=3.11"
@@ -22,14 +22,12 @@ dev = [
     "types-setuptools",
 ]
 
-[project.scripts]
-npc-talk = "npc_talk.cli:main"
-npc-talk-logs = "npc_talk.logging.cli:main"
+## No console scripts; run with `python src/main.py`
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-exclude = ["src/npc_talk/world/tools.py"]
+exclude = ["src/world/tools.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I" ]
@@ -41,4 +39,4 @@ strict = false
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unreachable = true
-exclude = ["src/npc_talk/world/tools.py"]
+exclude = ["src/world/tools.py"]

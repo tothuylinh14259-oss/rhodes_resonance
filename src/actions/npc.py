@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+"""
+Domain-level action wrappers (flattened layout).
+
+These wrap world.tools functions into agent-friendly APIs, and are designed
+to be injected by the central orchestrator (`main.py`).
+"""
+
+import logging
+from typing import Optional
+
+from world.tools import (
+    attack_roll_dnd,
+    change_relation,
+    describe_world,
+    grant_item,
+    move_towards,
+    skill_check_dnd,
+)
+
+
+_ACTION_LOGGER = logging.getLogger("npc_talk_demo")
+
+
+def _log_action(msg: str) -> None:
+    try:
+        if not msg:
+            return
+        _ACTION_LOGGER.info(f"[ACTION] {msg}")
+    except Exception:
+        pass
+
+
+def perform_attack(
+    attacker,
+    defender,
+    ability: str = "STR",
+    proficient: bool = False,
+    target_ac: Optional[int] = None,
+    damage_expr: str = "1d4+STR",
+    advantage: str = "none",
+    auto_move: bool = False,
+):
+    resp = attack_roll_dnd(
+        attacker=attacker,
+        defender=defender,
+        ability=ability,
+        proficient=proficient,
+        target_ac=target_ac,
+        damage_expr=damage_expr,
+        advantage=advantage,
+        auto_move=auto_move,
+    )
+    meta = resp.metadata or {}
+    hit = meta.get("hit")
+    dmg = meta.get("damage_total")
+    hp_before = meta.get("hp_before")
+    hp_after = meta.get("hp_after")
+    _log_action(
+        f"attack {attacker} -> {defender} | hit={hit} dmg={dmg} hp:{hp_before}->{hp_after} reach_ok={meta.get('reach_ok')} auto_move={auto_move}"
+    )
+    return resp
+
+
+def auto_engage(
+    attacker,
+    defender,
+    ability: str = "STR",
+    proficient: bool = False,
+    target_ac: Optional[int] = None,
+    damage_expr: str = "1d4+STR",
+    advantage: str = "none",
+):
+    return perform_attack(
+        attacker=attacker,
+        defender=defender,
+        ability=ability,
+        proficient=proficient,
+        target_ac=target_ac,
+        damage_expr=damage_expr,
+        advantage=advantage,
+        auto_move=True,
+    )
+
+
+def perform_skill_check(name, skill, dc, advantage: str = "none"):
+    resp = skill_check_dnd(name=name, skill=skill, dc=dc, advantage=advantage)
+    meta = resp.metadata or {}
+    success = meta.get("success")
+    total = meta.get("total")
+    roll = meta.get("roll")
+    _log_action(
+        f"skill_check {name} skill={skill} dc={dc} -> success={success} total={total} roll={roll}"
+    )
+    return resp
+
+
+def advance_position(name, target, steps):
+    if isinstance(target, dict):
+        tx = target.get("x", 0)
+        ty = target.get("y", 0)
+        tgt = (int(tx), int(ty))
+    elif isinstance(target, (list, tuple)) and len(target) >= 2:
+        tgt = (int(target[0]), int(target[1]))
+    else:
+        tgt = (0, 0)
+    resp = move_towards(name=name, target=tgt, steps=int(steps))
+    meta = resp.metadata or {}
+    _log_action(
+        f"move {name} -> {tgt} steps={steps} moved={meta.get('moved')} remaining={meta.get('remaining')}"
+    )
+    return resp
+
+
+def adjust_relation(a, b, delta, reason: str = ""):
+    resp = change_relation(a=a, b=b, delta=int(delta), reason=reason)
+    meta = resp.metadata or {}
+    _log_action(
+        f"relation {a}->{b} delta={delta} score={meta.get('score')} reason={reason or '无'}"
+    )
+    return resp
+
+
+def transfer_item(target, item, n: int = 1):
+    resp = grant_item(target=target, item=item, n=int(n))
+    meta = resp.metadata or {}
+    _log_action(
+        f"transfer item={item} -> {target} qty={n} total={meta.get('count')}"
+    )
+    return resp
+
+
+__all__ = [
+    "describe_world",
+    "perform_attack",
+    "auto_engage",
+    "perform_skill_check",
+    "advance_position",
+    "adjust_relation",
+    "transfer_item",
+]

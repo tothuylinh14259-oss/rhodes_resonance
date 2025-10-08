@@ -1,6 +1,6 @@
 import random
 
-from npc_talk.world.tools import (
+from world.tools import (
     WORLD,
     attack_roll_dnd,
     get_position,
