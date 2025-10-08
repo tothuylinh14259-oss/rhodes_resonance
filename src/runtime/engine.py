@@ -51,6 +51,7 @@ from world.tools import (
     skill_check,
     skill_check_dnd,
     reset_actor_turn,
+    end_combat,
 )
 
 
@@ -572,6 +573,41 @@ async def run_demo(
             return True
 
         end_reason: Optional[str] = None
+
+        def _is_alive(nm: str) -> bool:
+            try:
+                st = WORLD.characters.get(str(nm), {})
+                return int(st.get("hp", 1)) > 0
+            except Exception:
+                return True
+
+        def _living_field_names() -> List[str]:
+            # Prefer participants; else those with positions; else all characters
+            base: List[str]
+            if allowed_names:
+                base = list(allowed_names)
+            else:
+                base = list(WORLD.positions.keys()) or list(WORLD.characters.keys())
+            return [n for n in base if _is_alive(n)]
+
+        def _hostiles_present(threshold: int = -10) -> bool:
+            names = _living_field_names()
+            if len(names) <= 1:
+                return False
+            rel = getattr(WORLD, "relations", {}) or {}
+            for i, a in enumerate(names):
+                for b in names[i+1:]:
+                    try:
+                        sc_ab = int(rel.get((str(a), str(b)), 0))
+                    except Exception:
+                        sc_ab = 0
+                    try:
+                        sc_ba = int(rel.get((str(b), str(a)), 0))
+                    except Exception:
+                        sc_ba = 0
+                    if sc_ab <= threshold or sc_ba <= threshold:
+                        return True
+            return False
         while True:
             hdr_round = int(getattr(WORLD, "round", round_idx)) if getattr(WORLD, "in_combat", False) else round_idx
             current_round = hdr_round
@@ -620,6 +656,17 @@ async def run_demo(
                 phase="world-summary",
             )
 
+            # Early stop: no living hostile pairs remain
+            if not _hostiles_present():
+                if getattr(WORLD, "in_combat", False):
+                    try:
+                        end_combat()
+                    except Exception:
+                        pass
+                end_reason = "场上已无敌对存活单位"
+                break
+
+            combat_cleared = False
             for agent in npcs_list:
                 name = getattr(agent, 'name', '')
                 # Skip turn if the character is down (hp <= 0)
@@ -670,6 +717,16 @@ async def run_demo(
                     phase=f"npc:{name or agent.__class__.__name__}",
                 )
                 await _handle_tool_calls(out, hub)
+                # After each action, check if hostilities remain
+                if not _hostiles_present():
+                    if getattr(WORLD, "in_combat", False):
+                        try:
+                            end_combat()
+                        except Exception:
+                            pass
+                    end_reason = "场上已无敌对存活单位"
+                    combat_cleared = True
+                    break
                 _emit(
                     EventType.TURN_END,
                     actor=name,
@@ -679,6 +736,8 @@ async def run_demo(
                 )
 
             _emit(EventType.TURN_END, phase="round", turn=current_round, data={"round": current_round})
+            if combat_cleared:
+                break
             round_idx += 1
 
             if _objectives_resolved():
