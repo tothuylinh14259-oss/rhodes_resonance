@@ -82,6 +82,8 @@ class World:
     events: List[Dict[str, Any]] = field(default_factory=list)
     tension: int = 1  # 0-5
     marks: List[str] = field(default_factory=list)
+    # Compatibility: legacy field referenced by tests; remains a no-op container
+    hidden_enemies: Dict[str, Any] = field(default_factory=dict)
     # --- Combat (D&D-like, 6s rounds) ---
     in_combat: bool = False
     round: int = 1

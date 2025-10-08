@@ -3,56 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable, Mapping
 
 from agentscope.agent import AgentBase, ReActAgent  # type: ignore
 from agentscope.message import Msg  # type: ignore
 from agentscope.pipeline import MsgHub, sequential_pipeline  # type: ignore
-
-from settings.loader import (
-    load_characters,
-    load_feature_flags,
-    load_model_config,
-    load_prompts,
-    load_story_config,
-)
-from agents.factory import make_kimi_npc
-from actions.npc import (
-    describe_world as tool_describe_world,
-    perform_attack,
-    auto_engage,
-    perform_skill_check,
-    advance_position,
-    adjust_relation,
-    transfer_item,
-)
-from eventlog import Event, EventType, LoggingContext, create_logging_context
-from world.tools import (
-    WORLD,
-    add_objective,
-    attack_roll_dnd,
-    block_objective,
-    change_relation,
-    complete_objective,
-    describe_world,
-    get_position,
-    get_stat_block,
-    get_turn,
-    grant_item,
-    move_towards,
-    roll_dice,
-    saving_throw_dnd,
-    schedule_event,
-    set_dnd_character,
-    set_objective_position,
-    set_position,
-    set_relation,
-    set_scene,
-    skill_check,
-    skill_check_dnd,
-    reset_actor_turn,
-    end_combat,
-)
 
 
 _DEFAULT_DOCTOR_PERSONA = (
@@ -73,19 +28,19 @@ def _join_lines(tpl):
 
 
 async def run_demo(
-    log_ctx: LoggingContext | None = None,
     *,
-    tool_fns: List[object] | None = None,
-    tool_dispatch: Dict[str, object] | None = None,
+    emit: Callable[..., None],
+    build_agent: Callable[..., ReActAgent],
+    tool_fns: List[object] | None,
+    tool_dispatch: Dict[str, object] | None,
+    prompts: Mapping[str, Any],
+    model_cfg: Mapping[str, Any],
+    feature_flags: Mapping[str, Any],
+    story_cfg: Mapping[str, Any],
+    characters: Mapping[str, Any],
+    world: Any,
 ) -> None:
     """Run the NPC talk demo (sequential group chat, no GM/adjudication)."""
-    log_ctx = log_ctx or create_logging_context()
-
-    # Load configs (all optional and resilient)
-    prompts = load_prompts()
-    model_cfg = load_model_config()
-    feature_flags = load_feature_flags()
-    story_cfg = load_story_config()
 
     story_positions: Dict[str, Tuple[int, int]] = {}
 
@@ -111,7 +66,7 @@ async def run_demo(
         if not pos:
             return
         try:
-            set_position(name, pos[0], pos[1])
+            world.set_position(name, pos[0], pos[1])
         except Exception:
             pass
 
@@ -120,7 +75,7 @@ async def run_demo(
     name_map = prompts.get("name_map") or {}
 
     # Build actors from configs or fallback
-    char_cfg = load_characters()
+    char_cfg = dict(characters or {})
     npcs_list: List[ReActAgent] = []
     participants_order: List[AgentBase] = []
     actor_entries: Dict[str, dict] = {}
@@ -174,17 +129,8 @@ async def run_demo(
             entries.append(f"{dst}:{score:+d}（{label}）")
         return "；".join(entries)
 
-    # Build default tool list (can be overridden by caller)
-    default_tool_list: List[object] = [
-        tool_describe_world,
-        perform_attack,
-        auto_engage,
-        perform_skill_check,
-        advance_position,
-        adjust_relation,
-        transfer_item,
-    ]
-    tool_list = list(tool_fns) if tool_fns is not None else default_tool_list
+    # Tool list must be provided by caller (main). Keep empty default.
+    tool_list = list(tool_fns) if tool_fns is not None else []
 
     if allowed_names:
         for name in allowed_names:
@@ -193,7 +139,7 @@ async def run_demo(
             dnd = entry.get("dnd") or {}
             try:
                 if dnd:
-                    set_dnd_character(
+                    world.set_dnd_character(
                         name=name,
                         level=int(dnd.get("level", 1)),
                         ac=int(dnd.get("ac", 10)),
@@ -205,7 +151,7 @@ async def run_demo(
                     )
                 else:
                     # Ensure the character exists even without dnd config
-                    set_dnd_character(
+                    world.set_dnd_character(
                         name=name,
                         level=1,
                         ac=10,
@@ -221,7 +167,7 @@ async def run_demo(
             persona = entry.get("persona") or (doctor_persona if name == "Doctor" else "一个简短的人设描述")
             appearance = entry.get("appearance")
             quotes = entry.get("quotes")
-            agent = make_kimi_npc(
+            agent = build_agent(
                 name,
                 persona,
                 model_cfg,
@@ -241,7 +187,7 @@ async def run_demo(
             dnd = entry.get("dnd") or {}
             if dnd:
                 try:
-                    set_dnd_character(
+                    world.set_dnd_character(
                         name=name,
                         level=int(dnd.get("level", 1)),
                         ac=int(dnd.get("ac", 10)),
@@ -257,8 +203,11 @@ async def run_demo(
     # No fallback to default protagonists; if story provides no positions, run without participants.
 
     for nm in story_positions:
-        if nm in WORLD.positions:
-            continue
+        try:
+            if nm in (world.runtime().get("positions") or {}):
+                continue
+        except Exception:
+            pass
         _apply_story_position(nm)
 
     # Initialize relations from config
@@ -273,13 +222,17 @@ async def run_demo(
                 except Exception:
                     continue
                 try:
-                    set_relation(str(src), str(dst), score, reason="配置设定")
+                    world.set_relation(str(src), str(dst), score, reason="配置设定")
                 except Exception:
                     pass
 
     # Ensure Doctor exists only if he is a participant
-    if "Doctor" in allowed_names and "Doctor" not in WORLD.characters:
-        set_dnd_character(
+    try:
+        world_chars = world.runtime().get("characters") or {}
+    except Exception:
+        world_chars = {}
+    if "Doctor" in allowed_names and "Doctor" not in world_chars:
+        world.set_dnd_character(
             name="Doctor",
             level=1,
             ac=14,
@@ -307,36 +260,26 @@ async def run_demo(
         scene_name = "旧城区·北侧仓棚"
     if not scene_objectives:
         scene_objectives = ["冲突终结"]
-    set_scene(scene_name, scene_objectives)
+    world.set_scene(scene_name, scene_objectives)
 
-    bus = log_ctx.bus if log_ctx else None
     current_round = 0
 
     def _emit(
-        event_type: EventType,
+        event_type: str,
         *,
         actor: Optional[str] = None,
         phase: Optional[str] = None,
         turn: Optional[int] = None,
         data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        if not bus:
-            return
         payload = dict(data or {})
-        event = Event(
-            event_type=event_type,
-            actor=actor,
-            phase=phase,
-            turn=turn if turn is not None else (current_round or None),
-            data=payload,
-        )
-        bus.publish(event)
+        emit(event_type=event_type, actor=actor, phase=phase, turn=turn if turn is not None else (current_round or None), data=payload)
 
     async def _bcast(hub: MsgHub, msg: Msg, *, phase: Optional[str] = None):
         await hub.broadcast(msg)
         text = _safe_text(msg)
         _emit(
-            EventType.NARRATIVE,
+            "narrative",
             actor=msg.name,
             phase=phase,
             data={"text": text, "role": getattr(msg, "role", None)},
@@ -344,17 +287,8 @@ async def run_demo(
 
     TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<body>.*)\)")
 
-    # Centralised tool dispatch mapping: default mapping can be overridden by caller
-    DEFAULT_TOOL_DISPATCH = {
-        "describe_world": tool_describe_world,
-        "perform_attack": perform_attack,
-        "perform_skill_check": perform_skill_check,
-        "advance_position": advance_position,
-        "adjust_relation": adjust_relation,
-        "transfer_item": transfer_item,
-        "auto_engage": auto_engage,
-    }
-    TOOL_DISPATCH = dict(tool_dispatch or DEFAULT_TOOL_DISPATCH)
+    # Centralised tool dispatch mapping (must be injected by caller)
+    TOOL_DISPATCH = dict(tool_dispatch or {})
     allowed_set = {str(n) for n in (allowed_names or [])}
 
     def _safe_text(msg: Msg) -> str:
@@ -423,7 +357,7 @@ async def run_demo(
             func = TOOL_DISPATCH.get(tool_name)
             if not func:
                 _emit(
-                    EventType.ERROR,
+                    "error",
                     actor=origin.name,
                     phase=phase,
                     data={
@@ -456,7 +390,7 @@ async def run_demo(
                     break
             if invalid:
                 _emit(
-                    EventType.ERROR,
+                    "error",
                     actor=origin.name,
                     phase=phase,
                     data={
@@ -470,7 +404,7 @@ async def run_demo(
                 await _bcast(hub, Msg("Host", f"无效角色名：{invalid}。合法参与者：{', '.join(sorted(allowed_set))}", "assistant"), phase=phase)
                 continue
             _emit(
-                EventType.TOOL_CALL,
+                "tool_call",
                 actor=origin.name,
                 phase=phase,
                 data={"tool": tool_name, "params": params},
@@ -479,7 +413,7 @@ async def run_demo(
                 resp = func(**params)
             except TypeError as exc:
                 _emit(
-                    EventType.ERROR,
+                    "error",
                     actor=origin.name,
                     phase=phase,
                     data={
@@ -492,7 +426,7 @@ async def run_demo(
                 continue
             except Exception as exc:  # pylint: disable=broad-except
                 _emit(
-                    EventType.ERROR,
+                    "error",
                     actor=origin.name,
                     phase=phase,
                     data={
@@ -515,7 +449,7 @@ async def run_demo(
                         lines.append(str(blk))
             meta = getattr(resp, "metadata", None)
             _emit(
-                EventType.TOOL_RESULT,
+                "tool_result",
                 actor=origin.name,
                 phase=phase,
                 data={"tool": tool_name, "metadata": meta, "text": lines},
@@ -552,7 +486,7 @@ async def run_demo(
         ),
     ) as hub:
         await sequential_pipeline(npcs_list)
-        _emit(EventType.STATE_UPDATE, phase="initial", data={"state": WORLD.snapshot()})
+        _emit("state_update", phase="initial", data={"state": world.snapshot()})
         round_idx = 1
         try:
             _cfg_val = int(feature_flags.get("max_rounds")) if isinstance(feature_flags, dict) else None
@@ -561,7 +495,7 @@ async def run_demo(
             max_rounds = None
 
         def _objectives_resolved() -> bool:
-            snap = WORLD.snapshot()
+            snap = world.snapshot()
             objs = list(snap.get("objectives") or [])
             if not objs:
                 return False
@@ -573,10 +507,13 @@ async def run_demo(
             return True
 
         end_reason: Optional[str] = None
+        # Default to original semantics: no hostiles -> end
+        require_hostiles = bool(feature_flags.get("require_hostiles", True))
 
         def _is_alive(nm: str) -> bool:
             try:
-                st = WORLD.characters.get(str(nm), {})
+                chars = world.snapshot().get("characters", {}) or {}
+                st = chars.get(str(nm), {})
                 return int(st.get("hp", 1)) > 0
             except Exception:
                 return True
@@ -587,29 +524,35 @@ async def run_demo(
             if allowed_names:
                 base = list(allowed_names)
             else:
-                base = list(WORLD.positions.keys()) or list(WORLD.characters.keys())
+                snap = world.snapshot()
+                base = list((snap.get("positions") or {}).keys()) or list((snap.get("characters") or {}).keys())
             return [n for n in base if _is_alive(n)]
 
         def _hostiles_present(threshold: int = -10) -> bool:
             names = _living_field_names()
             if len(names) <= 1:
                 return False
-            rel = getattr(WORLD, "relations", {}) or {}
+            snap_rel = (world.snapshot().get("relations") or {})
             for i, a in enumerate(names):
                 for b in names[i+1:]:
                     try:
-                        sc_ab = int(rel.get((str(a), str(b)), 0))
+                        sc_ab = int(snap_rel.get(f"{str(a)}->{str(b)}", 0))
                     except Exception:
                         sc_ab = 0
                     try:
-                        sc_ba = int(rel.get((str(b), str(a)), 0))
+                        sc_ba = int(snap_rel.get(f"{str(b)}->{str(a)}", 0))
                     except Exception:
                         sc_ba = 0
                     if sc_ab <= threshold or sc_ba <= threshold:
                         return True
             return False
         while True:
-            hdr_round = int(getattr(WORLD, "round", round_idx)) if getattr(WORLD, "in_combat", False) else round_idx
+            try:
+                rt = world.runtime()
+                hdr_round_val = int(rt.get("round") or round_idx)
+                hdr_round = hdr_round_val if bool(rt.get("in_combat")) else round_idx
+            except Exception:
+                hdr_round = round_idx
             current_round = hdr_round
             await _bcast(
                 hub,
@@ -617,20 +560,21 @@ async def run_demo(
                 phase="round-start",
             )
             try:
-                turn = get_turn()
+                turn = world.get_turn()
                 meta = turn.metadata or {}
                 rnd = int(meta.get("round") or round_idx)
-                if getattr(WORLD, "in_combat", False):
+                if bool((world.runtime().get("in_combat"))):
                     current_round = rnd
             except Exception:
                 pass
 
             try:
-                positions = WORLD.positions
-                in_combat = getattr(WORLD, "in_combat", False)
-                r_avail = getattr(WORLD, "turn_state", {})
+                rt = world.runtime()
+                positions = rt.get("positions", {})
+                in_combat = bool(rt.get("in_combat"))
+                r_avail = rt.get("turn_state", {})
                 _emit(
-                    EventType.STATE_UPDATE,
+                    "state_update",
                     phase="turn-state",
                     data={
                         "positions": {k: list(v) for k, v in positions.items()},
@@ -640,7 +584,7 @@ async def run_demo(
                 )
             except Exception as exc:
                 _emit(
-                    EventType.ERROR,
+                    "error",
                     phase="turn-state",
                     data={
                         "message": f"获取回合信息失败: {exc}",
@@ -648,40 +592,41 @@ async def run_demo(
                     },
                 )
 
-            snapshot = WORLD.snapshot()
-            _emit(EventType.STATE_UPDATE, phase="world", turn=current_round, data={"state": snapshot})
+            snapshot = world.snapshot()
+            _emit("state_update", phase="world", turn=current_round, data={"state": snapshot})
             await _bcast(
                 hub,
                 Msg("Host", _world_summary_text(snapshot), "assistant"),
                 phase="world-summary",
             )
 
-            # Early stop: no living hostile pairs remain
+            # If无敌对，则退出战斗模式但不强制结束整体流程（除非显式要求）
             if not _hostiles_present():
-                if getattr(WORLD, "in_combat", False):
-                    try:
-                        end_combat()
-                    except Exception:
-                        pass
-                end_reason = "场上已无敌对存活单位"
-                break
+                try:
+                    if bool(world.runtime().get("in_combat")):
+                        world.end_combat()
+                except Exception:
+                    pass
+                if require_hostiles:
+                    end_reason = "场上已无敌对存活单位"
+                    break
 
             combat_cleared = False
             for agent in npcs_list:
                 name = getattr(agent, 'name', '')
                 # Skip turn if the character is down (hp <= 0)
                 try:
-                    sheet = WORLD.characters.get(name, {})
+                    sheet = (world.snapshot().get("characters") or {}).get(name, {})
                     if int(sheet.get('hp', 1)) <= 0:
                         _emit(
-                            EventType.TURN_START,
+                            "turn_start",
                             actor=name,
                             turn=current_round,
                             phase="actor-turn",
                             data={"round": current_round, "skipped": True, "reason": "down"},
                         )
                         _emit(
-                            EventType.TURN_END,
+                            "turn_end",
                             actor=name,
                             turn=current_round,
                             phase="actor-turn",
@@ -692,7 +637,7 @@ async def run_demo(
                     pass
 
                 try:
-                    reset = reset_actor_turn(name)
+                    reset = world.reset_actor_turn(name)
                 except Exception:
                     reset = None
                 try:
@@ -700,7 +645,7 @@ async def run_demo(
                 except Exception:
                     st_meta = None
                 _emit(
-                    EventType.TURN_START,
+                    "turn_start",
                     actor=name,
                     turn=current_round,
                     phase="actor-turn",
@@ -717,25 +662,26 @@ async def run_demo(
                     phase=f"npc:{name or agent.__class__.__name__}",
                 )
                 await _handle_tool_calls(out, hub)
-                # After each action, check if hostilities remain
+                # After each action, if无敌对则退出战斗但继续对话流程
                 if not _hostiles_present():
-                    if getattr(WORLD, "in_combat", False):
-                        try:
-                            end_combat()
-                        except Exception:
-                            pass
-                    end_reason = "场上已无敌对存活单位"
-                    combat_cleared = True
-                    break
+                    try:
+                        if bool(world.runtime().get("in_combat")):
+                            world.end_combat()
+                    except Exception:
+                        pass
+                    if require_hostiles:
+                        end_reason = "场上已无敌对存活单位"
+                        combat_cleared = True
+                        break
                 _emit(
-                    EventType.TURN_END,
+                    "turn_end",
                     actor=name,
                     turn=current_round,
                     phase="actor-turn",
                     data={"round": current_round},
                 )
 
-            _emit(EventType.TURN_END, phase="round", turn=current_round, data={"round": current_round})
+            _emit("turn_end", phase="round", turn=current_round, data={"round": current_round})
             if combat_cleared:
                 break
             round_idx += 1
@@ -747,8 +693,8 @@ async def run_demo(
                 end_reason = f"已达到最大回合 {max_rounds}"
                 break
 
-        final_snapshot = WORLD.snapshot()
-        _emit(EventType.STATE_UPDATE, phase="final", data={"state": final_snapshot})
+        final_snapshot = world.snapshot()
+        _emit("state_update", phase="final", data={"state": final_snapshot})
         await _bcast(
             hub,
             Msg("Host", f"自动演算结束。{('(' + end_reason + ')') if end_reason else ''}", "assistant"),

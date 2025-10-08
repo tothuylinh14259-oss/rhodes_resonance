@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from settings.loader import project_root
-
 from .bus import EventBus
 from .story_logger import StoryLogger
 from .structured_logger import StructuredLogger
@@ -23,7 +21,9 @@ class LoggingContext:
 
 
 def create_logging_context(base_path: Optional[Path] = None) -> LoggingContext:
-    root = base_path or project_root()
+    # Avoid component dependency: `base_path` should be provided by main.
+    # Fallback to repository root heuristic (two levels up from this file).
+    root = base_path or Path(__file__).resolve().parents[2]
     logs_dir = root / "logs"
     events_path = logs_dir / "run_events.jsonl"
     story_path = logs_dir / "run_story.log"
@@ -36,4 +36,3 @@ def create_logging_context(base_path: Optional[Path] = None) -> LoggingContext:
     bus.subscribe(story.handle)
 
     return LoggingContext(bus=bus, structured=structured, story=story)
-

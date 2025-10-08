@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Mapping, Any
 
 from agentscope.agent import ReActAgent  # type: ignore
 from agentscope.formatter import OpenAIChatFormatter  # type: ignore
@@ -9,7 +9,7 @@ from agentscope.memory import InMemoryMemory  # type: ignore
 from agentscope.model import OpenAIChatModel  # type: ignore
 from agentscope.tool import Toolkit  # type: ignore
 
-from settings.loader import ModelConfig
+# No component imports; the model configuration is passed in from main as a mapping.
 
 
 DEFAULT_INTENT_SCHEMA = (
@@ -72,7 +72,7 @@ def _join_lines(tpl):
 def make_kimi_npc(
     name: str,
     persona: str,
-    model_cfg: ModelConfig,
+    model_cfg: Mapping[str, Any],
     prompt_template: Optional[str | list[str]] = None,
     allowed_names: Optional[str] = None,
     appearance: Optional[str] = None,
@@ -82,8 +82,8 @@ def make_kimi_npc(
 ) -> ReActAgent:
     """Create an LLM-backed NPC using Kimi's OpenAI-compatible API."""
     api_key = os.environ["MOONSHOT_API_KEY"]
-    base_url = model_cfg.base_url or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-    sec = model_cfg.npc or {}
+    base_url = str(model_cfg.get("base_url") or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1"))
+    sec = dict(model_cfg.get("npc") or {})
     model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
     tools_text = "describe_world()"

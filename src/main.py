@@ -2,79 +2,115 @@
 from __future__ import annotations
 
 """
-Central Orchestrator
+Central Orchestrator (main layer)
 
-`main.py` 作为“中心”，负责：
-- 定义并注入可用工具到各子模块（agents 不依赖 world）；
-- 组装日志、配置、运行入口；
-- 将工具分发表传入运行引擎（npc_talk.app.run_demo）。
-
-运行方式：
-  python src/main.py
-或：
-  python -m npc_talk.cli  （仍可用的打包入口，调用相同引擎）
+职责：
+- 加载配置、创建日志上下文；
+- 构造 world 端口、actions 工具、agents 工厂；
+- 通过依赖注入调用 runtime.engine.run_demo。
 """
 
 import asyncio
-from typing import Dict
+from typing import Dict, Any
+from dataclasses import asdict, is_dataclass
 
 from runtime.engine import run_demo
-from actions.npc import (
-    describe_world as tool_describe_world,
-    perform_attack,
-    auto_engage,
-    perform_skill_check,
-    advance_position,
-    adjust_relation,
-    transfer_item,
+from actions.npc import make_npc_actions
+import world.tools as world_impl
+from eventlog import create_logging_context, Event, EventType
+from settings.loader import (
+    project_root,
+    load_prompts,
+    load_model_config,
+    load_feature_flags,
+    load_story_config,
+    load_characters,
 )
-from eventlog import LoggingContext, create_logging_context
+from agents.factory import make_kimi_npc
 
 
-def _build_tool_dispatch() -> Dict[str, object]:
-    return {
-        "describe_world": tool_describe_world,
-        "perform_attack": perform_attack,
-        "perform_skill_check": perform_skill_check,
-        "advance_position": advance_position,
-        "adjust_relation": adjust_relation,
-        "transfer_item": transfer_item,
-        "auto_engage": auto_engage,
-    }
+class _WorldPort:
+    """Light adapter around world.tools to avoid component coupling in engine."""
 
+    # bind frequently used world functions as simple static methods
+    set_dnd_character = staticmethod(world_impl.set_dnd_character)
+    set_position = staticmethod(world_impl.set_position)
+    set_scene = staticmethod(world_impl.set_scene)
+    set_relation = staticmethod(world_impl.set_relation)
+    get_turn = staticmethod(world_impl.get_turn)
+    reset_actor_turn = staticmethod(world_impl.reset_actor_turn)
+    end_combat = staticmethod(world_impl.end_combat)
 
-def _tool_list() -> list[object]:
-    # 供 agents 工具箱注册使用
-    return [
-        tool_describe_world,
-        perform_attack,
-        auto_engage,
-        perform_skill_check,
-        advance_position,
-        adjust_relation,
-        transfer_item,
-    ]
+    @staticmethod
+    def snapshot() -> Dict[str, Any]:
+        return world_impl.WORLD.snapshot()
+
+    @staticmethod
+    def runtime() -> Dict[str, Any]:
+        W = world_impl.WORLD
+        return {
+            "positions": dict(W.positions),
+            "in_combat": bool(W.in_combat),
+            "turn_state": dict(W.turn_state),
+            "round": int(W.round),
+            "characters": dict(W.characters),
+        }
 
 
 def main() -> None:
     print("============================================================")
     print("NPC Talk Demo (Orchestrator: main.py)")
     print("============================================================")
-    log_ctx: LoggingContext | None = None
+
+    # Load configs
+    prompts = load_prompts()
+    model_cfg_obj = load_model_config()
+    feature_flags = load_feature_flags()
+    story_cfg = load_story_config()
+    characters = load_characters()
+
+    # Convert model config dataclass to mapping
+    if is_dataclass(model_cfg_obj):
+        model_cfg: Dict[str, Any] = asdict(model_cfg_obj)
+    else:
+        model_cfg = dict(getattr(model_cfg_obj, "__dict__", {}) or {})
+
+    # Build logging context under project root
+    root = project_root()
+    log_ctx = create_logging_context(base_path=root)
+
+    # Emit function adapter
+    def emit(*, event_type: str, actor=None, phase=None, turn=None, data=None) -> None:
+        ev = Event(event_type=EventType(event_type), actor=actor, phase=phase, turn=turn, data=dict(data or {}))
+        log_ctx.bus.publish(ev)
+
+    # Bind world and actions
+    world = _WorldPort()
+    tool_list, tool_dispatch = make_npc_actions(world=world_impl)
+
+    # Agent builder
+    def build_agent(name, persona, model_cfg, **kwargs):
+        return make_kimi_npc(name, persona, model_cfg, **kwargs)
+
     try:
-        log_ctx = create_logging_context()
         asyncio.run(
             run_demo(
-                log_ctx=log_ctx,
-                tool_fns=_tool_list(),
-                tool_dispatch=_build_tool_dispatch(),
+                emit=emit,
+                build_agent=build_agent,
+                tool_fns=tool_list,
+                tool_dispatch=tool_dispatch,
+                prompts=prompts,
+                model_cfg=model_cfg,
+                feature_flags=feature_flags,
+                story_cfg=story_cfg,
+                characters=characters,
+                world=world,
             )
         )
     except KeyboardInterrupt:
         pass
     finally:
-        if log_ctx:
-            log_ctx.close()
+        log_ctx.close()
 
 
 if __name__ == "__main__":
