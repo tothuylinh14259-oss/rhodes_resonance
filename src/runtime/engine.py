@@ -284,12 +284,30 @@ async def run_demo(
             phase=phase,
             data={"text": text, "role": getattr(msg, "role", None)},
         )
+        # record to in-memory chat log for recap (best-effort)
+        try:
+            CHAT_LOG.append({
+                "actor": getattr(msg, "name", None),
+                "role": getattr(msg, "role", None),
+                "text": text,
+                "turn": current_round,
+                "phase": phase or "",
+            })
+        except Exception:
+            pass
 
     TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<body>.*)\)")
 
     # Centralised tool dispatch mapping (must be injected by caller)
     TOOL_DISPATCH = dict(tool_dispatch or {})
     allowed_set = {str(n) for n in (allowed_names or [])}
+    # ---- In-memory mini logs for per-turn recap (broadcast to all participants) ----
+    CHAT_LOG: List[Dict[str, Any]] = []     # {actor, role, text, turn, phase}
+    ACTION_LOG: List[Dict[str, Any]] = []   # {actor, tool, type, text|params, meta, turn}
+    LAST_SEEN: Dict[str, int] = {}          # per-actor chat index checkpoint
+    recap_enabled = bool((feature_flags or {}).get("pre_turn_recap", True))
+    recap_msg_limit = int((feature_flags or {}).get("recap_msg_limit", 6))
+    recap_action_limit = int((feature_flags or {}).get("recap_action_limit", 6))
 
     def _safe_text(msg: Msg) -> str:
         try:
@@ -410,6 +428,16 @@ async def run_demo(
                 data={"tool": tool_name, "params": params},
             )
             try:
+                ACTION_LOG.append({
+                    "actor": origin.name,
+                    "tool": tool_name,
+                    "type": "call",
+                    "params": dict(params or {}),
+                    "turn": current_round,
+                })
+            except Exception:
+                pass
+            try:
                 resp = func(**params)
             except TypeError as exc:
                 _emit(
@@ -454,6 +482,17 @@ async def run_demo(
                 phase=phase,
                 data={"tool": tool_name, "metadata": meta, "text": lines},
             )
+            try:
+                ACTION_LOG.append({
+                    "actor": origin.name,
+                    "tool": tool_name,
+                    "type": "result",
+                    "text": list(lines),
+                    "meta": meta,
+                    "turn": current_round,
+                })
+            except Exception:
+                pass
             if not lines:
                 continue
             tool_msg = Msg(
@@ -462,6 +501,43 @@ async def run_demo(
                 role="assistant",
             )
             await _bcast(hub, tool_msg, phase=phase)
+
+
+    def _recap_for(name: str) -> Optional[Msg]:
+        """Build a concise recap message for the upcoming actor, or None if empty/disabled.
+
+        Recap includes up to N recent broadcasts (excluding Host-only boilerplate) and
+        up to M recent tool results. The recap is broadcast to all participants.
+        """
+        if not recap_enabled:
+            return None
+        start = int(LAST_SEEN.get(name, 0))
+        # Exclude pure Host messages to avoid duplicating world-summary headers
+        recent_msgs = [e for e in CHAT_LOG[start:] if e.get("actor") not in (None, "Host")]
+        if recap_msg_limit > 0:
+            recent_msgs = recent_msgs[-recap_msg_limit:]
+        recent_actions = ACTION_LOG[-recap_action_limit:] if recap_action_limit > 0 else []
+        if not recent_msgs and not recent_actions:
+            return None
+        lines: List[str] = [f"系统回顾（供 {name} 决策）"]
+        if recent_msgs:
+            lines.append("最近播报：")
+            for e in recent_msgs:
+                txt = str(e.get("text") or "").strip()
+                if len(txt) > 160:
+                    txt = txt[:157] + "..."
+                lines.append(f"- {e.get('actor')}: {txt}")
+        if recent_actions:
+            lines.append("最近行为：")
+            for a in recent_actions:
+                who = a.get("actor"); tl = a.get("tool")
+                tlines = list(a.get("text") or [])
+                summ = (tlines[0] if tlines else "") or ""
+                if len(summ) > 160:
+                    summ = summ[:157] + "..."
+                lines.append(f"- {who}: {tl} -> {summ}")
+        LAST_SEEN[name] = len(CHAT_LOG)
+        return Msg("Host", "\\n".join(lines), "assistant")
 
     # Human-readable header for participants and starting positions
     _start_pos_lines = []
@@ -654,6 +730,14 @@ async def run_demo(
                         "state": st_meta,
                     },
                 )
+
+                # Inject a recap message for all participants before the actor decides
+                try:
+                    recap_msg = _recap_for(name)
+                    if recap_msg is not None:
+                        await _bcast(hub, recap_msg, phase="context:recap")
+                except Exception:
+                    pass
 
                 out = await agent(None)
                 await _bcast(
