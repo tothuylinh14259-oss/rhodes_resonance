@@ -47,8 +47,14 @@ def meters_to_steps_ceil(meters: float) -> int:
 
 
 def format_distance_steps(steps: int) -> str:
+    """Format a grid distance for narration.
+
+    Per latest requirement, user-facing text must use meters only and avoid the
+    concept/word of '格'. Keep internal calculations in steps as-is, but present
+    meters in narrative outputs.
+    """
     meters = steps_to_meters(steps)
-    return f"{steps}格（{meters:.1f}米）"
+    return f"{meters:.1f}米"
 
 
 def _default_move_steps() -> int:
