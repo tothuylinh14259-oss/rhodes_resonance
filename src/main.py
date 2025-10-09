@@ -191,6 +191,33 @@ async def run_demo(
             dnd = entry.get("dnd") or {}
             try:
                 if dnd:
+                    # Allow configuring per-character attack reach in characters.json
+                    # Supported keys under each actor's `dnd`:
+                    # - reach (meters/格)
+                    # - reach_m (meters)
+                    # - reach_steps (grid steps)
+                    # - attack_range / attack_range_m / attack_range_steps (aliases)
+                    def _reach_from_dnd(d: Mapping[str, Any]) -> Optional[float]:
+                        # Steps are 1m per step in this demo
+                        def _to_float(x: Any) -> Optional[float]:
+                            try:
+                                return float(x)
+                            except Exception:
+                                return None
+                        # Prefer explicit meters, then generic reach, then steps
+                        for k in ("reach_m", "reach", "attack_range_m", "attack_range"):
+                            v = d.get(k)
+                            f = _to_float(v)
+                            if f is not None:
+                                return f
+                        for k in ("reach_steps", "attack_range_steps"):
+                            v = d.get(k)
+                            f = _to_float(v)
+                            if f is not None:
+                                return f  # 1 step == 1 meter in this grid
+                        return None
+
+                    reach_m = _reach_from_dnd(dnd)
                     world.set_dnd_character(
                         name=name,
                         level=int(dnd.get("level", 1)),
@@ -200,6 +227,7 @@ async def run_demo(
                         proficient_skills=dnd.get("proficient_skills") or [],
                         proficient_saves=dnd.get("proficient_saves") or [],
                         move_speed=int(dnd.get("move_speed", 6)),
+                        reach=reach_m,
                     )
                 else:
                     # Ensure the character exists even without dnd config
@@ -239,6 +267,25 @@ async def run_demo(
             dnd = entry.get("dnd") or {}
             if dnd:
                 try:
+                    def _reach_from_dnd(d: Mapping[str, Any]) -> Optional[float]:
+                        def _to_float(x: Any) -> Optional[float]:
+                            try:
+                                return float(x)
+                            except Exception:
+                                return None
+                        for k in ("reach_m", "reach", "attack_range_m", "attack_range"):
+                            v = d.get(k)
+                            f = _to_float(v)
+                            if f is not None:
+                                return f
+                        for k in ("reach_steps", "attack_range_steps"):
+                            v = d.get(k)
+                            f = _to_float(v)
+                            if f is not None:
+                                return f
+                        return None
+
+                    reach_m = _reach_from_dnd(dnd)
                     world.set_dnd_character(
                         name=name,
                         level=int(dnd.get("level", 1)),
@@ -248,6 +295,7 @@ async def run_demo(
                         proficient_skills=dnd.get("proficient_skills") or [],
                         proficient_saves=dnd.get("proficient_saves") or [],
                         move_speed=int(dnd.get("move_speed", 6)),
+                        reach=reach_m,
                     )
                 except Exception:
                     pass

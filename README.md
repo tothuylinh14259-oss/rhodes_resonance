@@ -84,6 +84,23 @@ repo/
 - `characters.json`：决定参与者顺序与类型
   - `participants`: 出场顺序（如 ["Amiya","Doctor", ...]）
   - 角色项：`type: "player"|"npc"`，`persona`（人设），`dnd`（AC/HP/能力/熟练）
+  - 攻击范围（格/米）：在对应角色的 `dnd` 下添加以下任一字段即可被读取并生效（1格=1米）：
+    - `reach` 或 `reach_m`：以米/格为单位的攻击距离（近战或通用攻击距离）
+    - `reach_steps`：以格为单位的攻击距离
+    - 或同义词：`attack_range`/`attack_range_m`/`attack_range_steps`
+    示例：
+    ```json
+    "Amiya": {
+      "dnd": {
+        "level": 1,
+        "ac": 12,
+        "max_hp": 10,
+        "abilities": {"STR": 8, "DEX": 14, "CON": 12, "INT": 16, "WIS": 12, "CHA": 12},
+        "move_speed": 6,
+        "reach": 6
+      }
+    }
+    ```
 - `story.json`：场景名称、胜利条件、初始坐标与剧情节拍（acts/beats）
 - `prompts.json`（可选）：玩家人设、名称映射、NPC/敌人提示词模板（示例见 `prompts.json.example`）
 - `model.json`：`base_url`、`npc` 模型名、温度、是否流式

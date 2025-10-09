@@ -300,13 +300,14 @@ def get_move_speed_steps(name: str) -> int:
 def get_reach_steps(name: str) -> int:
     sheet = WORLD.characters.get(name, {})
     try:
-        val = sheet.get("reach_steps")
+        # Support both reach_* and attack_range_* as synonyms
+        val = sheet.get("reach_steps") or sheet.get("attack_range_steps")
         if val is not None:
             return max(1, int(val))
     except Exception:
         pass
     try:
-        reach_m = sheet.get("reach_m")
+        reach_m = sheet.get("reach_m") or sheet.get("reach") or sheet.get("attack_range_m") or sheet.get("attack_range")
         if reach_m is not None:
             steps = meters_to_steps_ceil(float(reach_m))
             return max(1, steps)
