@@ -5,8 +5,8 @@ NPC 群聊（无 KP）的最小可跑通 Demo。基于真实 Agentscope（`agent
 ## Quick Start（推荐 Conda）
 
 ```bash
-# 一次性：创建并激活环境
-cd /Users/administrator/syncdisk/npc_talk_demo
+# 一次性：创建并激活环境（进入本仓库根目录）
+cd /Users/administrator/syncdisk/rhodes_resonance
 conda env create -f environment.yml
 conda activate npc-talk
 
@@ -17,28 +17,27 @@ export KIMI_BASE_URL=https://api.moonshot.cn/v1
 export KIMI_MODEL=kimi-k2-turbo-preview
 
 # 运行
-python src/main.py      # 兼容入口（推荐）
-# 或（已打包为模块，需将 src 加入路径或安装本包）
-# PYTHONPATH=src python -m npc_talk.cli
+python src/main.py      # 入口（已内联引擎逻辑）
 ```
 
 运行期望：两个 NPC 在“旧城区·北侧仓棚”进行回合制对话，每回合输出对白与一个意图 JSON（不执行裁决/导演动作）；过程写入 `logs/run_events.jsonl`（结构化事件）与 `logs/run_story.log`（对话文本，来自广播内容）。
 
-## 目录结构（已重构）
+## 目录结构（当前）
 
 ```
-npc_talk_demo/
+repo/
   src/
-    main.py               # 兼容入口（薄封装，转发到 npc_talk.cli:main）
-    npc_talk/
-      cli.py             # 真正入口（日志配置 + 运行 demo）
-      app.py             # 回合驱动、广播逻辑（无 KP/裁决/导演）
-      config.py          # 配置加载与项目路径工具
-      agents/
-        npc.py           # SimpleNPCAgent（保留最简基类实现，当前未用）
-        factory.py       # Kimi ReActAgent 构造器（系统提示拼装）
-      world/
-        tools.py         # 世界状态与工具（时间、关系、物品、D&D、事件时钟…）
+    main.py               # 入口 + 回合驱动（原 runtime/engine.py 已内联至此）
+    actions/
+      npc.py              # 动作适配层（将世界工具包装为 Agent 可调用的工具）
+    agents/
+      factory.py          # Kimi ReActAgent 构造器（系统提示拼装 + 工具注册）
+    world/
+      tools.py            # 世界状态与工具（时间、关系、物品、D&D、事件时钟…）
+    eventlog/
+      *.py                # 事件总线与日志（结构化 JSONL + 文本）
+    settings/
+      loader.py           # 配置加载与项目路径工具
   configs/
     characters.json       # 参与者/人设/D&D数值/出场顺序
     story.json            # 场景配置、初始位置、剧情节拍
@@ -49,12 +48,13 @@ npc_talk_demo/
     feature_flags.json    # 特性开关
   docs/
     spec.md               # 项目规范（设计/接口/约定）
-    plot.story.json       # 示例/历史剧情（已迁移到 configs/story.json）
   environment.yml         # Conda 环境（Python 3.11 + Agentscope）
   pyproject.toml          # 打包/开发工具（ruff/mypy/pytest），可 `pip install -e .[dev]`
   logs/
     run_events.jsonl      # 结构化事件日志（JSONL）
     run_story.log         # 人类可读对话日志
+
+备注：自本次变更起，`src/runtime/engine.py` 已删除，其内容合并到 `src/main.py` 的 `run_demo()` 与辅助函数中。
 ```
 
 ## 运行时交互
