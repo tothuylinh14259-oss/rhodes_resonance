@@ -1403,7 +1403,7 @@ def attack_roll_dnd(
         pre_logs.append(
             TextBlock(
                 type="text",
-                text=f"{attacker} 仍未进入触及范围（当前距离 {_fmt_distance(distance_after)}，触及 {_fmt_distance(reach_steps)}）。",
+                text=f"{attacker} 与 {defender} 仍未进入触及范围（当前距离 {_fmt_distance(distance_after)}，触及 {_fmt_distance(reach_steps)}）。",
             )
         )
         return ToolResponse(
@@ -1424,7 +1424,7 @@ def attack_roll_dnd(
     atk_res = skill_check(target=int(ac), modifier=base, advantage=advantage)
     success = bool(atk_res.metadata.get("success")) if atk_res.metadata else False
     parts: List[TextBlock] = list(pre_logs)
-    parts.append(TextBlock(type="text", text=f"攻击：{attacker} d20{_signed(base)} vs AC {ac} -> {'命中' if success else '未中'}"))
+    parts.append(TextBlock(type="text", text=f"攻击：{attacker} -> {defender} d20{_signed(base)} vs AC {ac} -> {'命中' if success else '未中'}"))
     hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
     dmg_total = 0
     if success:

@@ -14,6 +14,7 @@ import asyncio
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple, Callable, Mapping
+from pathlib import Path
 from agentscope.agent import AgentBase, ReActAgent  # type: ignore
 from agentscope.message import Msg  # type: ignore
 from agentscope.pipeline import MsgHub, sequential_pipeline  # type: ignore
@@ -514,6 +515,115 @@ async def run_demo(
                 idx = scan_from
         return calls
 
+    def _strip_tool_calls_from_text(text: str) -> str:
+        """Return `text` with all CALL_TOOL ... {json} segments removed.
+
+        Compatible with both styles:
+        - CALL_TOOL name({json})
+        - CALL_TOOL name\n{json}
+        Also tolerant to suffix like `:3` after tool name.
+        """
+        if not text:
+            return text
+
+        def _extract_json_after(s: str, start_pos: int) -> Tuple[Optional[str], int]:
+            n = len(s)
+            i = s.find("{", start_pos)
+            if i == -1:
+                return None, start_pos
+            brace = 0
+            in_str = False
+            esc = False
+            j = i
+            while j < n:
+                ch = s[j]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == '{':
+                        brace += 1
+                    elif ch == '}':
+                        brace -= 1
+                        if brace == 0:
+                            return s[i : j + 1], j + 1
+                j += 1
+            return None, start_pos
+
+        idx = 0
+        out_parts: List[str] = []
+        while True:
+            m = TOOL_CALL_PATTERN.search(text, idx)
+            if not m:
+                out_parts.append(text[idx:])
+                break
+            # Keep text before the tool call
+            out_parts.append(text[idx:m.start()])
+            scan_from = m.end()
+            # Remove the following JSON object if present
+            json_body, end_pos = _extract_json_after(text, scan_from)
+            if json_body:
+                idx = end_pos
+            else:
+                idx = scan_from
+        return "".join(out_parts)
+
+    # --- Dev-only context snapshot: write a compact card per-actor to logs/<actor>_context_dev.log ---
+    def _write_dev_context_card(name: str) -> None:
+        """Append a human-friendly context card for `name` to its own log file.
+
+        This does NOT broadcast to agents and does NOT affect memory.
+        """
+        try:
+            # Build sections
+            snap = world.snapshot()
+            world_txt = _world_summary_text(snap)
+
+            start = int(LAST_SEEN.get(name, 0))
+            recent_msgs = [e for e in CHAT_LOG[start:] if e.get("actor") not in (None, "Host")]
+            if recap_msg_limit > 0:
+                recent_msgs = recent_msgs[-recap_msg_limit:]
+            # Dev view no longer includes a separate Recent Actions block;
+            # actions/results are already reflected in broadcast messages.
+
+            rel_text = _relation_brief(name)
+
+            lines: List[str] = []
+            lines.append(f"=== Round {current_round} | Actor: {name} ===")
+            if rel_text:
+                lines.append(f"[Relation] {rel_text}")
+            lines.append("[World]")
+            lines.append(world_txt)
+            if recent_msgs:
+                lines.append("[Recent Messages]")
+                for e in recent_msgs:
+                    txt = str(e.get("text") or "").strip()
+                    if len(txt) > 160:
+                        txt = txt[:157] + "..."
+                    lines.append(f"- {e.get('actor')}: {txt}")
+            # (no Recent Actions section by design)
+
+            # Write to logs/<actor>_context_dev.log
+            logs_dir = project_root() / "logs"
+            try:
+                logs_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            # Use actor name directly (project uses ASCII names); fallback to safe filename
+            safe = "".join(ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name))
+            path = logs_dir / f"{safe}_context_dev.log"
+            with path.open("a", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n\n")
+        except Exception:
+            # Dev utility is best-effort; never break the main loop
+            pass
+
     async def _handle_tool_calls(origin: Msg, hub: MsgHub):
         text = _safe_text(origin)
         tool_calls = _parse_tool_calls(text)
@@ -665,8 +775,9 @@ async def run_demo(
         recent_msgs = [e for e in CHAT_LOG[start:] if e.get("actor") not in (None, "Host")]
         if recap_msg_limit > 0:
             recent_msgs = recent_msgs[-recap_msg_limit:]
-        recent_actions = ACTION_LOG[-recap_action_limit:] if recap_action_limit > 0 else []
-        if not recent_msgs and not recent_actions:
+        # Drop the separate actions section from recap; messages already include tool results
+        recent_actions = []
+        if not recent_msgs:
             return None
         lines: List[str] = [f"系统回顾（供 {name} 决策）"]
         if recent_msgs:
@@ -676,15 +787,7 @@ async def run_demo(
                 if len(txt) > 160:
                     txt = txt[:157] + "..."
                 lines.append(f"- {e.get('actor')}: {txt}")
-        if recent_actions:
-            lines.append("最近行为：")
-            for a in recent_actions:
-                who = a.get("actor"); tl = a.get("tool")
-                tlines = list(a.get("text") or [])
-                summ = (tlines[0] if tlines else "") or ""
-                if len(summ) > 160:
-                    summ = summ[:157] + "..."
-                lines.append(f"- {who}: {tl} -> {summ}")
+        # No separate actions block
         LAST_SEEN[name] = len(CHAT_LOG)
         return Msg("Host", "\\n".join(lines), "assistant")
 
@@ -896,6 +999,8 @@ async def run_demo(
 
                 # Inject a recap message for all participants before the actor decides
                 try:
+                    # Dev-only context card to per-actor log file
+                    _write_dev_context_card(name)
                     recap_msg = _recap_for(name)
                     if recap_msg is not None:
                         await _bcast(hub, recap_msg, phase="context:recap")
@@ -903,11 +1008,23 @@ async def run_demo(
                     pass
 
                 out = await agent(None)
-                await _bcast(
-                    hub,
-                    out,
-                    phase=f"npc:{name or agent.__class__.__name__}",
-                )
+                try:
+                    raw_text = _safe_text(out)
+                    cleaned = _strip_tool_calls_from_text(raw_text)
+                    if cleaned and cleaned.strip():
+                        msg_clean = Msg(getattr(out, "name", name), cleaned, getattr(out, "role", "assistant") or "assistant")
+                        await _bcast(
+                            hub,
+                            msg_clean,
+                            phase=f"npc:{name or agent.__class__.__name__}",
+                        )
+                except Exception:
+                    # If anything goes wrong, fall back to broadcasting the original
+                    await _bcast(
+                        hub,
+                        out,
+                        phase=f"npc:{name or agent.__class__.__name__}",
+                    )
                 await _handle_tool_calls(out, hub)
                 # After each action, if无敌对则退出战斗但继续对话流程
                 if not _hostiles_present():
