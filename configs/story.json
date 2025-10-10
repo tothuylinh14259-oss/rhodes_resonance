@@ -5,7 +5,7 @@
   },
   "scene": {
     "name": "旧城区·北侧仓棚",
-    "description": "旧城区·北侧仓棚。铁梁回声震耳，每名战斗者都盯紧了自己的对手——退路已绝，只能分出胜负！",
+    "description": "旧城区·北侧仓棚。铁梁回声震耳。",
     "objectives": [
       "冲突终结"
     ],
@@ -18,37 +18,21 @@
     ]
   },
   "initial_positions": {
-    "Doctor": [0, 0],
-    "Amiya": [0, 1],
-    "Mephisto": [6, -1],
-    "Faust": [10, 2]
-  },
-  "acts": [
-    {
-      "id": "scene_brawl",
-      "beats": [
-        {
-          "id": "engage",
-          "when": {
-            "time_min_gte": 480
-          },
-          "actions": [
-            {
-              "type": "set_scene",
-              "name": "旧城区·北侧仓棚",
-              "objectives": [
-                "冲突终结"
-              ],
-              "append": false
-            },
-            {
-              "type": "broadcast",
-              "text": "仓棚内的紧张气氛陡然攀升——所有人都在盯住各自的目标。"
-            }
-          ],
-          "once": true
-        }
-      ]
-    }
-  ]
+    "Doctor": [
+      0,
+      0
+    ],
+    "Amiya": [
+      0,
+      1
+    ],
+    "Mephisto": [
+      6,
+      -1
+    ],
+    "Faust": [
+      10,
+      2
+    ]
+  }
 }
