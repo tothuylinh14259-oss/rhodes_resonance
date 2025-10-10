@@ -161,7 +161,7 @@ async def run_demo(
         actor_entries = {}
     # Participants resolution per request: derive purely from story positions that were ingested
     # into `story_positions` (supports top-level initial_positions/positions 或 initial.positions)。
-    # If none present, fallback to default pair (Amiya, Doctor).
+    # If none present, run without participants (no implicit fallback to any default pair).
     allowed_names: List[str] = list(story_positions.keys())
     allowed_names_str = ", ".join(allowed_names) if allowed_names else ""
 

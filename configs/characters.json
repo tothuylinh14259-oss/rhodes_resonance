@@ -1,17 +1,9 @@
 {
-  "participants": [
-    "Amiya",
-    "Doctor",
-    "Mephisto",
-    "Faust"
-  ],
   "Doctor": {
     "type": "npc",
     "persona": "罗德岛“博士”：战术协调与决策核心，偏好整合情报、分配资源，在压力下保持冷静并快速下达指令。",
     "appearance": "常穿黑色作战外套与兜帽，面罩下是白发灰瞳的面容（动画版身高约165cm），体力偏弱但行动沉稳。",
-    "quotes": [
-      
-    ],
+    "quotes": [],
     "dnd": {
       "level": 1,
       "ac": 14,

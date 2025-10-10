@@ -1237,6 +1237,9 @@ def set_dnd_character(
     proficient_saves: Optional[List[str]] = None,
     move_speed_steps: Optional[int] = None,
     reach_steps: Optional[int] = None,
+    *,
+    # Backward-compat: accept legacy alias `move_speed` (steps)
+    move_speed: Optional[int] = None,
 ) -> ToolResponse:
     """Create/update a D&D-style character sheet (simplified, steps-only distances).
 
@@ -1254,8 +1257,12 @@ def set_dnd_character(
         "proficient_skills": [s.lower() for s in (proficient_skills or [])],
         "proficient_saves": [s.upper() for s in (proficient_saves or [])],
     })
-    # Movement (steps per turn)
-    ms = move_speed_steps if move_speed_steps is not None else sheet.get("move_speed_steps", DEFAULT_MOVE_SPEED_STEPS)
+    # Movement (steps per turn). Prefer explicit steps; fall back to legacy alias `move_speed`.
+    ms = (
+        move_speed_steps
+        if move_speed_steps is not None
+        else (move_speed if move_speed is not None else sheet.get("move_speed_steps", DEFAULT_MOVE_SPEED_STEPS))
+    )
     try:
         move_steps = int(ms)
     except Exception:

@@ -39,7 +39,7 @@ repo/
     settings/
       loader.py           # 配置加载与项目路径工具
   configs/
-    characters.json       # 参与者/人设/D&D数值/出场顺序
+    characters.json       # 角色配置（人设/D&D数值/关系）
     story.json            # 场景配置、初始位置、剧情节拍
     model.json            # LLM 接入（base_url、npc 模型等）
     prompts.json          # 可选：玩家人设、NPC提示词模板、名称映射（示例见 prompts.json.example）
@@ -81,8 +81,7 @@ repo/
 
 ## 配置要点（configs）
 
-- `characters.json`：决定参与者顺序与类型
-  - `participants`: 出场顺序（如 ["Amiya","Doctor", ...]）
+- `characters.json`：角色人设与数值、关系
   - 角色项：`type: "player"|"npc"`，`persona`（人设），`dnd`（AC/HP/能力/熟练）
   - 攻击范围（格/米）：在对应角色的 `dnd` 下添加以下任一字段即可被读取并生效（1格=1米）：
     - `reach` 或 `reach_m`：以米/格为单位的攻击距离（近战或通用攻击距离）
@@ -101,7 +100,7 @@ repo/
       }
     }
     ```
-- `story.json`：场景名称、胜利条件、初始坐标与剧情节拍（acts/beats）
+- `story.json`：场景名称、胜利条件、初始坐标与剧情节拍（acts/beats）；参与者与出场顺序由 `initial_positions` 或 `positions` 的键顺序决定
 - `prompts.json`（可选）：玩家人设、名称映射、NPC/敌人提示词模板（示例见 `prompts.json.example`）
 - `model.json`：`base_url`、`npc` 模型名、温度、是否流式
 - `time_rules.json`：各意图的时间消耗（分钟）
