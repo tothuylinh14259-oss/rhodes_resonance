@@ -21,45 +21,24 @@ except Exception:  # Fallback minimal stubs when Agentscope is unavailable
 
 
 # --- Core grid configuration ---
-GRID_SIZE_M = 1.0  # each grid step is 1 meter
-DEFAULT_MOVE_SPEED_M = 6.0  # standard humanoid walk in meters per turn
-DEFAULT_REACH_M = 1.0  # default melee reach in meters
-
-
-def steps_to_meters(steps: int) -> float:
-    """Convert integer grid steps to meters."""
-    return float(max(0, steps)) * GRID_SIZE_M
-
-
-def meters_to_steps_floor(meters: float) -> int:
-    """Convert meters to whole grid steps (floor; ignores sub-meter movement)."""
-    if meters <= 0:
-        return 0
-    steps = int(math.floor(meters / GRID_SIZE_M))
-    return max(0, steps)
-
-
-def meters_to_steps_ceil(meters: float) -> int:
-    """Convert meters to minimal steps needed to cover the distance (ceil)."""
-    if meters <= 0:
-        return 0
-    return max(0, int(math.ceil(meters / GRID_SIZE_M)))
+# Distances use grid steps only (简称“步”).
+DEFAULT_MOVE_SPEED_STEPS = 6  # standard humanoid walk in steps per turn
+DEFAULT_REACH_STEPS = 1       # default melee reach in steps
 
 
 def format_distance_steps(steps: int) -> str:
-    """Format a grid distance for narration.
-
-    Per latest requirement, user-facing text must use meters only and avoid the
-    concept/word of '格'. Keep internal calculations in steps as-is, but present
-    meters in narrative outputs.
-    """
-    meters = steps_to_meters(steps)
-    return f"{meters:.1f}米"
+    """Format a grid distance for narration in steps, e.g., "6步"."""
+    try:
+        s = int(steps)
+    except Exception:
+        s = 0
+    if s < 0:
+        s = 0
+    return f"{s}步"
 
 
 def _default_move_steps() -> int:
-    steps = meters_to_steps_floor(DEFAULT_MOVE_SPEED_M)
-    return steps if steps > 0 else 1
+    return int(DEFAULT_MOVE_SPEED_STEPS) if DEFAULT_MOVE_SPEED_STEPS > 0 else 1
 
 
 def _pair_key(a: str, b: str) -> Tuple[str, str]:
@@ -100,7 +79,7 @@ class World:
     initiative_scores: Dict[str, int] = field(default_factory=dict)
     # per-turn tokens/state for each name
     turn_state: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    # default walking speeds stored as grid steps (1 step = 1m by default)
+    # default walking speeds stored as grid steps
     speeds: Dict[str, int] = field(default_factory=dict)
     # range bands between pairs (engaged/near/far/long)
     range_bands: Dict[Tuple[str, str], str] = field(default_factory=dict)
@@ -264,11 +243,7 @@ def get_distance_steps_between(name_a: str, name_b: str) -> Optional[int]:
     return _grid_distance(pa, pb)
 
 
-def get_distance_m_between(name_a: str, name_b: str) -> Optional[float]:
-    steps = get_distance_steps_between(name_a, name_b)
-    if steps is None:
-        return None
-    return steps_to_meters(steps)
+# Removed meter-based distance helper; use steps only (get_distance_steps_between).
 
 
 def _band_for_steps(steps: int) -> str:
@@ -306,20 +281,13 @@ def get_move_speed_steps(name: str) -> int:
 def get_reach_steps(name: str) -> int:
     sheet = WORLD.characters.get(name, {})
     try:
-        # Support both reach_* and attack_range_* as synonyms
-        val = sheet.get("reach_steps") or sheet.get("attack_range_steps")
+        # Support both reach_* and attack_range_* as synonyms (steps only)
+        val = sheet.get("reach_steps") or sheet.get("attack_range_steps") or sheet.get("reach") or sheet.get("attack_range")
         if val is not None:
             return max(1, int(val))
     except Exception:
         pass
-    try:
-        reach_m = sheet.get("reach_m") or sheet.get("reach") or sheet.get("attack_range_m") or sheet.get("attack_range")
-        if reach_m is not None:
-            steps = meters_to_steps_ceil(float(reach_m))
-            return max(1, steps)
-    except Exception:
-        pass
-    return max(1, meters_to_steps_ceil(DEFAULT_REACH_M))
+    return max(1, int(DEFAULT_REACH_STEPS))
 
 
 def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse:
@@ -358,8 +326,8 @@ def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse
             "reached": reached,
             "remaining": remaining,
             "position": [x, y],
-            "moved_m": steps_to_meters(moved),
-            "remaining_m": steps_to_meters(remaining),
+            "moved_steps": moved,
+            "remaining_steps": remaining,
         },
     )
 
@@ -536,39 +504,31 @@ def _dex_mod_of(name: str) -> int:
     return _mod(dex)
 
 
-def set_speed(name: str, value: float = DEFAULT_MOVE_SPEED_M, unit: str = "meters"):
-    """Set walking speed for an actor.
+def set_speed(name: str, value: float = DEFAULT_MOVE_SPEED_STEPS, unit: str = "steps"):
+    """Set walking speed for an actor (steps only by default).
 
     Args:
         name: Actor identifier.
-        value: Numeric speed.
-        unit: 'meters', 'feet', or 'steps'. If omitted and value>15, assume feet.
+        value: Numeric speed value.
+        unit: 'steps' (default) or 'feet'.
     """
 
-    unit_norm = (unit or "meters").lower()
-    if unit_norm not in {"meters", "feet", "steps"}:
-        unit_norm = "meters"
-
-    # Heuristic: legacy calls passed feet without specifying unit.
-    if (unit is None or unit_norm == "meters") and value > 15:
-        unit_norm = "feet"
+    unit_norm = (unit or "steps").lower()
+    if unit_norm not in {"steps", "feet"}:
+        unit_norm = "steps"
 
     if unit_norm == "feet":
-        meters = float(value) * 0.3048
-        steps = meters_to_steps_floor(meters)
-    elif unit_norm == "steps":
-        steps = max(0, int(round(value)))
-        meters = steps_to_meters(steps)
+        # Assume standard 5ft per grid step
+        steps = max(0, int(math.ceil(float(value) / 5.0)))
     else:
-        meters = float(value)
-        steps = meters_to_steps_floor(meters)
+        steps = max(0, int(round(float(value))))
 
-    if meters > 0 and steps == 0:
+    if steps == 0 and value > 0:
         steps = 1
     WORLD.speeds[str(name)] = steps
     return ToolResponse(
         content=[TextBlock(type="text", text=f"速度设定：{name} {format_distance_steps(steps)}")],
-        metadata={"name": name, "speed_steps": steps, "speed_m": meters},
+        metadata={"name": name, "speed_steps": steps},
     )
 
 
@@ -765,7 +725,7 @@ def consume_movement(name: str, distance_steps: float) -> ToolResponse:
     if steps <= 0:
         return ToolResponse(
             content=[TextBlock(type="text", text=f"{nm} 不移动")],
-            metadata={"ok": True, "left_steps": left, "left_m": steps_to_meters(left)},
+            metadata={"ok": True, "left_steps": left},
         )
     if steps > left:
         st["move_left"] = 0
@@ -776,7 +736,7 @@ def consume_movement(name: str, distance_steps: float) -> ToolResponse:
     st["move_left"] = left - steps
     return ToolResponse(
         content=[TextBlock(type="text", text=f"{nm} 移动 {format_distance_steps(steps)}（剩余 {format_distance_steps(st['move_left'])}）")],
-        metadata={"ok": True, "left_steps": st["move_left"], "left_m": steps_to_meters(st["move_left"]), "spent_steps": steps},
+        metadata={"ok": True, "left_steps": st["move_left"], "spent_steps": steps},
     )
 
 
@@ -978,7 +938,7 @@ def act_dash(name: str):
     st["move_left"] = int(st.get("move_left", spd_steps)) + spd_steps
     return ToolResponse(
         content=[TextBlock(type="text", text=f"{nm} 冲刺（移动力+{format_distance_steps(spd_steps)}）")],
-        metadata={"ok": True, "move_left_steps": st["move_left"], "move_left_m": steps_to_meters(st["move_left"])}
+        metadata={"ok": True, "move_left_steps": st["move_left"]}
     )
 
 
@@ -1275,12 +1235,13 @@ def set_dnd_character(
     max_hp: int,
     proficient_skills: Optional[List[str]] = None,
     proficient_saves: Optional[List[str]] = None,
-    move_speed: Optional[float] = None,
-    reach: Optional[float] = None,
+    move_speed_steps: Optional[int] = None,
+    reach_steps: Optional[int] = None,
 ) -> ToolResponse:
-    """Create/update a D&D-style character sheet (simplified).
+    """Create/update a D&D-style character sheet (simplified, steps-only distances).
 
-    Units use meters (1格=1米)。abilities: dict with STR/DEX/CON/INT/WIS/CHA as keys.
+    Distances and speeds are stored and displayed in grid steps（步）。
+    abilities: dict with STR/DEX/CON/INT/WIS/CHA as keys.
     """
     sheet = WORLD.characters.setdefault(name, {})
     sheet.update({
@@ -1293,35 +1254,31 @@ def set_dnd_character(
         "proficient_skills": [s.lower() for s in (proficient_skills or [])],
         "proficient_saves": [s.upper() for s in (proficient_saves or [])],
     })
-    # Movement (meters per turn -> steps)
-    move_val = move_speed if move_speed is not None else sheet.get("move_speed", DEFAULT_MOVE_SPEED_M)
+    # Movement (steps per turn)
+    ms = move_speed_steps if move_speed_steps is not None else sheet.get("move_speed_steps", DEFAULT_MOVE_SPEED_STEPS)
     try:
-        move_m = float(move_val)
+        move_steps = int(ms)
     except Exception:
-        move_m = DEFAULT_MOVE_SPEED_M
-    move_steps = meters_to_steps_floor(move_m)
-    if move_m > 0 and move_steps == 0:
+        move_steps = int(DEFAULT_MOVE_SPEED_STEPS)
+    if move_steps <= 0:
         move_steps = 1
-    sheet["move_speed_m"] = move_m
     sheet["move_speed_steps"] = move_steps
-    sheet["move_speed"] = move_m  # legacy key now expressed in meters
     WORLD.speeds[name] = move_steps
 
-    # Reach (meters)
-    reach_val = reach if reach is not None else sheet.get("reach_m", sheet.get("reach", DEFAULT_REACH_M))
+    # Reach (steps)
+    rs = reach_steps if reach_steps is not None else sheet.get("reach_steps", sheet.get("reach", DEFAULT_REACH_STEPS))
     try:
-        reach_m = float(reach_val)
+        rsteps = int(rs)
     except Exception:
-        reach_m = DEFAULT_REACH_M
-    reach_steps = max(1, meters_to_steps_ceil(reach_m))
-    sheet["reach_m"] = reach_m
-    sheet["reach_steps"] = reach_steps
+        rsteps = int(DEFAULT_REACH_STEPS)
+    rsteps = max(1, rsteps)
+    sheet["reach_steps"] = rsteps
 
     # Keep legacy keys for compatibility
     WORLD.characters[name]["hp"] = sheet["hp"]
     WORLD.characters[name]["max_hp"] = sheet["max_hp"]
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"设定 {name}（Lv{sheet['level']} AC {sheet['ac']} HP {sheet['hp']}/{sheet['max_hp']}，移动 {format_distance_steps(move_steps)}，触及 {format_distance_steps(reach_steps)}）")],
+        content=[TextBlock(type="text", text=f"设定 {name}（Lv{sheet['level']} AC {sheet['ac']} HP {sheet['hp']}/{sheet['max_hp']}，移动 {format_distance_steps(move_steps)}，触及 {format_distance_steps(rsteps)}）")],
         metadata={"name": name, **sheet},
     )
 

@@ -79,6 +79,24 @@ def _join_lines(tpl):
     return tpl
 
 
+# Parse reach/attack range from DnD config in steps (grid units).
+def _reach_from_dnd_steps(d: Mapping[str, Any]) -> Optional[int]:
+    def _to_int(x: Any) -> Optional[int]:
+        try:
+            return int(float(x))
+        except Exception:
+            return None
+    if not isinstance(d, dict):
+        return None
+    # Prefer explicit steps keys; treat plain 'reach'/'attack_range' as steps as well.
+    for k in ("reach_steps", "attack_range_steps", "reach", "attack_range"):
+        v = d.get(k)
+        iv = _to_int(v)
+        if iv is not None:
+            return iv
+    return None
+
+
 async def run_demo(
     *,
     emit: Callable[..., None],
@@ -124,7 +142,7 @@ async def run_demo(
 
     doctor_persona = prompts.get("player_persona") or _DEFAULT_DOCTOR_PERSONA
     npc_prompt_tpl = _join_lines(prompts.get("npc_prompt_template"))
-    name_map = prompts.get("name_map") or {}
+
 
     # Build actors from configs or fallback
     char_cfg = dict(characters or {})
@@ -192,32 +210,10 @@ async def run_demo(
             try:
                 if dnd:
                     # Allow configuring per-character attack reach in characters.json
-                    # Supported keys under each actor's `dnd`:
-                    # - reach (meters/格)
-                    # - reach_m (meters)
-                    # - reach_steps (grid steps)
-                    # - attack_range / attack_range_m / attack_range_steps (aliases)
-                    def _reach_from_dnd(d: Mapping[str, Any]) -> Optional[float]:
-                        # Steps are 1m per step in this demo
-                        def _to_float(x: Any) -> Optional[float]:
-                            try:
-                                return float(x)
-                            except Exception:
-                                return None
-                        # Prefer explicit meters, then generic reach, then steps
-                        for k in ("reach_m", "reach", "attack_range_m", "attack_range"):
-                            v = d.get(k)
-                            f = _to_float(v)
-                            if f is not None:
-                                return f
-                        for k in ("reach_steps", "attack_range_steps"):
-                            v = d.get(k)
-                            f = _to_float(v)
-                            if f is not None:
-                                return f  # 1 step == 1 meter in this grid
-                        return None
-
-                    reach_m = _reach_from_dnd(dnd)
+                    # Supported keys under each actor's `dnd` (steps only):
+                    # - reach_steps / attack_range_steps
+                    # - reach / attack_range (treated as steps)
+                    reach_steps = _reach_from_dnd_steps(dnd)
                     world.set_dnd_character(
                         name=name,
                         level=int(dnd.get("level", 1)),
@@ -226,8 +222,8 @@ async def run_demo(
                         max_hp=int(dnd.get("max_hp", 8)),
                         proficient_skills=dnd.get("proficient_skills") or [],
                         proficient_saves=dnd.get("proficient_saves") or [],
-                        move_speed=int(dnd.get("move_speed", 6)),
-                        reach=reach_m,
+                        move_speed_steps=int(dnd.get("move_speed", 6)),
+                        reach_steps=reach_steps,
                     )
                 else:
                     # Ensure the character exists even without dnd config
@@ -239,7 +235,7 @@ async def run_demo(
                         max_hp=10,
                         proficient_skills=[],
                         proficient_saves=[],
-                        move_speed=6,
+                        move_speed_steps=6,
                     )
             except Exception:
                 pass
@@ -267,25 +263,7 @@ async def run_demo(
             dnd = entry.get("dnd") or {}
             if dnd:
                 try:
-                    def _reach_from_dnd(d: Mapping[str, Any]) -> Optional[float]:
-                        def _to_float(x: Any) -> Optional[float]:
-                            try:
-                                return float(x)
-                            except Exception:
-                                return None
-                        for k in ("reach_m", "reach", "attack_range_m", "attack_range"):
-                            v = d.get(k)
-                            f = _to_float(v)
-                            if f is not None:
-                                return f
-                        for k in ("reach_steps", "attack_range_steps"):
-                            v = d.get(k)
-                            f = _to_float(v)
-                            if f is not None:
-                                return f
-                        return None
-
-                    reach_m = _reach_from_dnd(dnd)
+                    reach_steps = _reach_from_dnd_steps(dnd)
                     world.set_dnd_character(
                         name=name,
                         level=int(dnd.get("level", 1)),
@@ -294,8 +272,8 @@ async def run_demo(
                         max_hp=int(dnd.get("max_hp", 8)),
                         proficient_skills=dnd.get("proficient_skills") or [],
                         proficient_saves=dnd.get("proficient_saves") or [],
-                        move_speed=int(dnd.get("move_speed", 6)),
-                        reach=reach_m,
+                        move_speed_steps=int(dnd.get("move_speed", 6)),
+                        reach_steps=reach_steps,
                     )
                 except Exception:
                     pass
@@ -340,7 +318,7 @@ async def run_demo(
             max_hp=12,
             proficient_skills=["athletics", "insight", "medicine"],
             proficient_saves=["STR", "DEX"],
-            move_speed=6,
+            move_speed_steps=6,
         )
 
     # Scene setup sourced from story config (time/weather/details from JSON; no hardcoded defaults)
@@ -434,7 +412,13 @@ async def run_demo(
         except Exception:
             pass
 
-    TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<body>.*)\)")
+    # Accept both styles that agents may output:
+    # 1) CALL_TOOL name({json})
+    # 2) CALL_TOOL name\n{json}
+    # Some models also append a suffix like ":3" after the tool name (e.g. for footnotes).
+    # We therefore avoid a strict regex on parentheses and instead scan forward
+    # for the next balanced JSON object after the tool name token.
+    TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 
     # Centralised tool dispatch mapping (must be injected by caller)
     TOOL_DISPATCH = dict(tool_dispatch or {})
@@ -471,36 +455,63 @@ async def run_demo(
         calls: List[Tuple[str, dict]] = []
         if not text:
             return calls
+
+        def _extract_json_after(s: str, start_pos: int) -> Tuple[Optional[str], int]:
+            """Return (json_text, end_index) for the first balanced {...} after start_pos.
+
+            end_index points to the character index just after the closing brace,
+            or start_pos if nothing could be parsed.
+            """
+            n = len(s)
+            i = s.find("{", start_pos)
+            if i == -1:
+                return None, start_pos
+            brace = 0
+            in_str = False
+            esc = False
+            j = i
+            while j < n:
+                ch = s[j]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == '{':
+                        brace += 1
+                    elif ch == '}':
+                        brace -= 1
+                        if brace == 0:
+                            return s[i : j + 1], j + 1
+                j += 1
+            return None, start_pos
+
         idx = 0
         while True:
             m = TOOL_CALL_PATTERN.search(text, idx)
             if not m:
                 break
             name = m.group("name")
-            body = m.group("body").strip()
-            start = 0
-            brace = 0
-            json_body = None
-            for i, ch in enumerate(body):
-                if ch == "{" and brace == 0:
-                    start = i
-                    brace = 1
-                    continue
-                if ch == "{" and brace > 0:
-                    brace += 1
-                elif ch == "}" and brace > 0:
-                    brace -= 1
-                    if brace == 0:
-                        json_body = body[start : i + 1]
-                        break
-            params = {}
+            # Skip any suffix like ":3" or whitespace/colon before the JSON
+            scan_from = m.end()
+            # Extract JSON object following the tool name (with or without parentheses)
+            json_body, end_pos = _extract_json_after(text, scan_from)
+            params: dict = {}
             if json_body:
                 try:
                     params = json.loads(json_body)
                 except Exception:
                     params = {}
-            calls.append((name, params))
-            idx = m.end()
+                calls.append((name, params))
+                idx = end_pos
+            else:
+                # No JSON body found; advance to avoid infinite loop
+                idx = scan_from
         return calls
 
     async def _handle_tool_calls(origin: Msg, hub: MsgHub):
@@ -691,11 +702,25 @@ async def run_demo(
         (" | 初始坐标：" + "; ".join(_start_pos_lines) if _start_pos_lines else "")
     )
 
+    # Opening text: prefer configs/story.json -> scene.description/opening; fallback to legacy hardcoded line
+    opening_text: Optional[str] = None
+    try:
+        if isinstance(story_cfg, dict):
+            sc = story_cfg.get("scene")
+            if isinstance(sc, dict):
+                txt = (sc.get("description") or sc.get("opening") or "")
+                if isinstance(txt, str) and txt.strip():
+                    opening_text = txt.strip()
+    except Exception:
+        opening_text = None
+    default_opening = "旧城区·北侧仓棚。铁梁回声震耳，每名战斗者都盯紧了自己的对手——退路已绝，只能分出胜负！"
+    announcement_text = (opening_text or default_opening) + "\n" + _participants_header
+
     async with MsgHub(
         participants=list(participants_order),
         announcement=Msg(
             "Host",
-            "旧城区·北侧仓棚。铁梁回声震耳，每名战斗者都盯紧了自己的对手——退路已绝，只能分出胜负！\n" + _participants_header,
+            announcement_text,
             "assistant",
         ),
     ) as hub:
