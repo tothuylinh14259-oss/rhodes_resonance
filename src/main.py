@@ -271,17 +271,6 @@ async def run_demo(
         world_chars = world.runtime().get("characters") or {}
     except Exception:
         world_chars = {}
-    if "Doctor" in allowed_names and "Doctor" not in world_chars:
-        world.set_dnd_character(
-            name="Doctor",
-            level=1,
-            ac=14,
-            abilities={"STR": 12, "DEX": 16, "CON": 14, "INT": 10, "WIS": 14, "CHA": 10},
-            max_hp=12,
-            proficient_skills=["athletics", "insight", "medicine"],
-            proficient_saves=["STR", "DEX"],
-            move_speed_steps=6,
-        )
 
     # Scene setup sourced from story config (time/weather/details from JSON; no hardcoded defaults)
     scene_cfg = story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
@@ -1101,6 +1090,22 @@ def main() -> None:
     # Build logging context under project root
     root = project_root()
     log_ctx = create_logging_context(base_path=root)
+
+    # Clean dev context logs at run start (mirror run_story/run_events overwrite)
+    try:
+        logs_dir = root / "logs"
+        if logs_dir.exists():
+            for _p in logs_dir.glob("*_context_dev.log"):
+                try:
+                    _p.unlink()  # remove; writer will recreate with append
+                except Exception:
+                    try:
+                        _p.open("w", encoding="utf-8").close()  # fallback: truncate
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
 
     # Emit function adapter
     def emit(*, event_type: str, actor=None, phase=None, turn=None, data=None) -> None:
