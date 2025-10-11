@@ -27,7 +27,6 @@ from settings.loader import (
     project_root,
     load_prompts,
     load_model_config,
-    load_feature_flags,
     load_story_config,
     load_characters,
     load_weapons,
@@ -95,7 +94,6 @@ async def run_demo(
     tool_dispatch: Dict[str, object] | None,
     prompts: Mapping[str, Any],
     model_cfg: Mapping[str, Any],
-    feature_flags: Mapping[str, Any],
     story_cfg: Mapping[str, Any],
     characters: Mapping[str, Any],
     world: Any,
@@ -216,6 +214,36 @@ async def run_demo(
             except Exception:
                 pass
             _apply_story_position(name)
+            # Load inventory (weapons as items) from character config
+            try:
+                inv = entry.get("inventory") or {}
+                if isinstance(inv, dict):
+                    for it, cnt in inv.items():
+                        try:
+                            world_impl.grant_item(target=name, item=str(it), n=int(cnt))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # Build per-actor weapon brief for prompt
+            def _weapon_brief_for(nm: str) -> str:
+                try:
+                    wdefs = dict(getattr(world_impl.WORLD, "weapon_defs", {}) or {})
+                    bag = dict((world_impl.WORLD.inventory or {}).get(str(nm), {}) or {})
+                except Exception:
+                    return "无"
+                entries: List[str] = []
+                for wid, count in bag.items():
+                    if int(count) <= 0 or wid not in wdefs:
+                        continue
+                    wd = wdefs.get(wid) or {}
+                    try:
+                        rs = int(wd.get("reach_steps", 1))
+                    except Exception:
+                        rs = 1
+                    dmg = wd.get("damage_expr", "1d4+STR")
+                    entries.append(f"{wid}(触及 {rs}步, 伤害 {dmg})")
+                return "；".join(entries) if entries else "无"
             persona = entry.get("persona") or (doctor_persona if name == "Doctor" else "一个简短的人设描述")
             appearance = entry.get("appearance")
             quotes = entry.get("quotes")
@@ -228,6 +256,7 @@ async def run_demo(
                 appearance=appearance,
                 quotes=quotes,
                 relation_brief=_relation_brief(name),
+                weapon_brief=_weapon_brief_for(name),
                 tools=tool_list,
             )
             npcs_list.append(agent)
@@ -381,9 +410,10 @@ async def run_demo(
     CHAT_LOG: List[Dict[str, Any]] = []     # {actor, role, text, turn, phase}
     ACTION_LOG: List[Dict[str, Any]] = []   # {actor, tool, type, text|params, meta, turn}
     LAST_SEEN: Dict[str, int] = {}          # per-actor chat index checkpoint
-    recap_enabled = bool((feature_flags or {}).get("pre_turn_recap", True))
-    recap_msg_limit = int((feature_flags or {}).get("recap_msg_limit", 6))
-    recap_action_limit = int((feature_flags or {}).get("recap_action_limit", 6))
+    # Recap settings: fixed defaults (feature flags removed)
+    recap_enabled = True
+    recap_msg_limit = 6
+    recap_action_limit = 6
 
     def _safe_text(msg: Msg) -> str:
         try:
@@ -782,11 +812,7 @@ async def run_demo(
         await sequential_pipeline(npcs_list)
         _emit("state_update", phase="initial", data={"state": world.snapshot()})
         round_idx = 1
-        try:
-            _cfg_val = int(feature_flags.get("max_rounds")) if isinstance(feature_flags, dict) else None
-            max_rounds = _cfg_val if (_cfg_val is not None and _cfg_val > 0) else None
-        except Exception:
-            max_rounds = None
+        max_rounds = None
 
         def _objectives_resolved() -> bool:
             snap = world.snapshot()
@@ -801,8 +827,8 @@ async def run_demo(
             return True
 
         end_reason: Optional[str] = None
-        # Default to original semantics: no hostiles -> end
-        require_hostiles = bool(feature_flags.get("require_hostiles", True))
+        # Default to original semantics: end when no hostiles (fixed behaviour)
+        require_hostiles = True
 
         def _is_alive(nm: str) -> bool:
             try:
@@ -1079,7 +1105,6 @@ def main() -> None:
     # Load configs
     prompts = load_prompts()
     model_cfg_obj = load_model_config()
-    feature_flags = load_feature_flags()
     story_cfg = load_story_config()
     characters = load_characters()
     weapons = load_weapons() or {}
@@ -1137,7 +1162,6 @@ def main() -> None:
                 tool_dispatch=tool_dispatch,
                 prompts=prompts,
                 model_cfg=model_cfg,
-                feature_flags=feature_flags,
                 story_cfg=story_cfg,
                 characters=characters,
                 world=world,

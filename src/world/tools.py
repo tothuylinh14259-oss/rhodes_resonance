@@ -1445,6 +1445,21 @@ def attack_with_weapon(
             return "未知"
         return format_distance_steps(int(steps))
 
+    # Ownership gate: attacker must possess the weapon (count > 0)
+    bag = WORLD.inventory.get(str(attacker), {}) or {}
+    if int(bag.get(str(weapon), 0)) <= 0:
+        msg = TextBlock(type="text", text=f"{attacker} 未持有武器 {weapon}，攻击取消。")
+        return ToolResponse(
+            content=[msg],
+            metadata={
+                "attacker": attacker,
+                "defender": defender,
+                "weapon_id": weapon,
+                "ok": False,
+                "error_type": "weapon_not_owned",
+            },
+        )
+
     if distance_before is not None and distance_before > reach_steps:
         msg = TextBlock(type="text", text=f"距离不足：{attacker} 使用 {weapon} 攻击 {defender} 失败（距离 {_fmt_distance(distance_before)}，触及 {_fmt_distance(reach_steps)}）")
         return ToolResponse(

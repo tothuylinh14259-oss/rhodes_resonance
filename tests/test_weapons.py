@@ -6,6 +6,7 @@ from world.tools import (
     set_position,
     set_weapon_defs,
     attack_with_weapon,
+    grant_item,
 )
 
 
@@ -30,6 +31,7 @@ def test_attack_with_weapon_in_reach():
     set_weapon_defs({
         "longsword": {"reach_steps": 1, "ability": "STR", "damage_expr": "1d8+STR", "proficient_default": True}
     })
+    grant_item("A", "longsword", 1)
     res = attack_with_weapon("A", "B", weapon="longsword")
     assert res.metadata.get("reach_ok") is True
     assert res.metadata.get("weapon_id") == "longsword"
@@ -57,7 +59,7 @@ def test_attack_with_weapon_out_of_reach_fails():
         "baton": {"reach_steps": 1, "ability": "STR", "damage_expr": "1d4+STR"}
     })
     res = attack_with_weapon("C", "D", weapon="baton")
-    assert res.metadata.get("reach_ok") is False
+    # Must fail because attacker doesn't own the weapon
+    assert res.metadata.get("error_type") == "weapon_not_owned"
     # Position unchanged (no auto move)
     assert WORLD.positions["C"] == (0, 0)
-

@@ -25,6 +25,7 @@ DEFAULT_PROMPT_HEADER = (
     "外观特征：{appearance}\n"
     "常用语气/台词：{quotes}\n"
     "当前立场提示（仅你视角）：{relation_brief}\n"
+    "可用武器：{weapon_brief}\n"
 )
 DEFAULT_PROMPT_RULES = (
     "对话要求：\n"
@@ -77,6 +78,7 @@ def make_kimi_npc(
     appearance: Optional[str] = None,
     quotes: Optional[list[str] | str] = None,
     relation_brief: Optional[str] = None,
+    weapon_brief: Optional[str] = None,
     tools: Optional[Iterable[object]] = None,
 ) -> ReActAgent:
     """Create an LLM-backed NPC using Kimi's OpenAI-compatible API."""
@@ -112,6 +114,7 @@ def make_kimi_npc(
         "appearance": appearance_text,
         "quotes": quotes_text,
         "relation_brief": relation_text,
+        "weapon_brief": (weapon_brief or "无"),
         "tools": tools_text,
         "intent_schema": intent_schema,
         "allowed_names": allowed_names or "Doctor, Amiya",

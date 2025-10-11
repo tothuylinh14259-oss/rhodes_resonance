@@ -25,9 +25,9 @@
         "STR",
         "DEX"
       ],
-      "move_speed": 6,
-      "reach": 1
-    }
+      "move_speed": 6
+    },
+    "inventory": { "doctor_baton": 1 }
   },
   "Amiya": {
     "type": "npc",
@@ -58,9 +58,9 @@
         "INT",
         "WIS"
       ],
-      "move_speed": 6,
-      "reach": 6
-    }
+      "move_speed": 6
+    },
+    "inventory": { "amiya_focus": 1 }
   },
   "Mephisto": {
     "type": "npc",
@@ -91,9 +91,9 @@
         "WIS",
         "CHA"
       ],
-      "move_speed": 6,
-      "reach": 4
-    }
+      "move_speed": 6
+    },
+    "inventory": { "mephisto_cane": 1 }
   },
   "Faust": {
     "type": "npc",
@@ -124,9 +124,9 @@
         "DEX",
         "INT"
       ],
-      "move_speed": 6,
-      "reach": 12
-    }
+      "move_speed": 6
+    },
+    "inventory": { "faust_crossbow": 1 }
   },
   "relations": {
     "Doctor": {
