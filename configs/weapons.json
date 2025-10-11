@@ -1,4 +1,11 @@
 {
+  "doctor_knife": {
+    "label": "战术小刀",
+    "reach_steps": 1,
+    "ability": "STR",
+    "damage_expr": "1d4+STR",
+    "proficient_default": false
+  },
   "doctor_baton": {
     "label": "战术警棍",
     "reach_steps": 1,
@@ -42,4 +49,3 @@
     "proficient_default": true
   }
 }
-
