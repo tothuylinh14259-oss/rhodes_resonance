@@ -101,7 +101,7 @@ repo/
 - 查询：使用 `WORLD.snapshot()` 获取原始世界状态（由上层渲染人类可读概要）
 - 目标：`add_objective(name)`, `complete_objective(name, note?)`, `block_objective(name, reason?)`
 
-工具返回 `ToolResponse`；本版本不再自动裁决（仅展示 NPC 对白与意图）。
+工具返回 `ToolResponse`；本版本不再自动裁决（仅展示 NPC 对白与工具调用）。
 
 ## 开发与规范
 
