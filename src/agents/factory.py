@@ -12,13 +12,6 @@ from agentscope.tool import Toolkit  # type: ignore
 # No component imports; the model configuration is passed in from main as a mapping.
 
 
-DEFAULT_INTENT_SCHEMA = (
-    '{\n  "intent": "attack|talk|investigate|move|assist|use_item|wait",\n'
-    '  "target": "目标名称",\n  "skill": "perception|medicine|...",\n'
-    '  "ability": "STR|DEX|CON|INT|WIS|CHA",\n  "proficient": true,\n  "dc_hint": 12,\n'
-    '  "damage_expr": "1d4+STR",\n  "time_cost": 1\n}'
-)
-
 DEFAULT_PROMPT_HEADER = (
     "你是游戏中的NPC：{name}。\n"
     "人设：{persona}\n"
@@ -88,7 +81,6 @@ def make_kimi_npc(
     model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
     tools_text = "perform_attack(), advance_position(), adjust_relation(), transfer_item()"
-    intent_schema = DEFAULT_INTENT_SCHEMA
     tpl = _join_lines(prompt_template)
 
     appearance_text = (appearance or "外观描写未提供，可根据设定自行补充细节。").strip()
@@ -116,7 +108,6 @@ def make_kimi_npc(
         "relation_brief": relation_text,
         "weapon_brief": (weapon_brief or "无"),
         "tools": tools_text,
-        "intent_schema": intent_schema,
         "allowed_names": allowed_names or "Doctor, Amiya",
     }
 
@@ -136,7 +127,6 @@ def make_kimi_npc(
                 appearance=appearance_text,
                 quotes=quotes_text,
                 allowed_names=allowed_names or "Doctor, Amiya",
-                intent_schema=intent_schema,
                 tools=tools_text,
                 relation_brief=relation_text,
             )

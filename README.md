@@ -20,7 +20,7 @@ export KIMI_MODEL=kimi-k2-turbo-preview
 python src/main.py      # 入口（已内联引擎逻辑）
 ```
 
-运行期望：两个 NPC 在“旧城区·北侧仓棚”进行回合制对话，每回合输出对白与一个意图 JSON（不执行裁决/导演动作）；过程写入 `logs/run_events.jsonl`（结构化事件）与 `logs/run_story.log`（对话文本，来自广播内容）。
+运行期望：两个 NPC 在“旧城区·北侧仓棚”进行回合制对话，每回合输出对白，并通过 CALL_TOOL 调用一个工具（不执行裁决/导演动作）；过程写入 `logs/run_events.jsonl`（结构化事件）与 `logs/run_story.log`（对话文本，来自广播内容）。
 
 ## 目录结构（当前）
 
@@ -59,7 +59,7 @@ repo/
 
 ## 运行时交互
 
-- 本分支已移除 KP/玩家输入流程，仅 NPC 轮流行动，输出对白与一个意图 JSON。
+- 本分支已移除 KP/玩家输入流程，仅 NPC 轮流行动，输出对白与一个 CALL_TOOL 工具调用。
 - 每回合流程（简化）：
   1) 主持信息 + 世界概要
   2) NPC 依序行动（不进行裁决/导演动作）
