@@ -659,58 +659,7 @@ def consume_movement(name: str, distance_steps: float) -> ToolResponse:
     )
 
 
-def auto_move_into_reach(attacker: str, defender: str, reach_steps: Optional[int] = None) -> ToolResponse:
-    """Attempt to move attacker into melee reach of defender."""
-
-    atk = str(attacker)
-    dfd = str(defender)
-    reach = max(1, int(reach_steps if reach_steps is not None else get_reach_steps(atk)))
-    distance_before = get_distance_steps_between(atk, dfd)
-    out: List[TextBlock] = []
-
-    if distance_before is None:
-        out.append(TextBlock(type="text", text=f"{atk} 未知与 {dfd} 的距离，无法自动靠近。"))
-        return ToolResponse(content=out, metadata={"ok": False, "reason": "distance_unknown", "reach_steps": reach})
-
-    if distance_before <= reach:
-        out.append(TextBlock(type="text", text=f"{atk} 已处于攻击距离内（距离 {format_distance_steps(distance_before)}）。"))
-        return ToolResponse(content=out, metadata={"ok": True, "moved_steps": 0, "distance_before": distance_before, "distance_after": distance_before, "reach_steps": reach})
-
-    target_pos = WORLD.positions.get(dfd)
-    if target_pos is None:
-        out.append(TextBlock(type="text", text=f"尚未记录 {dfd} 的坐标，无法靠近。"))
-        return ToolResponse(content=out, metadata={"ok": False, "reason": "target_position_missing", "reach_steps": reach})
-
-    need = distance_before - reach
-    turn_state = WORLD.turn_state.setdefault(atk, {})
-    left = int(turn_state.get("move_left", get_move_speed_steps(atk)))
-    if left <= 0:
-        out.append(TextBlock(type="text", text=f"{atk} 移动力耗尽，仍距 {dfd} {format_distance_steps(distance_before)}。"))
-        return ToolResponse(content=out, metadata={"ok": False, "reason": "no_movement", "needed_steps": need, "distance_before": distance_before, "reach_steps": reach})
-
-    move_steps = min(need, left)
-    consume_res = consume_movement(atk, move_steps)
-    move_res = move_towards(atk, target_pos, move_steps)
-    out.extend(consume_res.content or [])
-    out.extend(move_res.content or [])
-
-    distance_after = get_distance_steps_between(atk, dfd)
-    in_reach = distance_after is not None and distance_after <= reach
-    if not in_reach and distance_after is not None:
-        out.append(TextBlock(type="text", text=f"仍距 {dfd} {format_distance_steps(distance_after)}，触及范围 {format_distance_steps(reach)}。"))
-    elif distance_after is None:
-        out.append(TextBlock(type="text", text=f"无法确认与 {dfd} 的最终距离。"))
-
-    meta = {
-        "ok": bool(in_reach),
-        "distance_before": distance_before,
-        "distance_after": distance_after,
-        "reach_steps": reach,
-        "needed_steps": need,
-        "moved_steps": move_res.metadata.get("moved") if move_res.metadata else move_steps,
-        "movement": consume_res.metadata,
-    }
-    return ToolResponse(content=out, metadata=meta)
+## auto_move_into_reach removed: attacks no longer auto-move into reach.
 
 
 # ---- Range bands & cover/conditions ----
@@ -1340,7 +1289,6 @@ def attack_roll_dnd(
     target_ac: Optional[int] = None,
     damage_expr: str = "1d4+STR",
     advantage: str = "none",
-    auto_move: bool = False,
 ) -> ToolResponse:
     """D&D-like attack roll: d20 + ability mod (+prof) vs AC, on hit apply damage.
     damage_expr 支持 +STR/+DEX/+CON 等修正占位符。
@@ -1361,34 +1309,27 @@ def attack_roll_dnd(
     distance_before = get_distance_steps_between(attacker, defender)
     distance_after = distance_before
     pre_logs: List[TextBlock] = []
-    auto_meta: Optional[Dict[str, Any]] = None
 
+    # Distance gate: attack never auto-moves. If out of reach, fail early.
     if distance_before is not None and distance_before > reach_steps:
-        if auto_move:
-            move_res = auto_move_into_reach(attacker, defender, reach_steps)
-            pre_logs.extend(move_res.content or [])
-            auto_meta = move_res.metadata or {}
-            distance_after = get_distance_steps_between(attacker, defender)
-        else:
-            pre_logs.append(
-                TextBlock(
-                    type="text",
-                    text=f"距离不足：{attacker} 与 {defender} 相距 {_fmt_distance(distance_before)}，触及范围 {_fmt_distance(reach_steps)}。",
-                )
+        pre_logs.append(
+            TextBlock(
+                type="text",
+                text=f"距离不足：{attacker} 与 {defender} 相距 {_fmt_distance(distance_before)}，触及范围 {_fmt_distance(reach_steps)}。",
             )
-            return ToolResponse(
-                content=pre_logs,
-                metadata={
-                    "attacker": attacker,
-                    "defender": defender,
-                    "hit": False,
-                    "reach_ok": False,
-                    "distance_before": distance_before,
-                    "distance_after": distance_before,
-                    "reach_steps": reach_steps,
-                    "auto_move": auto_meta,
-                },
-            )
+        )
+        return ToolResponse(
+            content=pre_logs,
+            metadata={
+                "attacker": attacker,
+                "defender": defender,
+                "hit": False,
+                "reach_ok": False,
+                "distance_before": distance_before,
+                "distance_after": distance_before,
+                "reach_steps": reach_steps,
+            },
+        )
 
     if distance_after is not None and distance_after > reach_steps:
         pre_logs.append(
@@ -1407,7 +1348,6 @@ def attack_roll_dnd(
                 "distance_before": distance_before,
                 "distance_after": distance_after,
                 "reach_steps": reach_steps,
-                "auto_move": auto_meta,
             },
         )
 
@@ -1442,7 +1382,6 @@ def attack_roll_dnd(
         "distance_before": distance_before,
         "distance_after": distance_after,
         "reach_steps": reach_steps,
-        "auto_move": auto_meta,
     })
 
 

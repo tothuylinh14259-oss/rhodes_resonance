@@ -604,7 +604,6 @@ async def run_demo(
                 return None
             name_keys = {
                 "perform_attack": ["attacker", "defender"],
-                "auto_engage": ["attacker", "defender"],
                 "perform_skill_check": ["name"],
                 "advance_position": ["name"],
                 "adjust_relation": ["a", "b"],

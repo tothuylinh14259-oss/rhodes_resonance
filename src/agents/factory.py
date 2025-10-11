@@ -42,8 +42,7 @@ DEFAULT_PROMPT_RULES = (
 
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具：\n"
-    "- perform_attack(attacker, defender, ability='STR', proficient=False, target_ac=None, damage_expr='1d4+STR', advantage='none', auto_move=false, reason)：发动攻击并自动结算伤害；必须提供行动理由（reason）。\n"
-    "- auto_engage(attacker, defender, ability='STR', ..., reason)：先移动到触及范围，再进行一次近战攻击；必须提供行动理由。\n"
+    "- perform_attack(attacker, defender, ability='STR', proficient=False, target_ac=None, damage_expr='1d4+STR', advantage='none', reason)：发动攻击并自动结算伤害；必须提供行动理由（reason）。攻击不会自动靠近，若距离不足请先移动。\n"
     "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
     "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
     "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
@@ -86,7 +85,7 @@ def make_kimi_npc(
     sec = dict(model_cfg.get("npc") or {})
     model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
-    tools_text = "perform_attack(), auto_engage(), advance_position(), adjust_relation(), transfer_item()"
+    tools_text = "perform_attack(), advance_position(), adjust_relation(), transfer_item()"
     intent_schema = DEFAULT_INTENT_SCHEMA
     tpl = _join_lines(prompt_template)
 

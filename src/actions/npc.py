@@ -45,7 +45,6 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         target_ac: Optional[int] = None,
         damage_expr: str = "1d4+STR",
         advantage: str = "none",
-        auto_move: bool = False,
         reason: str = "",
     ):
         resp = world.attack_roll_dnd(
@@ -56,7 +55,6 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
             target_ac=target_ac,
             damage_expr=damage_expr,
             advantage=advantage,
-            auto_move=auto_move,
         )
         meta = resp.metadata or {}
         hit = meta.get("hit")
@@ -77,31 +75,11 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
             pass
         _log_action(
             f"attack {attacker} -> {defender} | hit={hit} dmg={dmg} hp:{hp_before}->{hp_after} "
-            f"reach_ok={meta.get('reach_ok')} auto_move={auto_move} reason={reason_text}"
+            f"reach_ok={meta.get('reach_ok')} reason={reason_text}"
         )
         return resp
 
-    def auto_engage(
-        attacker,
-        defender,
-        ability: str = "STR",
-        proficient: bool = False,
-        target_ac: Optional[int] = None,
-        damage_expr: str = "1d4+STR",
-        advantage: str = "none",
-        reason: str = "",
-    ):
-        return perform_attack(
-            attacker=attacker,
-            defender=defender,
-            ability=ability,
-            proficient=proficient,
-            target_ac=target_ac,
-            damage_expr=damage_expr,
-            advantage=advantage,
-            auto_move=True,
-            reason=reason,
-        )
+    # auto_engage removed: attacks no longer auto-move; call advance_position() explicitly before perform_attack().
 
     def perform_skill_check(name, skill, dc, advantage: str = "none", reason: str = ""):
         resp = world.skill_check_dnd(name=name, skill=skill, dc=dc, advantage=advantage)
@@ -180,7 +158,6 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
 
     tool_list: List[object] = [
         perform_attack,
-        auto_engage,
         advance_position,
         adjust_relation,
         transfer_item,
@@ -190,7 +167,6 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         "advance_position": advance_position,
         "adjust_relation": adjust_relation,
         "transfer_item": transfer_item,
-        "auto_engage": auto_engage,
     }
 
     return tool_list, tool_dispatch
