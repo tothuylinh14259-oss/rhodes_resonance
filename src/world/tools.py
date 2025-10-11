@@ -161,7 +161,7 @@ def change_relation(a: str, b: str, delta: int, reason: str = ""):
     WORLD.relations[k] = WORLD.relations.get(k, 0) + int(delta)
     res = {"ok": True, "pair": list(k), "score": WORLD.relations[k], "reason": reason}
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"关系调整 {k[0]}->{k[1]}：{int(delta)}，当前分数={WORLD.relations[k]}。原因：{reason}")],
+        content=[TextBlock(type="text", text=f"关系调整 {k[0]}->{k[1]}：{int(delta)}，当前分数={WORLD.relations[k]}。理由：{reason}")],
         metadata=res,
     )
 
@@ -171,7 +171,7 @@ def set_relation(a: str, b: str, value: int, reason: str = "初始化") -> ToolR
     WORLD.relations[k] = int(value)
     res = {"ok": True, "pair": list(k), "score": WORLD.relations[k], "reason": reason}
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"关系设定 {k[0]}->{k[1]} = {WORLD.relations[k]}。原因：{reason}")],
+        content=[TextBlock(type="text", text=f"关系设定 {k[0]}->{k[1]} = {WORLD.relations[k]}。理由：{reason}")],
         metadata=res,
     )
 
@@ -1477,7 +1477,7 @@ def block_objective(name: str, reason: str = ""):
     WORLD.objective_status[nm] = "blocked"
     if reason:
         WORLD.objective_notes[nm] = reason
-    suffix = f"，原因：{reason}" if reason else ""
+    suffix = f"，理由：{reason}" if reason else ""
     return ToolResponse(content=[TextBlock(type="text", text=f"目标受阻：{nm}{suffix}")], metadata={"objectives": list(WORLD.objectives), "status": dict(WORLD.objective_status)})
 
 # ---- Event clock ----

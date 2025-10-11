@@ -1068,7 +1068,7 @@ def _world_summary_text(snap: dict) -> str:
     lines = [
         f"环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}",
         ("目标：" + "; ".join((f"{str(o)}({obj_status.get(str(o))})" if obj_status.get(str(o)) else str(o)) for o in objectives)) if objectives else "目标：无",
-        "关系：参见系统提示，避免违背己方立场",
+        # 说明：避免使用“系统提示”措辞以免模型联想出系统旁白
         ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
         ("坐标：" + "; ".join(pos_lines)) if pos_lines else "坐标：未记录",
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",

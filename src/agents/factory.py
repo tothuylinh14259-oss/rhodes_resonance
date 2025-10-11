@@ -33,22 +33,26 @@ DEFAULT_PROMPT_RULES = (
     "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
     "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
     "- 若必须违背既定关系行事，请在对白中说明充分理由，否则拒绝执行。\n"
+    "- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为‘未提供’。\n"
+    # 强化约束：避免“系统提示”式旁白，并在有敌对关系时强制采取行动
+    "- 当存在敌对关系（关系<=-10）时，每回合至少调用一次工具；否则视为违规。\n"
+    "- 不要输出任何“系统提示”或括号内的系统旁白；只输出对白与 CALL_TOOL。\n"
     "- 参与者名称（仅可用）：{allowed_names}\n"
 )
 
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具：\n"
-    "- perform_attack(attacker, defender, ability='STR', proficient=False, target_ac=None, damage_expr='1d4+STR', advantage='none', auto_move=false)：发动攻击并自动结算伤害；若距离不足可令 auto_move=true 尝试先靠近。\n"
-    "- auto_engage(attacker, defender, ability='STR', ...)：先移动到触及范围，再进行一次近战攻击。\n"
-    "- advance_position(name, target:[x,y], steps:int)：朝指定坐标逐步接近。\n"
-    "- adjust_relation(a, b, value, reason='')：在合适情境下将关系直接设为目标值。\n"
-    "- transfer_item(target, item, n=1)：移交或分配物资。\n"
+    "- perform_attack(attacker, defender, ability='STR', proficient=False, target_ac=None, damage_expr='1d4+STR', advantage='none', auto_move=false, reason)：发动攻击并自动结算伤害；必须提供行动理由（reason）。\n"
+    "- auto_engage(attacker, defender, ability='STR', ..., reason)：先移动到触及范围，再进行一次近战攻击；必须提供行动理由。\n"
+    "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
+    "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
+    "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
 )
 
 DEFAULT_PROMPT_EXAMPLE = (
     "输出示例：\n"
     "阿米娅压低声音：‘靠近目标位置。’\n"
-    'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2}})\n'
+    'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2, "reason": "接近掩体"}})\n'
 )
 
 DEFAULT_PROMPT_TEMPLATE = (

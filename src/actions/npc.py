@@ -46,6 +46,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         damage_expr: str = "1d4+STR",
         advantage: str = "none",
         auto_move: bool = False,
+        reason: str = "",
     ):
         resp = world.attack_roll_dnd(
             attacker=attacker,
@@ -62,9 +63,21 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         dmg = meta.get("damage_total")
         hp_before = meta.get("hp_before")
         hp_after = meta.get("hp_after")
+        # Append human-visible reason and store for auditing
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+        except Exception:
+            pass
+        try:
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
         _log_action(
             f"attack {attacker} -> {defender} | hit={hit} dmg={dmg} hp:{hp_before}->{hp_after} "
-            f"reach_ok={meta.get('reach_ok')} auto_move={auto_move}"
+            f"reach_ok={meta.get('reach_ok')} auto_move={auto_move} reason={reason_text}"
         )
         return resp
 
@@ -76,6 +89,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         target_ac: Optional[int] = None,
         damage_expr: str = "1d4+STR",
         advantage: str = "none",
+        reason: str = "",
     ):
         return perform_attack(
             attacker=attacker,
@@ -86,20 +100,30 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
             damage_expr=damage_expr,
             advantage=advantage,
             auto_move=True,
+            reason=reason,
         )
 
-    def perform_skill_check(name, skill, dc, advantage: str = "none"):
+    def perform_skill_check(name, skill, dc, advantage: str = "none", reason: str = ""):
         resp = world.skill_check_dnd(name=name, skill=skill, dc=dc, advantage=advantage)
         meta = resp.metadata or {}
         success = meta.get("success")
         total = meta.get("total")
         roll = meta.get("roll")
+        # Append reason for traceability
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
         _log_action(
-            f"skill_check {name} skill={skill} dc={dc} -> success={success} total={total} roll={roll}"
+            f"skill_check {name} skill={skill} dc={dc} -> success={success} total={total} roll={roll} reason={reason_text}"
         )
         return resp
 
-    def advance_position(name, target, steps):
+    def advance_position(name, target, steps, reason: str = ""):
         if isinstance(target, dict):
             tx = target.get("x", 0)
             ty = target.get("y", 0)
@@ -110,8 +134,16 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
             tgt = (0, 0)
         resp = world.move_towards(name=name, target=tgt, steps=int(steps))
         meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
         _log_action(
-            f"move {name} -> {tgt} steps={steps} moved={meta.get('moved')} remaining={meta.get('remaining')}"
+            f"move {name} -> {tgt} steps={steps} moved={meta.get('moved')} remaining={meta.get('remaining')} reason={reason_text}"
         )
         return resp
 
@@ -119,16 +151,30 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         # Set relation to an absolute target value instead of applying a delta
         resp = world.set_relation(a, b, int(value), reason or "")
         meta = resp.metadata or {}
+        # world.set_relation 已在 content 中包含“理由：...”，此处仅补元数据字段以统一
+        try:
+            meta["call_reason"] = (str(reason).strip() or "未提供")
+            resp.metadata = meta
+        except Exception:
+            pass
         _log_action(
             f"relation {a}->{b} set={value} score={meta.get('score')} reason={reason or '无'}"
         )
         return resp
 
-    def transfer_item(target, item, n: int = 1):
+    def transfer_item(target, item, n: int = 1, reason: str = ""):
         resp = world.grant_item(target=target, item=item, n=int(n))
         meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
         _log_action(
-            f"transfer item={item} -> {target} qty={n} total={meta.get('count')}"
+            f"transfer item={item} -> {target} qty={n} total={meta.get('count')} reason={reason_text}"
         )
         return resp
 
