@@ -45,6 +45,7 @@ class _WorldPort:
     get_turn = staticmethod(world_impl.get_turn)
     reset_actor_turn = staticmethod(world_impl.reset_actor_turn)
     end_combat = staticmethod(world_impl.end_combat)
+    set_dnd_character_from_config = staticmethod(world_impl.set_dnd_character_from_config)
 
     @staticmethod
     def snapshot() -> Dict[str, Any]:
@@ -80,22 +81,7 @@ def _join_lines(tpl):
     return tpl
 
 
-# Parse reach/attack range from DnD config in steps (grid units).
-def _reach_from_dnd_steps(d: Mapping[str, Any]) -> Optional[int]:
-    def _to_int(x: Any) -> Optional[int]:
-        try:
-            return int(float(x))
-        except Exception:
-            return None
-    if not isinstance(d, dict):
-        return None
-    # Prefer explicit steps keys; treat plain 'reach'/'attack_range' as steps as well.
-    for k in ("reach_steps", "attack_range_steps", "reach", "attack_range"):
-        v = d.get(k)
-        iv = _to_int(v)
-        if iv is not None:
-            return iv
-    return None
+# reach/attack range normalization moved to world.set_dnd_character_from_config
 
 
 async def run_demo(
@@ -210,22 +196,8 @@ async def run_demo(
             dnd = entry.get("dnd") or {}
             try:
                 if dnd:
-                    # Allow configuring per-character attack reach in characters.json
-                    # Supported keys under each actor's `dnd` (steps only):
-                    # - reach_steps / attack_range_steps
-                    # - reach / attack_range (treated as steps)
-                    reach_steps = _reach_from_dnd_steps(dnd)
-                    world.set_dnd_character(
-                        name=name,
-                        level=int(dnd.get("level", 1)),
-                        ac=int(dnd.get("ac", 10)),
-                        abilities=dnd.get("abilities") or {},
-                        max_hp=int(dnd.get("max_hp", 8)),
-                        proficient_skills=dnd.get("proficient_skills") or [],
-                        proficient_saves=dnd.get("proficient_saves") or [],
-                        move_speed_steps=int(dnd.get("move_speed", 6)),
-                        reach_steps=reach_steps,
-                    )
+                    # Use world normalizer for DnD config
+                    world.set_dnd_character_from_config(name=name, dnd=dnd)
                 else:
                     # Ensure the character exists even without dnd config
                     world.set_dnd_character(
@@ -264,18 +236,7 @@ async def run_demo(
             dnd = entry.get("dnd") or {}
             if dnd:
                 try:
-                    reach_steps = _reach_from_dnd_steps(dnd)
-                    world.set_dnd_character(
-                        name=name,
-                        level=int(dnd.get("level", 1)),
-                        ac=int(dnd.get("ac", 10)),
-                        abilities=dnd.get("abilities") or {},
-                        max_hp=int(dnd.get("max_hp", 8)),
-                        proficient_skills=dnd.get("proficient_skills") or [],
-                        proficient_saves=dnd.get("proficient_saves") or [],
-                        move_speed_steps=int(dnd.get("move_speed", 6)),
-                        reach_steps=reach_steps,
-                    )
+                    world.set_dnd_character_from_config(name=name, dnd=dnd)
                 except Exception:
                     pass
             _apply_story_position(name)

@@ -332,89 +332,8 @@ def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse
     )
 
 
-def describe_world(detail: bool = False):
-    """Return a human-readable summary of the world state for agents.
-
-    Args:
-        detail: If True, include more verbose lines. (Metadata always contains the raw snapshot.)
-
-    Returns:
-        ToolResponse with a text summary and metadata as the raw snapshot dict.
-    """
-    snap = WORLD.snapshot()
-    view = dict(snap)
-    view.pop("relations", None)
-    # Format time (no longer shown in describe_world text, retained in metadata only)
-    t = int(view.get("time_min", 0))
-    hh, mm = t // 60, t % 60
-    time_str = f"{hh:02d}:{mm:02d}"
-    weather = view.get("weather", "unknown")
-    details = [
-        d for d in (view.get("scene_details") or []) if isinstance(d, str) and d.strip()
-    ]
-    # Inventory
-    inv = view.get("inventory", {}) or {}
-    inv_lines = []
-    try:
-        for who, bag in inv.items():
-            if not bag:
-                continue
-            inv_lines.append(
-                f"{who}[" + ", ".join(f"{it}:{cnt}" for it, cnt in bag.items()) + "]"
-            )
-    except Exception:
-        pass
-
-    # Scene & objectives
-    loc = view.get("location", "未知")
-    objs = view.get("objectives", []) or []
-    stmap = view.get("objective_status", {}) or {}
-    def _fmt_obj(o):
-        name = o if isinstance(o, str) else str(o)
-        st = stmap.get(name)
-        return f"{name}({st})" if st else str(name)
-    obj_line = "; ".join(_fmt_obj(o) for o in objs) if objs else "(无)"
-
-    # Characters summary
-    chars = view.get("characters", {}) or {}
-    char_lines: List[str] = []
-    try:
-        for nm, st in chars.items():
-            hp = st.get("hp")
-            max_hp = st.get("max_hp")
-            if hp is not None and max_hp is not None:
-                char_lines.append(f"{nm}(HP {hp}/{max_hp})")
-    except Exception:
-        pass
-
-    # Combat line (if any)
-    combat = view.get("combat") or {}
-    combat_line = None
-    try:
-        if combat.get("in_combat") and combat.get("initiative"):
-            order = combat.get("initiative") or []
-            try:
-                cur = order[int(combat.get("turn_idx") or 0)] if order else None
-            except Exception:
-                cur = None
-            combat_line = f"战斗：R{int(combat.get('round') or 1)} 当前 {cur if cur else '(未定)'}；先攻顺序=" + ", ".join(order)
-    except Exception:
-        combat_line = None
-
-    # As per latest requirement, hide location/time/weather/environment details from describe_world output
-    lines = [
-        f"目标：{obj_line}",
-        "关系：请回顾系统提示（按己方立场慎重行动）",
-        ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
-        ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
-    ]
-    if combat_line:
-        lines.insert(1, combat_line)
-    if detail:
-        lines.append("(详情见元数据)")
-
-    text = "\n".join(lines)
-    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=view)
+# describe_world has been removed by design. Use WORLD.snapshot() for raw data
+# and let higher layers render any human-readable summary.
 
 
 def set_scene(
@@ -1287,6 +1206,71 @@ def set_dnd_character(
     return ToolResponse(
         content=[TextBlock(type="text", text=f"设定 {name}（Lv{sheet['level']} AC {sheet['ac']} HP {sheet['hp']}/{sheet['max_hp']}，移动 {format_distance_steps(move_steps)}，触及 {format_distance_steps(rsteps)}）")],
         metadata={"name": name, **sheet},
+    )
+
+
+def set_dnd_character_from_config(name: str, dnd: Dict[str, Any]) -> ToolResponse:
+    """Normalize a DnD config dict and delegate to set_dnd_character.
+
+    Supported keys inside `dnd` (all optional):
+    - level, ac, max_hp
+    - abilities: {STR/DEX/CON/INT/WIS/CHA}
+    - proficient_skills: [str]
+    - proficient_saves: [str]
+    - move_speed_steps | move_speed  (steps per turn)
+    - reach_steps | attack_range_steps | reach | attack_range  (steps)
+    """
+    def _as_int(x: Any, default: int) -> int:
+        try:
+            return int(float(x))
+        except Exception:
+            return int(default)
+
+    d = dict(dnd or {})
+    level = _as_int(d.get("level", 1), 1)
+    ac = _as_int(d.get("ac", 10), 10)
+    max_hp = _as_int(d.get("max_hp", 8), 8)
+
+    abilities_raw = d.get("abilities") or {}
+    if not isinstance(abilities_raw, dict) or not abilities_raw:
+        abilities = {"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10}
+    else:
+        abilities = {str(k).upper(): _as_int(v, 10) for k, v in abilities_raw.items()}
+
+    def _as_list(v: Any) -> List[str]:
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        return []
+
+    prof_skills = [s.lower() for s in _as_list(d.get("proficient_skills"))]
+    prof_saves = [s.upper() for s in _as_list(d.get("proficient_saves"))]
+
+    # Movement speed in steps
+    ms_steps = d.get("move_speed_steps")
+    if ms_steps is None:
+        ms_steps = d.get("move_speed")
+    ms_steps = _as_int(ms_steps, DEFAULT_MOVE_SPEED_STEPS) if ms_steps is not None else DEFAULT_MOVE_SPEED_STEPS
+    if ms_steps <= 0:
+        ms_steps = 1
+
+    # Reach in steps (support synonyms)
+    reach = None
+    for k in ("reach_steps", "attack_range_steps", "reach", "attack_range"):
+        if k in d and d[k] is not None:
+            reach = _as_int(d[k], DEFAULT_REACH_STEPS)
+            break
+    reach_steps = max(1, int(reach if reach is not None else DEFAULT_REACH_STEPS))
+
+    return set_dnd_character(
+        name=name,
+        level=level,
+        ac=ac,
+        abilities=abilities,
+        max_hp=max_hp,
+        proficient_skills=prof_skills,
+        proficient_saves=prof_saves,
+        move_speed_steps=ms_steps,
+        reach_steps=reach_steps,
     )
 
 

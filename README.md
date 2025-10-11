@@ -113,7 +113,8 @@ repo/
 - 关系与物品：`change_relation(a,b,delta,reason)`, `grant_item(target,item,n)`
 - 角色：`set_dnd_character(...)`, `get_stat_block(name)`, `damage(name,n)`, `heal(name,n)`
 - 检定/攻击（D&D风格）：`skill_check_dnd(name, skill, dc, advantage?)`, `attack_roll_dnd(attacker, defender, ...)`
-- 环境/气氛：`describe_world(detail?)`, `adjust_tension(delta)`, `add_mark(text)`
+- 氛围：`adjust_tension(delta)`, `add_mark(text)`
+- 查询：使用 `WORLD.snapshot()` 获取原始世界状态（由上层渲染人类可读概要）
 - 目标：`add_objective(name)`, `complete_objective(name, note?)`, `block_objective(name, reason?)`
 
 工具返回 `ToolResponse`；本版本不再自动裁决（仅展示 NPC 对白与意图）。

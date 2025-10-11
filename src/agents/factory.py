@@ -29,18 +29,15 @@ DEFAULT_PROMPT_HEADER = (
 DEFAULT_PROMPT_RULES = (
     "对话要求：\n"
     "- 先用中文说1-2句对白/想法/微动作，符合人设。\n"
-    "- 若需要了解环境或位置，请调用 describe_world()。\n"
     "- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{\"key\": \"value\"}}))，不要再输出意图 JSON。\n"
     "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
     "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
     "- 若必须违背既定关系行事，请在对白中说明充分理由，否则拒绝执行。\n"
-    "- 最近两条消息内若仍拿不准局势，可调用 describe_world(detail=True) 获取其他信息，再结合立场判断。\n"
     "- 参与者名称（仅可用）：{allowed_names}\n"
 )
 
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具：\n"
-    "- describe_world(detail: bool = False)：获取当前环境、目标、位置等信息。\n"
     "- perform_attack(attacker, defender, ability='STR', proficient=False, target_ac=None, damage_expr='1d4+STR', advantage='none', auto_move=false)：发动攻击并自动结算伤害；若距离不足可令 auto_move=true 尝试先靠近。\n"
     "- auto_engage(attacker, defender, ability='STR', ...)：先移动到触及范围，再进行一次近战攻击。\n"
     "- advance_position(name, target:[x,y], steps:int)：朝指定坐标逐步接近。\n"
@@ -50,8 +47,8 @@ DEFAULT_PROMPT_TOOL_GUIDE = (
 
 DEFAULT_PROMPT_EXAMPLE = (
     "输出示例：\n"
-    "阿米娅压低声音：‘先确认环境与坐标，再按指示行动。’\n"
-    'CALL_TOOL describe_world({{"detail": true}})\n'
+    "阿米娅压低声音：‘靠近目标位置。’\n"
+    'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2}})\n'
 )
 
 DEFAULT_PROMPT_TEMPLATE = (
@@ -85,7 +82,7 @@ def make_kimi_npc(
     sec = dict(model_cfg.get("npc") or {})
     model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
-    tools_text = "describe_world()"
+    tools_text = "perform_attack(), auto_engage(), advance_position(), adjust_relation(), transfer_item()"
     intent_schema = DEFAULT_INTENT_SCHEMA
     tpl = _join_lines(prompt_template)
 

@@ -30,16 +30,12 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
     """Create action tools bound to a provided world API (duck-typed).
 
     The `world` object is expected to provide functions:
-      - describe_world(detail=False)
       - attack_roll_dnd(...)
       - skill_check_dnd(...)
       - move_towards(...)
       - set_relation(...)
       - grant_item(...)
     """
-
-    def describe_world(detail: bool = False):  # noqa: D401
-        return world.describe_world(detail=detail)
 
     def perform_attack(
         attacker,
@@ -137,7 +133,6 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         return resp
 
     tool_list: List[object] = [
-        describe_world,
         perform_attack,
         auto_engage,
         advance_position,
@@ -145,7 +140,6 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         transfer_item,
     ]
     tool_dispatch: Dict[str, object] = {
-        "describe_world": describe_world,
         "perform_attack": perform_attack,
         "advance_position": advance_position,
         "adjust_relation": adjust_relation,
