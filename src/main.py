@@ -30,6 +30,7 @@ from settings.loader import (
     load_feature_flags,
     load_story_config,
     load_characters,
+    load_weapons,
 )
 from agents.factory import make_kimi_npc
 
@@ -46,6 +47,8 @@ class _WorldPort:
     reset_actor_turn = staticmethod(world_impl.reset_actor_turn)
     end_combat = staticmethod(world_impl.end_combat)
     set_dnd_character_from_config = staticmethod(world_impl.set_dnd_character_from_config)
+    set_weapon_defs = staticmethod(world_impl.set_weapon_defs)
+    attack_with_weapon = staticmethod(world_impl.attack_with_weapon)
 
     @staticmethod
     def snapshot() -> Dict[str, Any]:
@@ -1079,6 +1082,7 @@ def main() -> None:
     feature_flags = load_feature_flags()
     story_cfg = load_story_config()
     characters = load_characters()
+    weapons = load_weapons() or {}
 
     # Convert model config dataclass to mapping
     if is_dataclass(model_cfg_obj):
@@ -1113,6 +1117,11 @@ def main() -> None:
 
     # Bind world and actions
     world = _WorldPort()
+    # Load weapon table into world before tools are used
+    try:
+        world_impl.set_weapon_defs(weapons)
+    except Exception:
+        pass
     tool_list, tool_dispatch = make_npc_actions(world=world_impl)
 
     # Agent builder

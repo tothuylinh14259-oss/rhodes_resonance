@@ -42,7 +42,7 @@ DEFAULT_PROMPT_RULES = (
 
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具：\n"
-    "- perform_attack(attacker, defender, ability='STR', proficient=False, target_ac=None, damage_expr='1d4+STR', advantage='none', reason)：发动攻击并自动结算伤害；必须提供行动理由（reason）。攻击不会自动靠近，若距离不足请先移动。\n"
+    "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；必须提供行动理由（reason）。攻击不会自动靠近，若距离不足请先调用 advance_position()。\n"
     "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
     "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
     "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"

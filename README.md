@@ -83,23 +83,8 @@ repo/
 
 - `characters.json`：角色人设与数值、关系
   - 角色项：`type: "player"|"npc"`，`persona`（人设），`dnd`（AC/HP/能力/熟练）
-  - 攻击范围（格/米）：在对应角色的 `dnd` 下添加以下任一字段即可被读取并生效（1格=1米）：
-    - `reach` 或 `reach_m`：以米/格为单位的攻击距离（近战或通用攻击距离）
-    - `reach_steps`：以格为单位的攻击距离
-    - 或同义词：`attack_range`/`attack_range_m`/`attack_range_steps`
-    示例：
-    ```json
-    "Amiya": {
-      "dnd": {
-        "level": 1,
-        "ac": 12,
-        "max_hp": 10,
-        "abilities": {"STR": 8, "DEX": 14, "CON": 12, "INT": 16, "WIS": 12, "CHA": 12},
-        "move_speed": 6,
-        "reach": 6
-      }
-    }
-    ```
+  - 攻击范围：不再从角色卡读取。请在 `configs/weapons.json` 定义武器并给出 `reach_steps`（步）。
+    perform_attack(attacker, defender, weapon, reason) 会从武器表自动获取触及范围与伤害表达式，若距离不足不会自动靠近。
 - `story.json`：场景名称、胜利条件、初始坐标与剧情节拍（acts/beats）；参与者与出场顺序由 `initial_positions` 或 `positions` 的键顺序决定
 - `prompts.json`（可选）：玩家人设、名称映射、NPC/敌人提示词模板（示例见 `prompts.json.example`）
 - `model.json`：`base_url`、`npc` 模型名、温度、是否流式
@@ -112,7 +97,7 @@ repo/
 - 时间与事件：`advance_time(mins)`, `schedule_event(name, at_min, ...)`（自动触发）
 - 关系与物品：`change_relation(a,b,delta,reason)`, `grant_item(target,item,n)`
 - 角色：`set_dnd_character(...)`, `get_stat_block(name)`, `damage(name,n)`, `heal(name,n)`
-- 检定/攻击（D&D风格）：`skill_check_dnd(name, skill, dc, advantage?)`, `attack_roll_dnd(attacker, defender, ...)`
+- 检定/攻击（D&D风格）：`skill_check_dnd(name, skill, dc, advantage?)`；武器攻击用 `perform_attack(attacker, defender, weapon, reason)`（触及范围与伤害由武器决定）
   - 注意：攻击不会自动移动到目标位置。若距离不足，请先使用 `advance_position()` 显式移动至触及范围，再进行 `perform_attack()`。
 - 氛围：`adjust_tension(delta)`, `add_mark(text)`
 - 查询：使用 `WORLD.snapshot()` 获取原始世界状态（由上层渲染人类可读概要）
