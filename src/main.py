@@ -1116,15 +1116,7 @@ def _world_summary_text(snap: dict) -> str:
     location = snap.get("location", "未知")
     objectives = snap.get("objectives", []) or []
     obj_status = snap.get("objective_status", {}) or {}
-    inv = snap.get("inventory", {}) or {}
-    inv_lines = []
-    try:
-        for who, bag in inv.items():
-            if not bag:
-                continue
-            inv_lines.append(f"{who}[" + ", ".join(f"{it}:{cnt}" for it, cnt in bag.items()) + "]")
-    except Exception:
-        pass
+    # Note: 为避免角色获悉他人物品，世界概要中不再包含任何“物品”信息
     positions = snap.get("positions", {}) or {}
     pos_lines = []
     try:
