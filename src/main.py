@@ -928,9 +928,10 @@ async def run_demo(
             except Exception:
                 hdr_round = round_idx
             current_round = hdr_round
+            # 压缩回合提示，避免冗长旁白
             await _bcast(
                 hub,
-                Msg("Host", f"第{hdr_round}回合：小队行动", "assistant"),
+                Msg("Host", f"第{hdr_round}回合", "assistant"),
                 phase="round-start",
             )
             try:
@@ -968,11 +969,7 @@ async def run_demo(
 
             snapshot = world.snapshot()
             _emit("state_update", phase="world", turn=current_round, data={"state": snapshot})
-            await _bcast(
-                hub,
-                Msg("Host", _world_summary_text(snapshot), "assistant"),
-                phase="world-summary",
-            )
+            # 移除回合开始时的世界概要广播；仅在每个 NPC 行动前发送概要（见 context:world）
 
             # If无敌对，则退出战斗模式但不强制结束整体流程（除非显式要求）
             if not _hostiles_present():
@@ -1033,6 +1030,17 @@ async def run_demo(
                 try:
                     # Dev-only context card to per-actor log file
                     _write_dev_context_card(name)
+                    # Also broadcast a fresh world summary right before decision,
+                    # so each turn gets "世界概要 + 行动记忆 + 指导 prompt" together.
+                    try:
+                        await _bcast(
+                            hub,
+                            Msg("Host", _world_summary_text(world.snapshot()), "assistant"),
+                            phase="context:world",
+                        )
+                    except Exception:
+                        # best-effort; do not block the turn if snapshot/render fails
+                        pass
                     recap_msg = _recap_for(name)
                     if recap_msg is not None:
                         await _bcast(hub, recap_msg, phase="context:recap")
