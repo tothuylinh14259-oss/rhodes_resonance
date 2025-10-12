@@ -13,11 +13,11 @@ Central Orchestrator (main layer)
 import asyncio
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple, Callable, Mapping
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 from pathlib import Path
 from agentscope.agent import AgentBase, ReActAgent  # type: ignore
 from agentscope.message import Msg  # type: ignore
-from agentscope.pipeline import MsgHub, sequential_pipeline  # type: ignore
+from agentscope.pipeline import MsgHub  # type: ignore
 from dataclasses import asdict, is_dataclass
 
 from actions.npc import make_npc_actions
@@ -75,14 +75,6 @@ class _WorldPort:
             "participants": list(getattr(W, "participants", []) or []),
         }
 
-def _join_lines(tpl):
-    if isinstance(tpl, list):
-        try:
-            return "\n".join(str(x) for x in tpl)
-        except Exception:
-            return "\n".join(tpl)
-    return tpl
-
 
 # reach/attack range normalization moved to world.set_dnd_character_from_config
 
@@ -98,7 +90,7 @@ async def run_demo(
     story_cfg: Mapping[str, Any],
     characters: Mapping[str, Any],
     world: Any,
-    player_input_provider: Optional[Callable[[str], "_asyncio.Future[str]"] | Callable[[str], "_asyncio.Awaitable[str]"] | Callable[[str], "_asyncio.coroutines.CoroWrapper"]] = None,
+    player_input_provider: Optional[Callable[[str], Awaitable[str]]] = None,
 ) -> None:
     """Run the NPC talk demo (sequential group chat, no GM/adjudication)."""
 
@@ -807,7 +799,6 @@ async def run_demo(
                 return None
             name_keys = {
                 "perform_attack": ["attacker", "defender"],
-                "perform_skill_check": ["name"],
                 "advance_position": ["name"],
                 "adjust_relation": ["a", "b"],
                 "transfer_item": ["target"],
@@ -832,11 +823,18 @@ async def run_demo(
                 )
                 await _bcast(hub, Msg("Host", f"无效角色名：{invalid}。合法参与者：{', '.join(sorted(allowed_set))}", "assistant"), phase=phase)
                 continue
+            # omit verbose 'reason' from params for front-end brevity
+            params_slim = dict(params or {})
+            if "reason" in params_slim:
+                try:
+                    del params_slim["reason"]
+                except Exception:
+                    pass
             _emit(
                 "tool_call",
                 actor=origin.name,
                 phase=phase,
-                data={"tool": tool_name, "params": params},
+                data={"tool": tool_name, "params": params_slim},
             )
             try:
                 ACTION_LOG.append({
@@ -887,6 +885,19 @@ async def run_demo(
                     else:
                         lines.append(str(blk))
             meta = getattr(resp, "metadata", None)
+            # Strip trailing/standalone rationale like "理由：..." / "reason: ..." from lines
+            try:
+                def _strip_reason(t: str) -> str:
+                    s = str(t or "")
+                    # remove tailing rationale segment
+                    s = re.sub(r"\s*(?:行动)?(?:理由|reason|Reason)[:：][\s\S]*$", "", s).strip()
+                    # drop lines that are rationale-only
+                    if re.match(r"^(?:行动)?(?:理由|reason|Reason)[:：]", s):
+                        return ""
+                    return s
+                lines = [x for x in (_strip_reason(x) for x in lines) if x]
+            except Exception:
+                pass
             _emit(
                 "tool_result",
                 actor=origin.name,
@@ -1008,8 +1019,63 @@ async def run_demo(
             "assistant",
         ),
     ) as hub:
-        # 仅对 NPC 跑一次开场 pipeline；玩家不涉及模型初始化
-        await sequential_pipeline(npcs_llm_only)
+        # 开场：让每个 NPC 先各发一条对白（并可附带工具调用），以便在玩家输入前呈现剧情开端
+        try:
+            for name in (list(allowed_names_world) or []):
+                if str(actor_types.get(name, "npc")) != "npc":
+                    continue
+                try:
+                    sheet_now = (world.snapshot().get("characters") or {}).get(name, {}) or {}
+                    persona_now = sheet_now.get("persona") or ""
+                    appearance_now = sheet_now.get("appearance")
+                    quotes_now = sheet_now.get("quotes")
+                except Exception:
+                    persona_now = ""; appearance_now = None; quotes_now = None
+                sys_prompt_text = _build_sys_prompt(
+                    name=name,
+                    persona=str(persona_now or ""),
+                    appearance=appearance_now,
+                    quotes=quotes_now,
+                    relation_brief=_relation_brief(name),
+                    weapon_brief=_weapon_brief_for(name),
+                    allowed_names=allowed_names_str,
+                )
+                # 构造一次性 Agent：给出环境概要作为记忆，再让其输出一行对白+可能的 CALL_TOOL
+                ephemeral0 = build_agent(
+                    name,
+                    str(persona_now or ""),
+                    model_cfg,
+                    sys_prompt=sys_prompt_text,
+                    allowed_names=allowed_names_str,
+                    appearance=appearance_now,
+                    quotes=quotes_now,
+                    relation_brief=_relation_brief(name),
+                    weapon_brief=_weapon_brief_for(name),
+                    tools=tool_list,
+                )
+                try:
+                    env_text0 = _world_summary_text(world.snapshot())
+                    await ephemeral0.memory.add(Msg("Host", env_text0, "assistant"))
+                except Exception:
+                    pass
+                try:
+                    out0 = await ephemeral0(None)
+                except Exception:
+                    continue
+                try:
+                    raw0 = _safe_text(out0)
+                    cleaned0 = _strip_tool_calls_from_text(raw0)
+                    if cleaned0 and cleaned0.strip():
+                        await _bcast(hub, Msg(getattr(out0, "name", name), cleaned0, getattr(out0, "role", "assistant") or "assistant"), phase=f"npc:{name}")
+                except Exception:
+                    pass
+                # 处理可能的 CALL_TOOL
+                try:
+                    await _handle_tool_calls(out0, hub)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         _emit("state_update", phase="initial", data={"state": world.snapshot()})
         round_idx = 1
         max_rounds = None
@@ -1238,34 +1304,26 @@ async def run_demo(
 
                 # 2) 分支：player 走 CLI 输入；npc 走模型
                 if str(actor_types.get(name, "npc")) == "player":
-                    # 玩家发言：优先使用外部提供的异步输入通道（用于网页端），否则回退到 CLI 输入
+                    # 玩家发言：优先使用外部提供的异步输入通道（用于网页端），否则回退到 CLI 输入。
+                    # 阻塞等待玩家输入，以保留“玩家优先发言”的体验（不自动跳过）。
                     try:
-                        # 广播等待玩家输入的系统事件，便于前端显示输入框与高亮当前玩家
-                        _emit(
-                            "system",
-                            actor=name,
-                            phase="player_input",
-                            data={"waiting": True},
-                        )
+                        _emit("system", actor=name, phase="player_input", data={"waiting": True})
                     except Exception:
                         pass
-                    try:
-                        text_in = ""
-                        if callable(player_input_provider):
-                            try:
-                                # type: ignore[call-arg]
-                                text_in = str((await player_input_provider(name)) or "").strip()
-                            except Exception:
-                                text_in = ""
-                        else:
-                            try:
-                                text_in = (await _async_input(f"[{name}] 请输入对白： ")).strip()
-                            except Exception:
-                                text_in = ""
-                        if text_in:
-                            await _bcast(hub, Msg(name, text_in, "assistant"), phase=f"player:{name}")
-                    except Exception:
-                        pass
+                    text_in = ""
+                    if callable(player_input_provider):
+                        try:
+                            # 阻塞等待队列中提交的文本
+                            text_in = str((await player_input_provider(name)) or "").strip()  # type: ignore[arg-type]
+                        except Exception:
+                            text_in = ""
+                    else:
+                        try:
+                            text_in = (await _async_input(f"[{name}] 请输入对白： ")).strip()
+                        except Exception:
+                            text_in = ""
+                    if text_in:
+                        await _bcast(hub, Msg(name, text_in, "assistant"), phase=f"player:{name}")
                 else:
                     # 2a) Rebuild an ephemeral NPC agent with per-turn private section
                     try:
@@ -1787,6 +1845,20 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
     @app.post("/api/stop")
     async def api_stop():  # type: ignore[no-redef]
         ok, msg = await _stop_game_server_mode()
+        code = 200 if ok else 400
+        return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
+
+    @app.post("/api/restart")
+    async def api_restart():  # type: ignore[no-redef]
+        # 当运行中：先停止再重启；当未运行：直接启动一局
+        if _STATE.is_running():
+            await _stop_game_server_mode()
+            try:
+                if _STATE.task is not None:
+                    await _STATE.task
+            except Exception:
+                pass
+        ok, msg = await _start_game_server_mode()
         code = 200 if ok else 400
         return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
 
