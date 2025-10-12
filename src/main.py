@@ -1836,6 +1836,162 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
     async def _healthz():
         return {"ok": True}
 
+    # --- Simple config editor endpoints (story/characters/weapons) ---
+    # These endpoints enable the built-in settings editor (bottom drawer) to
+    # fetch and persist JSON configs safely without restarting automatically.
+    cfg_dir = project_root() / "configs"
+
+    def _cfg_path(name: str) -> Path:
+        m = {
+            "story": cfg_dir / "story.json",
+            "characters": cfg_dir / "characters.json",
+            "weapons": cfg_dir / "weapons.json",
+        }
+        if name not in m:
+            raise KeyError(f"unsupported config: {name}")
+        return m[name]
+
+    def _json_load_text(p: Path) -> dict:
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                return json.load(f) or {}
+        except FileNotFoundError:
+            return {}
+        except Exception:
+            return {}
+
+    def _validate_story(obj: dict) -> tuple[bool, str]:
+        if not isinstance(obj, dict):
+            return False, "story must be a JSON object"
+        # scene (optional but if present should be object)
+        scene = obj.get("scene")
+        if scene is not None and not isinstance(scene, dict):
+            return False, "scene must be object when provided"
+        if isinstance(scene, dict):
+            # details: list of strings
+            det = scene.get("details")
+            if det is not None:
+                if not isinstance(det, list) or not all(isinstance(x, str) for x in det):
+                    return False, "scene.details must be an array of strings"
+            # objectives: list of strings
+            objs = scene.get("objectives")
+            if objs is not None:
+                if not isinstance(objs, list) or not all(isinstance(x, str) for x in objs):
+                    return False, "scene.objectives must be an array of strings"
+        # initial_positions: { name: [x,y] }
+        ip = obj.get("initial_positions")
+        if ip is not None:
+            if not isinstance(ip, dict):
+                return False, "initial_positions must be an object"
+            for k, v in ip.items():
+                if not (isinstance(v, (list, tuple)) and len(v) >= 2):
+                    return False, f"initial_positions.{k} must be [x,y]"
+                try:
+                    int(v[0]); int(v[1])
+                except Exception:
+                    return False, f"initial_positions.{k} coordinates must be integers"
+        return True, "ok"
+
+    def _validate_weapons(obj: dict) -> tuple[bool, str]:
+        if not isinstance(obj, dict):
+            return False, "weapons must be an object"
+        allowed_abilities = {"STR", "DEX", "CON", "INT", "WIS", "CHA"}
+        for wid, w in obj.items():
+            if not isinstance(w, dict):
+                return False, f"weapon {wid} must be an object"
+            if "reach_steps" in w:
+                try:
+                    rs = int(w.get("reach_steps"))
+                    if rs <= 0:
+                        return False, f"weapon {wid}.reach_steps must be > 0"
+                except Exception:
+                    return False, f"weapon {wid}.reach_steps must be an integer"
+            if "ability" in w:
+                ab = str(w.get("ability")).upper()
+                if ab not in allowed_abilities:
+                    return False, f"weapon {wid}.ability must be one of {sorted(allowed_abilities)}"
+            if "damage_expr" in w and not isinstance(w.get("damage_expr"), str):
+                return False, f"weapon {wid}.damage_expr must be a string"
+            if "proficient_default" in w and not isinstance(w.get("proficient_default"), bool):
+                return False, f"weapon {wid}.proficient_default must be boolean"
+        return True, "ok"
+
+    def _validate_characters(obj: dict) -> tuple[bool, str]:
+        if not isinstance(obj, dict):
+            return False, "characters must be an object"
+        # Loose validation: allow any keys; if `dnd` exists, check obvious ints
+        for nm, data in obj.items():
+            if nm == "relations":
+                # relations is object of name -> name -> int
+                rel = data
+                if not isinstance(rel, dict):
+                    return False, "relations must be an object"
+                for a, m in rel.items():
+                    if not isinstance(m, dict):
+                        return False, f"relations.{a} must be an object"
+                    for b, val in m.items():
+                        try:
+                            int(val)
+                        except Exception:
+                            return False, f"relations.{a}.{b} must be integer"
+                continue
+            if not isinstance(data, dict):
+                return False, f"character {nm} must be an object"
+            dnd = data.get("dnd")
+            if dnd is not None and isinstance(dnd, dict):
+                for key in ("level", "ac", "max_hp"):
+                    if key in dnd:
+                        try:
+                            int(dnd[key])
+                        except Exception:
+                            return False, f"{nm}.dnd.{key} must be integer"
+        return True, "ok"
+
+    def _atomic_write(path: Path, obj: dict) -> None:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        # ensure directory exists
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        tmp.replace(path)
+
+    @app.get("/api/config/{name}")
+    async def api_get_config(name: str):  # type: ignore[no-redef]
+        try:
+            p = _cfg_path(str(name))
+        except KeyError:
+            return JSONResponse({"ok": False, "message": f"unsupported config: {name}"}, status_code=404)
+        return {"ok": True, "name": name, "data": _json_load_text(p)}
+
+    @app.post("/api/config/{name}")
+    async def api_set_config(name: str, payload: dict):  # type: ignore[no-redef]
+        name = str(name)
+        try:
+            p = _cfg_path(name)
+        except KeyError:
+            return JSONResponse({"ok": False, "message": f"unsupported config: {name}"}, status_code=404)
+        data = dict(payload or {})
+        # validate by type
+        ok = True
+        msg = "ok"
+        if name == "story":
+            ok, msg = _validate_story(data)
+        elif name == "weapons":
+            ok, msg = _validate_weapons(data)
+        elif name == "characters":
+            ok, msg = _validate_characters(data)
+        else:
+            ok = False
+            msg = "unsupported config"
+        if not ok:
+            return JSONResponse({"ok": False, "message": msg}, status_code=422)
+        try:
+            _atomic_write(p, data)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "message": f"write failed: {exc}"}, status_code=500)
+        return {"ok": True}
+
     @app.post("/api/start")
     async def api_start():  # type: ignore[no-redef]
         ok, msg = await _start_game_server_mode()
