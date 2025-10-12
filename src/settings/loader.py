@@ -84,3 +84,14 @@ def load_story_config() -> dict:
     if data:
         return data
     return load_json(project_root() / "docs" / "plot.story.json")
+
+
+def load_weapons() -> dict:
+    """Load weapons table; returns {} if file missing.
+
+    Expected shape:
+    {
+      "weapon_id": { "reach_steps": int, "ability": "STR|DEX|...", "damage_expr": "1d6+STR", "proficient_default": bool }
+    }
+    """
+    return load_json(configs_dir() / "weapons.json")

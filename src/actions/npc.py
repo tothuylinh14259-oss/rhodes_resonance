@@ -30,7 +30,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
     """Create action tools bound to a provided world API (duck-typed).
 
     The `world` object is expected to provide functions:
-      - attack_roll_dnd(...)
+      - attack_with_weapon(...)
       - skill_check_dnd(...)
       - move_towards(...)
       - set_relation(...)
@@ -40,21 +40,14 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
     def perform_attack(
         attacker,
         defender,
-        ability: str = "STR",
-        proficient: bool = False,
-        target_ac: Optional[int] = None,
-        damage_expr: str = "1d4+STR",
-        advantage: str = "none",
+        weapon: str,
         reason: str = "",
     ):
-        resp = world.attack_roll_dnd(
+        # New path: weapon-driven attack; reach/ability/damage are sourced from weapon defs.
+        resp = world.attack_with_weapon(
             attacker=attacker,
             defender=defender,
-            ability=ability,
-            proficient=proficient,
-            target_ac=target_ac,
-            damage_expr=damage_expr,
-            advantage=advantage,
+            weapon=weapon,
         )
         meta = resp.metadata or {}
         hit = meta.get("hit")
@@ -74,7 +67,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         except Exception:
             pass
         _log_action(
-            f"attack {attacker} -> {defender} | hit={hit} dmg={dmg} hp:{hp_before}->{hp_after} "
+            f"attack {attacker} -> {defender} using {meta.get('weapon_id')} | hit={hit} dmg={dmg} hp:{hp_before}->{hp_after} "
             f"reach_ok={meta.get('reach_ok')} reason={reason_text}"
         )
         return resp

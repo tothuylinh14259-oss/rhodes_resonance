@@ -89,8 +89,32 @@ class World:
     conditions: Dict[str, Set[str]] = field(default_factory=dict)
     # lightweight triggers queue (ready/opportunity_attack, etc.)
     triggers: List[Dict[str, Any]] = field(default_factory=list)
+    # --- Weapons (simple dictionary, configured at startup) ---
+    weapon_defs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Participants order for the current scene (names only)
+    participants: List[str] = field(default_factory=list)
 
     def snapshot(self) -> dict:
+        # Build a sanitized weapon-def summary for consumers (id -> selected fields)
+        def _weapon_summary():
+            out: Dict[str, Dict[str, Any]] = {}
+            for wid, data in (self.weapon_defs or {}).items():
+                try:
+                    d = dict(data or {})
+                except Exception:
+                    d = {}
+                try:
+                    rs = int(d.get("reach_steps", DEFAULT_REACH_STEPS))
+                except Exception:
+                    rs = int(DEFAULT_REACH_STEPS)
+                out[str(wid)] = {
+                    "reach_steps": max(1, rs),
+                    "ability": str(d.get("ability", "STR")).upper(),
+                    "damage_expr": str(d.get("damage_expr", "1d4+STR")),
+                    "proficient_default": bool(d.get("proficient_default", False)),
+                }
+            return out
+
         return {
             "time_min": self.time_min,
             "weather": self.weather,
@@ -107,6 +131,7 @@ class World:
             "objective_notes": dict(self.objective_notes),
             "tension": int(self.tension),
             "marks": list(self.marks),
+            "participants": list(self.participants),
             "combat": {
                 "in_combat": bool(self.in_combat),
                 "round": int(self.round),
@@ -116,12 +141,65 @@ class World:
                 "turn_state": {k: dict(v) for k, v in self.turn_state.items()},
                 "range_bands": {f"{a}&{b}": v for (a, b), v in self.range_bands.items()},
             },
+            # Weapon data
+            "weapons": sorted(list(self.weapon_defs.keys())),
+            "weapon_defs": _weapon_summary(),
         }
 
 
 WORLD = World()
 
 # --- tools ---
+
+def set_participants(names: List[str]) -> ToolResponse:
+    """Replace the participants list with the given ordered names.
+
+    Stores only strings; preserves order and removes empty/dupes while keeping first occurrence.
+    """
+    seq: List[str] = []
+    seen = set()
+    for n in list(names or []):
+        s = str(n).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        seq.append(s)
+    WORLD.participants = seq
+    return ToolResponse(content=[TextBlock(type="text", text="参与者设定：" + (", ".join(seq) if seq else "(无)"))], metadata={"participants": list(seq)})
+
+
+def set_character_meta(
+    name: str,
+    *,
+    persona: Optional[str] = None,
+    appearance: Optional[str] = None,
+    quotes: Optional[Union[List[str], str]] = None,
+) -> ToolResponse:
+    """Set human-facing meta info for a character (persona/appearance/quotes).
+
+    These fields live with the character sheet for agent prompting purposes.
+    """
+    nm = str(name)
+    sheet = WORLD.characters.setdefault(nm, {})
+    if persona is not None:
+        p = str(persona).strip()
+        if p:
+            sheet["persona"] = p
+    if appearance is not None:
+        a = str(appearance).strip()
+        if a:
+            sheet["appearance"] = a
+    if quotes is not None:
+        if isinstance(quotes, (list, tuple)):
+            sheet["quotes"] = [str(q).strip() for q in quotes if str(q).strip()]
+        else:
+            q = str(quotes).strip()
+            if q:
+                sheet["quotes"] = q
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"设定角色元信息：{nm}")],
+        metadata={k: sheet.get(k) for k in ("persona", "appearance", "quotes")},
+    )
 
 def advance_time(mins: int):
     """Advance in-game time by a number of minutes.
@@ -279,10 +357,14 @@ def get_move_speed_steps(name: str) -> int:
 
 
 def get_reach_steps(name: str) -> int:
+    """Deprecated: kept for backward-compat in tests only.
+
+    New flow should pass reach via weapon defs. This function now only returns
+    a project-wide default when character sheet lacks explicit reach_steps.
+    """
     sheet = WORLD.characters.get(name, {})
     try:
-        # Support both reach_* and attack_range_* as synonyms (steps only)
-        val = sheet.get("reach_steps") or sheet.get("attack_range_steps") or sheet.get("reach") or sheet.get("attack_range")
+        val = sheet.get("reach_steps")
         if val is not None:
             return max(1, int(val))
     except Exception:
@@ -1140,8 +1222,8 @@ def set_dnd_character(
     sheet["move_speed_steps"] = move_steps
     WORLD.speeds[name] = move_steps
 
-    # Reach (steps)
-    rs = reach_steps if reach_steps is not None else sheet.get("reach_steps", sheet.get("reach", DEFAULT_REACH_STEPS))
+    # Reach (steps) — keep optional for backward-compat in tests only
+    rs = reach_steps if reach_steps is not None else sheet.get("reach_steps", DEFAULT_REACH_STEPS)
     try:
         rsteps = int(rs)
     except Exception:
@@ -1202,13 +1284,9 @@ def set_dnd_character_from_config(name: str, dnd: Dict[str, Any]) -> ToolRespons
     if ms_steps <= 0:
         ms_steps = 1
 
-    # Reach in steps (support synonyms)
-    reach = None
-    for k in ("reach_steps", "attack_range_steps", "reach", "attack_range"):
-        if k in d and d[k] is not None:
-            reach = _as_int(d[k], DEFAULT_REACH_STEPS)
-            break
-    reach_steps = max(1, int(reach if reach is not None else DEFAULT_REACH_STEPS))
+    # Reach in steps (only reach_steps retained; legacy synonyms removed)
+    reach_steps = _as_int(d.get("reach_steps", DEFAULT_REACH_STEPS), DEFAULT_REACH_STEPS)
+    reach_steps = max(1, int(reach_steps))
 
     return set_dnd_character(
         name=name,
@@ -1305,6 +1383,8 @@ def attack_roll_dnd(
             return "未知"
         return format_distance_steps(int(steps))
 
+    # Note: legacy path relies on character reach (deprecated). New flow should
+    # use attack_with_weapon() which sources reach from weapon defs.
     reach_steps = get_reach_steps(attacker)
     distance_before = get_distance_steps_between(attacker, defender)
     distance_after = distance_before
@@ -1383,6 +1463,129 @@ def attack_roll_dnd(
         "distance_after": distance_after,
         "reach_steps": reach_steps,
     })
+
+
+# ---- Weapons (reach sourced from weapon defs; no auto-move) ----
+def set_weapon_defs(defs: Dict[str, Dict[str, Any]]):
+    """Replace the entire weapon definition table.
+
+    defs: { weapon_id: { reach_steps:int, ability:str?, damage_expr:str?, proficient_default:bool? } }
+    """
+    try:
+        WORLD.weapon_defs = {str(k): dict(v or {}) for k, v in (defs or {}).items()}
+    except Exception:
+        WORLD.weapon_defs = {}
+    return ToolResponse(content=[TextBlock(type="text", text=f"武器表载入：{len(WORLD.weapon_defs)} 项")], metadata={"count": len(WORLD.weapon_defs)})
+
+
+def define_weapon(weapon_id: str, data: Dict[str, Any]):
+    wid = str(weapon_id)
+    WORLD.weapon_defs[wid] = dict(data or {})
+    return ToolResponse(content=[TextBlock(type="text", text=f"武器登记：{wid}")], metadata={"id": wid, **WORLD.weapon_defs[wid]})
+
+
+def attack_with_weapon(
+    attacker: str,
+    defender: str,
+    weapon: str,
+    advantage: str = "none",
+) -> ToolResponse:
+    """Attack using a named weapon from WORLD.weapon_defs.
+
+    - No auto-move; if distance > reach_steps, fail early.
+    - ability/damage_expr/proficient_default are sourced from weapon defs with safe defaults.
+    """
+    atk = WORLD.characters.get(attacker, {})
+    dfd = WORLD.characters.get(defender, {})
+    ac = int(dfd.get("ac", 10))
+    w = WORLD.weapon_defs.get(str(weapon), {})
+    try:
+        reach_steps = max(1, int(w.get("reach_steps", DEFAULT_REACH_STEPS)))
+    except Exception:
+        reach_steps = int(DEFAULT_REACH_STEPS)
+    ability = str(w.get("ability", "STR")).upper()
+    damage_expr = str(w.get("damage_expr", "1d4+STR"))
+    proficient_default = bool(w.get("proficient_default", False))
+
+    # Build attack base: ability mod + prof (if enabled)
+    mod = _mod(int(atk.get("abilities", {}).get(ability, 10)))
+    prof = int(atk.get("prof", 2)) if proficient_default else 0
+    base = mod + prof
+
+    # Distance gate
+    distance_before = get_distance_steps_between(attacker, defender)
+    def _fmt_distance(steps: Optional[int]) -> str:
+        if steps is None:
+            return "未知"
+        return format_distance_steps(int(steps))
+
+    # Ownership gate: attacker must possess the weapon (count > 0)
+    bag = WORLD.inventory.get(str(attacker), {}) or {}
+    if int(bag.get(str(weapon), 0)) <= 0:
+        msg = TextBlock(type="text", text=f"{attacker} 未持有武器 {weapon}，攻击取消。")
+        return ToolResponse(
+            content=[msg],
+            metadata={
+                "attacker": attacker,
+                "defender": defender,
+                "weapon_id": weapon,
+                "ok": False,
+                "error_type": "weapon_not_owned",
+            },
+        )
+
+    if distance_before is not None and distance_before > reach_steps:
+        msg = TextBlock(type="text", text=f"距离不足：{attacker} 使用 {weapon} 攻击 {defender} 失败（距离 {_fmt_distance(distance_before)}，触及 {_fmt_distance(reach_steps)}）")
+        return ToolResponse(
+            content=[msg],
+            metadata={
+                "attacker": attacker,
+                "defender": defender,
+                "weapon_id": weapon,
+                "hit": False,
+                "reach_ok": False,
+                "distance_before": distance_before,
+                "distance_after": distance_before,
+                "reach_steps": reach_steps,
+            },
+        )
+
+    # Attack roll
+    atk_res = skill_check(target=int(ac), modifier=base, advantage=advantage)
+    success = bool((atk_res.metadata or {}).get("success"))
+    parts: List[TextBlock] = []
+    parts.append(TextBlock(type="text", text=f"攻击：{attacker} 使用 {weapon} -> {defender} d20{_signed(base)} vs AC {ac} -> {'命中' if success else '未中'}"))
+    hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
+    dmg_total = 0
+    if success:
+        dmg_expr2 = _replace_ability_tokens(damage_expr, mod)
+        dmg_res = roll_dice(dmg_expr2)
+        total = int((dmg_res.metadata or {}).get("total", 0))
+        dmg_total = total
+        dmg_apply = damage(defender, total)
+        parts.append(TextBlock(type="text", text=f"伤害：{dmg_expr2} -> {total}"))
+        for blk in (dmg_apply.content or []):
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                parts.append(blk)
+    hp_after = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
+    distance_after = distance_before
+    return ToolResponse(
+        content=parts,
+        metadata={
+            "attacker": attacker,
+            "defender": defender,
+            "weapon_id": weapon,
+            "hit": success,
+            "base": base,
+            "damage_total": int(dmg_total),
+            "hp_before": int(hp_before),
+            "hp_after": int(hp_after),
+            "reach_ok": True,
+            "distance_before": distance_before,
+            "distance_after": distance_after,
+            "reach_steps": reach_steps,
+        },
+    )
 
 
 def _replace_ability_tokens(expr: str, ability_mod: int) -> str:

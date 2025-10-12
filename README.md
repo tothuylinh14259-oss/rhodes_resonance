@@ -20,7 +20,7 @@ export KIMI_MODEL=kimi-k2-turbo-preview
 python src/main.py      # 入口（已内联引擎逻辑）
 ```
 
-运行期望：两个 NPC 在“旧城区·北侧仓棚”进行回合制对话，每回合输出对白与一个意图 JSON（不执行裁决/导演动作）；过程写入 `logs/run_events.jsonl`（结构化事件）与 `logs/run_story.log`（对话文本，来自广播内容）。
+运行期望：两个 NPC 在“旧城区·北侧仓棚”进行回合制对话，每回合输出对白，并通过 CALL_TOOL 调用一个工具（不执行裁决/导演动作）；过程写入 `logs/run_events.jsonl`（结构化事件）与 `logs/run_story.log`（对话文本，来自广播内容）。
 
 ## 目录结构（当前）
 
@@ -43,9 +43,9 @@ repo/
     story.json            # 场景配置、初始位置、剧情节拍
     model.json            # LLM 接入（base_url、npc 模型等）
     prompts.json          # 可选：玩家人设、NPC提示词模板、名称映射（示例见 prompts.json.example）
+    weapons.json          # 武器定义（reach_steps/ability/damage_expr）
     time_rules.json       # 意图用时规则
     relation_rules.json   # 关系变更规则
-    feature_flags.json    # 特性开关
   docs/
     spec.md               # 项目规范（设计/接口/约定）
   environment.yml         # Conda 环境（Python 3.11 + Agentscope）
@@ -59,11 +59,11 @@ repo/
 
 ## 运行时交互
 
-- 本分支已移除 KP/玩家输入流程，仅 NPC 轮流行动，输出对白与一个意图 JSON。
+- 本分支已移除 KP/玩家输入流程，仅 NPC 轮流行动，输出对白与一个 CALL_TOOL 工具调用。
 - 每回合流程（简化）：
   1) 主持信息 + 世界概要
   2) NPC 依序行动（不进行裁决/导演动作）
-  3) 回合推进（默认无限回合；如需上限，可在 `configs/feature_flags.json` 中设置 `max_rounds`）
+  3) 回合推进（默认无限回合）
 
 ## 日志输出
 
@@ -81,44 +81,27 @@ repo/
 
 ## 配置要点（configs）
 
-- `characters.json`：角色人设与数值、关系
-  - 角色项：`type: "player"|"npc"`，`persona`（人设），`dnd`（AC/HP/能力/熟练）
-  - 攻击范围（格/米）：在对应角色的 `dnd` 下添加以下任一字段即可被读取并生效（1格=1米）：
-    - `reach` 或 `reach_m`：以米/格为单位的攻击距离（近战或通用攻击距离）
-    - `reach_steps`：以格为单位的攻击距离
-    - 或同义词：`attack_range`/`attack_range_m`/`attack_range_steps`
-    示例：
-    ```json
-    "Amiya": {
-      "dnd": {
-        "level": 1,
-        "ac": 12,
-        "max_hp": 10,
-        "abilities": {"STR": 8, "DEX": 14, "CON": 12, "INT": 16, "WIS": 12, "CHA": 12},
-        "move_speed": 6,
-        "reach": 6
-      }
-    }
-    ```
+ - `characters.json`：角色人设与数值、关系、初始物品
+  - 角色项：`type: "player"|"npc"`，`persona`（人设），`dnd`（AC/HP/能力/熟练），`inventory`
+  - 武器与范围：不再从角色卡读取攻击距离。请在 `configs/weapons.json` 定义武器并给出 `reach_steps`（步）；在 `characters.json` 通过 `inventory` 声明角色初始拥有的武器（例如 `"inventory": {"amiya_focus": 1}`）。`perform_attack(attacker, defender, weapon, reason)` 会从武器表自动获取触及范围与伤害表达式，且只有“持有”的武器才允许使用；若距离不足不会自动靠近。
 - `story.json`：场景名称、胜利条件、初始坐标与剧情节拍（acts/beats）；参与者与出场顺序由 `initial_positions` 或 `positions` 的键顺序决定
 - `prompts.json`（可选）：玩家人设、名称映射、NPC/敌人提示词模板（示例见 `prompts.json.example`）
 - `model.json`：`base_url`、`npc` 模型名、温度、是否流式
 - `time_rules.json`：各意图的时间消耗（分钟）
-- `relation_rules.json`：默认关系变更策略
-- `feature_flags.json`：如 `strict_spawn`、`kp_*` 等特性开关
+ - `relation_rules.json`：默认关系变更策略
 
 ## 世界工具（节选）
 
 - 时间与事件：`advance_time(mins)`, `schedule_event(name, at_min, ...)`（自动触发）
 - 关系与物品：`change_relation(a,b,delta,reason)`, `grant_item(target,item,n)`
 - 角色：`set_dnd_character(...)`, `get_stat_block(name)`, `damage(name,n)`, `heal(name,n)`
-- 检定/攻击（D&D风格）：`skill_check_dnd(name, skill, dc, advantage?)`, `attack_roll_dnd(attacker, defender, ...)`
+- 检定/攻击（D&D风格）：`skill_check_dnd(name, skill, dc, advantage?)`；武器攻击用 `perform_attack(attacker, defender, weapon, reason)`（触及范围与伤害由武器决定）
   - 注意：攻击不会自动移动到目标位置。若距离不足，请先使用 `advance_position()` 显式移动至触及范围，再进行 `perform_attack()`。
 - 氛围：`adjust_tension(delta)`, `add_mark(text)`
 - 查询：使用 `WORLD.snapshot()` 获取原始世界状态（由上层渲染人类可读概要）
 - 目标：`add_objective(name)`, `complete_objective(name, note?)`, `block_objective(name, reason?)`
 
-工具返回 `ToolResponse`；本版本不再自动裁决（仅展示 NPC 对白与意图）。
+工具返回 `ToolResponse`；本版本不再自动裁决（仅展示 NPC 对白与工具调用）。
 
 ## 开发与规范
 
