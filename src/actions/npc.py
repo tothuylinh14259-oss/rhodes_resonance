@@ -35,6 +35,8 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
       - move_towards(...)
       - set_relation(...)
       - grant_item(...)
+      - set_guard(...)
+      - clear_guard(...)
     """
 
     def perform_attack(

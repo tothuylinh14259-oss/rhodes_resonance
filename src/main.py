@@ -48,6 +48,12 @@ class _WorldPort:
     set_dnd_character_from_config = staticmethod(world_impl.set_dnd_character_from_config)
     set_weapon_defs = staticmethod(world_impl.set_weapon_defs)
     attack_with_weapon = staticmethod(world_impl.attack_with_weapon)
+    # tools that actions need directly
+    move_towards = staticmethod(world_impl.move_towards)
+    skill_check_dnd = staticmethod(world_impl.skill_check_dnd)
+    grant_item = staticmethod(world_impl.grant_item)
+    set_guard = staticmethod(world_impl.set_guard)
+    clear_guard = staticmethod(world_impl.clear_guard)
     # participants and character meta helpers
     set_participants = staticmethod(world_impl.set_participants)
     set_character_meta = staticmethod(world_impl.set_character_meta)
@@ -246,7 +252,8 @@ async def run_demo(
                 if isinstance(inv, dict):
                     for it, cnt in inv.items():
                         try:
-                            world_impl.grant_item(target=name, item=str(it), n=int(cnt))
+                            # Use world port instead of direct module to keep the engine decoupled
+                            world.grant_item(target=name, item=str(it), n=int(cnt))
                         except Exception:
                             pass
             except Exception:
@@ -1191,10 +1198,12 @@ def main() -> None:
     world = _WorldPort()
     # Load weapon table into world before tools are used
     try:
-        world_impl.set_weapon_defs(weapons)
+        # Use the port to avoid leaking the implementation detail
+        world.set_weapon_defs(weapons)
     except Exception:
         pass
-    tool_list, tool_dispatch = make_npc_actions(world=world_impl)
+    # Inject the port (adapter) so actions depend on a stable surface
+    tool_list, tool_dispatch = make_npc_actions(world=world)
 
     # Agent builder
     def build_agent(name, persona, model_cfg, **kwargs):
