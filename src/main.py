@@ -98,6 +98,7 @@ async def run_demo(
     story_cfg: Mapping[str, Any],
     characters: Mapping[str, Any],
     world: Any,
+    player_input_provider: Optional[Callable[[str], "_asyncio.Future[str]"] | Callable[[str], "_asyncio.Awaitable[str]"] | Callable[[str], "_asyncio.coroutines.CoroWrapper"]] = None,
 ) -> None:
     """Run the NPC talk demo (sequential group chat, no GM/adjudication)."""
 
@@ -1237,13 +1238,30 @@ async def run_demo(
 
                 # 2) 分支：player 走 CLI 输入；npc 走模型
                 if str(actor_types.get(name, "npc")) == "player":
-                    # 简单读入一行文本并广播；不做工具解析/清洗
+                    # 玩家发言：优先使用外部提供的异步输入通道（用于网页端），否则回退到 CLI 输入
+                    try:
+                        # 广播等待玩家输入的系统事件，便于前端显示输入框与高亮当前玩家
+                        _emit(
+                            "system",
+                            actor=name,
+                            phase="player_input",
+                            data={"waiting": True},
+                        )
+                    except Exception:
+                        pass
                     try:
                         text_in = ""
-                        try:
-                            text_in = (await _async_input(f"[{name}] 请输入对白： ")).strip()
-                        except Exception:
-                            text_in = ""
+                        if callable(player_input_provider):
+                            try:
+                                # type: ignore[call-arg]
+                                text_in = str((await player_input_provider(name)) or "").strip()
+                            except Exception:
+                                text_in = ""
+                        else:
+                            try:
+                                text_in = (await _async_input(f"[{name}] 请输入对白： ")).strip()
+                            except Exception:
+                                text_in = ""
                         if text_in:
                             await _bcast(hub, Msg(name, text_in, "assistant"), phase=f"player:{name}")
                     except Exception:
@@ -1502,5 +1520,375 @@ def main() -> None:
         log_ctx.close()
 
 
-if __name__ == "__main__":
+import sys
+import argparse
+from collections import deque
+
+# Optional server deps (only required in server mode)
+try:  # lazy import to keep --once usable without extra deps
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.responses import JSONResponse
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.middleware.cors import CORSMiddleware
+    import uvicorn
+except Exception:  # pragma: no cover - defensive for environments without deps
+    FastAPI = None  # type: ignore
+    WebSocket = None  # type: ignore
+    WebSocketDisconnect = Exception  # type: ignore
+    JSONResponse = None  # type: ignore
+    StaticFiles = None  # type: ignore
+    CORSMiddleware = None  # type: ignore
+    uvicorn = None  # type: ignore
+
+import asyncio as _asyncio
+import uuid as _uuid
+from urllib.parse import parse_qs
+
+
+class _EventBridge:
+    """In-memory event buffer + websocket broadcaster.
+
+    - Keeps a ring buffer of recent events for replay on reconnect.
+    - Broadcasts every new event to connected WebSocket clients.
+    """
+
+    def __init__(self, maxlen: int = 2000) -> None:
+        self._buf: deque[dict] = deque(maxlen=maxlen)
+        self._clients: set = set()  # set[WebSocket]
+        self._last_seq: int = 0
+        self._lock = _asyncio.Lock()
+
+    @property
+    def last_sequence(self) -> int:
+        return self._last_seq
+
+    async def clear(self) -> None:
+        async with self._lock:
+            self._buf.clear()
+            self._last_seq = 0
+
+    async def register(self, ws) -> None:
+        await ws.accept()
+        async with self._lock:
+            self._clients.add(ws)
+
+    async def unregister(self, ws) -> None:
+        async with self._lock:
+            self._clients.discard(ws)
+
+    def replay_since(self, since: int) -> list[dict]:
+        try:
+            si = int(since or 0)
+        except Exception:
+            si = 0
+        return [ev for ev in list(self._buf) if int(ev.get("sequence", 0) or 0) > si]
+
+    async def on_event(self, event_dict: dict) -> None:
+        # buffer
+        try:
+            seq = int(event_dict.get("sequence", 0) or 0)
+        except Exception:
+            seq = 0
+        if not seq:
+            seq = self._last_seq + 1
+            event_dict["sequence"] = seq
+        self._last_seq = max(self._last_seq, seq)
+        self._buf.append(event_dict)
+        # broadcast
+        dead = []
+        for ws in list(self._clients):
+            try:
+                await ws.send_json({"type": "event", "event": event_dict})
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            try:
+                await self.unregister(ws)
+            except Exception:
+                pass
+
+
+class _ServerState:
+    def __init__(self) -> None:
+        self.task: Optional[_asyncio.Task] = None
+        self.running: bool = False
+        self.bridge = _EventBridge()
+        self.last_snapshot: Dict[str, Any] = {}
+        self.session_id: str = ""
+        self.log_ctx = None  # LoggingContext
+        self.player_queues: Dict[str, _asyncio.Queue[str]] = {}
+
+    def is_running(self) -> bool:
+        return bool(self.task) and not bool(self.task.done()) and self.running
+
+    def get_player_queue(self, name: str) -> _asyncio.Queue[str]:
+        q = self.player_queues.get(name)
+        if q is None:
+            q = _asyncio.Queue()
+            self.player_queues[name] = q
+        return q
+
+
+_STATE = _ServerState()
+
+
+async def _start_game_server_mode() -> Tuple[bool, str]:
+    """Start one game run in background if not already running."""
+    if _STATE.is_running():
+        return False, "already running"
+
+    # Build configs/world/runtime similar to main()
+    model_cfg_obj = load_model_config()
+    story_cfg = load_story_config()
+    characters = load_characters()
+    weapons = load_weapons() or {}
+    if is_dataclass(model_cfg_obj):
+        model_cfg: Dict[str, Any] = asdict(model_cfg_obj)
+    else:
+        model_cfg = dict(getattr(model_cfg_obj, "__dict__", {}) or {})
+
+    root = project_root()
+    log_ctx = create_logging_context(base_path=root)
+    _STATE.log_ctx = log_ctx
+
+    world = _WorldPort()
+    try:
+        world.set_weapon_defs(weapons)
+    except Exception as exc:
+        # record error to structured logs but do not fail start
+        try:
+            ev = Event(event_type=EventType.ERROR, data={
+                "message": "加载武器表失败", "error_type": "weapon_defs_load", "exception": str(exc)
+            })
+            log_ctx.bus.publish(ev)
+        except Exception:
+            pass
+
+    tool_list, tool_dispatch = make_npc_actions(world=world)
+
+    # New session id for correlation
+    _STATE.session_id = str(_uuid.uuid4())
+
+    def emit(*, event_type: str, actor=None, phase=None, turn=None, data=None) -> None:
+        ev = Event(event_type=EventType(event_type), actor=actor, phase=phase, turn=turn, data=dict(data or {}))
+        ev.correlation_id = _STATE.session_id
+        # 1) structured/story logs
+        try:
+            published = log_ctx.bus.publish(ev)
+        except Exception:
+            published = None
+        # 2) WS broadcast with the normalised dict (sequence/timestamp assigned by bus)
+        try:
+            payload = published.to_dict() if published else ev.to_dict()  # ev may lack seq/timestamp
+            _asyncio.create_task(_STATE.bridge.on_event(payload))
+        except Exception:
+            pass
+        # 3) snapshot cache
+        if event_type == "state_update":
+            try:
+                _STATE.last_snapshot = dict((data or {}).get("state") or {})
+            except Exception:
+                pass
+
+    def build_agent(name, persona, model_cfg, **kwargs):
+        return make_kimi_npc(name, persona, model_cfg, **kwargs)
+
+    async def _runner() -> None:
+        try:
+            _STATE.running = True
+            # reset event buffer for new session
+            await _STATE.bridge.clear()
+            # pre-populate snapshot to reduce initial blank HUD
+            try:
+                _STATE.last_snapshot = world.snapshot()
+            except Exception:
+                _STATE.last_snapshot = {}
+            await run_demo(
+                emit=emit,
+                build_agent=build_agent,
+                tool_fns=tool_list,
+                tool_dispatch=tool_dispatch,
+                model_cfg=model_cfg,
+                story_cfg=story_cfg,
+                characters=characters,
+                world=world,
+                player_input_provider=lambda actor_name: _STATE.get_player_queue(str(actor_name)).get(),
+            )
+        except Exception as exc:
+            # Emit a terminal error event
+            try:
+                err = Event(event_type=EventType.ERROR, phase="final", data={"message": f"runtime error: {exc}"})
+                log_ctx.bus.publish(err)
+                _asyncio.create_task(_STATE.bridge.on_event(err.to_dict()))
+            except Exception:
+                pass
+        finally:
+            _STATE.running = False
+            try:
+                # friendly end marker for clients
+                end_seq = _STATE.bridge.last_sequence + 1
+                _asyncio.create_task(_STATE.bridge.on_event({
+                    "event_id": f"END-{_STATE.session_id}",
+                    "sequence": end_seq,
+                    "timestamp": "",
+                    "event_type": "system",
+                    "phase": "final",
+                    "data": {"message": "game finished"},
+                    "correlation_id": _STATE.session_id,
+                }))
+            except Exception:
+                pass
+            try:
+                log_ctx.close()
+            except Exception:
+                pass
+            _STATE.log_ctx = None
+
+    _STATE.task = _asyncio.create_task(_runner())
+    await _asyncio.sleep(0)
+    return True, "started"
+
+
+async def _stop_game_server_mode() -> Tuple[bool, str]:
+    if not _STATE.is_running():
+        return False, "not running"
+    try:
+        _STATE.task.cancel()  # cooperative cancellation
+    except Exception:
+        pass
+    return True, "stopped"
+
+
+def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] = None):
+    if FastAPI is None or uvicorn is None:
+        raise RuntimeError("FastAPI/uvicorn not installed. Install fastapi and uvicorn[standard].")
+    app = FastAPI()
+
+    # CORS if requested (for cross-origin frontends like dev servers)
+    if allow_cors_from and CORSMiddleware is not None:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allow_cors_from,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    @app.get("/healthz")
+    async def _healthz():
+        return {"ok": True}
+
+    @app.post("/api/start")
+    async def api_start():  # type: ignore[no-redef]
+        ok, msg = await _start_game_server_mode()
+        code = 200 if ok else 409
+        return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
+
+    @app.post("/api/stop")
+    async def api_stop():  # type: ignore[no-redef]
+        ok, msg = await _stop_game_server_mode()
+        code = 200 if ok else 400
+        return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
+
+    @app.get("/api/state")
+    async def api_state():  # type: ignore[no-redef]
+        return {
+            "running": _STATE.is_running(),
+            "last_sequence": _STATE.bridge.last_sequence,
+            "state": _STATE.last_snapshot,
+            "session_id": _STATE.session_id,
+        }
+
+    @app.post("/api/player_say")
+    async def api_player_say(payload: dict):  # type: ignore[no-redef]
+        """Submit a player's utterance for the current session.
+
+        Body: {"name": "Doctor", "text": "......"}
+        """
+        if not _STATE.is_running():
+            return JSONResponse({"ok": False, "message": "game not running"}, status_code=400)
+        try:
+            name = str(payload.get("name") or "").strip()
+            text = str(payload.get("text") or "").strip()
+        except Exception:
+            return JSONResponse({"ok": False, "message": "invalid payload"}, status_code=400)
+        if not name or not text:
+            return JSONResponse({"ok": False, "message": "name/text required"}, status_code=400)
+        try:
+            await _STATE.get_player_queue(name).put(text)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "message": f"queue error: {exc}"}, status_code=500)
+        return JSONResponse({"ok": True})
+
+    @app.websocket("/ws/events")
+    async def ws_events(ws: WebSocket):  # type: ignore[no-redef]
+        await _STATE.bridge.register(ws)
+        try:
+            raw_qs = ws.scope.get("query_string", b"") or b""
+            qs = parse_qs(raw_qs.decode("utf-8")) if raw_qs else {}
+            since_s = (qs.get("since", ["0"]) or ["0"])[0]
+            try:
+                since = int(since_s or "0")
+            except Exception:
+                since = 0
+            # hello + replay
+            await ws.send_json({
+                "type": "hello",
+                "last_sequence": _STATE.bridge.last_sequence,
+                "state": _STATE.last_snapshot,
+                "session_id": _STATE.session_id,
+            })
+            for ev in _STATE.bridge.replay_since(since):
+                try:
+                    await ws.send_json({"type": "event", "event": ev})
+                except Exception:
+                    break
+            # keep-alive; actual events are pushed by bridge
+            while True:
+                await _asyncio.sleep(60)
+        except WebSocketDisconnect:  # type: ignore[misc]
+            pass
+        finally:
+            try:
+                await _STATE.bridge.unregister(ws)
+            except Exception:
+                pass
+
+    # Static hosting (same-origin front-end). web_dir must exist with index.html
+    if web_dir is not None and StaticFiles is not None and web_dir.exists():
+        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
+
+    return app
+
+
+def _run_server(host: str, port: int, web_dir: Optional[str], *, allow_cors_from: Optional[list[str]] = None) -> None:
+    wd = Path(web_dir) if web_dir else (project_root() / "web")
+    app = _make_app(wd, allow_cors_from=allow_cors_from)
+    uvicorn.run(app, host=host, port=port, reload=False, log_level="info")
+
+
+def main_once() -> None:
+    # Keep original single-run behaviour for explicit --once
     main()
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="NPC Talk Demo server/CLI")
+    p.add_argument("--once", action="store_true", help="Run one game in CLI mode and exit")
+    p.add_argument("--host", default="127.0.0.1", help="Server host (default 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8000, help="Server port (default 8000)")
+    p.add_argument("--web-dir", default=str(project_root() / "web"), help="Directory to serve as frontend (default ./web)")
+    p.add_argument("--cors", default="", help="Comma separated origins to allow CORS (empty means disabled)")
+    return p.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = _parse_args(sys.argv[1:])
+    if args.once:
+        main_once()
+    else:
+        if FastAPI is None or uvicorn is None:
+            print("FastAPI/uvicorn is required for server mode. Install with: pip install fastapi 'uvicorn[standard]'")
+            sys.exit(2)
+        allow_origins = [o.strip() for o in args.cors.split(",") if o.strip()] or None
+        _run_server(args.host, args.port, args.web_dir, allow_cors_from=allow_origins)
