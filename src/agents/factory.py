@@ -40,6 +40,8 @@ DEFAULT_PROMPT_TOOL_GUIDE = (
     "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
     "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
     "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
+    "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
+    "- clear_protection(guardian=\"\", protectee=\"\", reason)：清除守护关系；可按守护者/被保护者/全部清理。\n"
 )
 
 DEFAULT_PROMPT_EXAMPLE = (
@@ -48,8 +50,30 @@ DEFAULT_PROMPT_EXAMPLE = (
     'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2, "reason": "接近掩体"}})\n'
 )
 
+# Additional guidance so NPCs understand how protection actually takes effect
+DEFAULT_PROMPT_GUARD_GUIDE = (
+    "守护生效规则：\n"
+    "- set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用‘反应’。\n"
+    "- 攻击者到 guardian 的距离也必须在本次武器触及/射程内，否则无法替代承伤。\n"
+    "- 多名守护者同时满足时，系统选择距离攻击者最近者（同距按登记顺序）。\n"
+    "- 建议建立守护后使用 advance_position 贴身到被保护者旁并保持相邻，以确保拦截能生效。\n"
+)
+
+DEFAULT_PROMPT_GUARD_EXAMPLE = (
+    "守护使用示例：\n"
+    "德克萨斯侧身一步：‘我来护你。’\n"
+    'CALL_TOOL set_protection({{"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"}})\n'
+    "德克萨斯快步靠近：\n"
+    'CALL_TOOL advance_position({{"name": "Texas", "target": {{"x": 1, "y": 1}}, "steps": 1, "reason": "保持相邻以便拦截"}})\n'
+)
+
 DEFAULT_PROMPT_TEMPLATE = (
-    DEFAULT_PROMPT_HEADER + DEFAULT_PROMPT_RULES + DEFAULT_PROMPT_TOOL_GUIDE + DEFAULT_PROMPT_EXAMPLE
+    DEFAULT_PROMPT_HEADER
+    + DEFAULT_PROMPT_RULES
+    + DEFAULT_PROMPT_TOOL_GUIDE
+    + DEFAULT_PROMPT_EXAMPLE
+    + DEFAULT_PROMPT_GUARD_GUIDE
+    + DEFAULT_PROMPT_GUARD_EXAMPLE
 )
 
 
@@ -80,7 +104,7 @@ def make_kimi_npc(
     sec = dict(model_cfg.get("npc") or {})
     model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
-    tools_text = "perform_attack(), advance_position(), adjust_relation(), transfer_item()"
+    tools_text = "perform_attack(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection()"
     tpl = _join_lines(prompt_template)
 
     appearance_text = (appearance or "外观描写未提供，可根据设定自行补充细节。").strip()

@@ -93,6 +93,8 @@ class World:
     weapon_defs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # Participants order for the current scene (names only)
     participants: List[str] = field(default_factory=list)
+    # Protection links: protectee -> ordered list of guardians
+    guardians: Dict[str, List[str]] = field(default_factory=dict)
 
     def snapshot(self) -> dict:
         # Build a sanitized weapon-def summary for consumers (id -> selected fields)
@@ -132,6 +134,7 @@ class World:
             "tension": int(self.tension),
             "marks": list(self.marks),
             "participants": list(self.participants),
+            "guardians": {k: list(v) for k, v in self.guardians.items()},
             "combat": {
                 "in_combat": bool(self.in_combat),
                 "round": int(self.round),
@@ -284,6 +287,68 @@ def set_position(name: str, x: int, y: int) -> ToolResponse:
     )
 
 
+def set_guard(guardian: str, protectee: str) -> ToolResponse:
+    """Register a protection link: `guardian` will attempt to intercept attacks against `protectee`.
+
+    - Order is preserved; duplicates are ignored.
+    - Interception rules are enforced at attack time.
+    """
+    g = str(guardian)
+    p = str(protectee)
+    lst = WORLD.guardians.setdefault(p, [])
+    if g not in lst:
+        lst.append(g)
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"守护：{g} -> {p}")],
+        metadata={"protectee": p, "guardians": list(lst), "added": g},
+    )
+
+
+def clear_guard(guardian: Optional[str] = None, protectee: Optional[str] = None) -> ToolResponse:
+    """Clear protection links.
+
+    - guardian=None & protectee=None: clear all
+    - guardian=None & protectee= P: clear all guardians of P
+    - guardian= G & protectee=None: remove G from all protectees
+    - guardian= G & protectee= P: remove only G protecting P
+    """
+    g = guardian if guardian is None else str(guardian)
+    p = protectee if protectee is None else str(protectee)
+    changed = 0
+    if g is None and p is None:
+        changed = sum(len(v) for v in WORLD.guardians.values())
+        WORLD.guardians.clear()
+        return ToolResponse(content=[TextBlock(type="text", text=f"已清空所有守护关系（{changed} 条）")], metadata={"cleared": changed})
+    if p is not None and g is None:
+        lst = WORLD.guardians.pop(p, [])
+        changed = len(lst)
+        return ToolResponse(content=[TextBlock(type="text", text=f"已清除 {p} 的全部守护（{changed} 名）")], metadata={"protectee": p, "cleared": changed})
+    if g is not None and p is None:
+        removed = 0
+        for key in list(WORLD.guardians.keys()):
+            lst = WORLD.guardians.get(key, [])
+            if not lst:
+                continue
+            if g in lst:
+                lst = [x for x in lst if x != g]
+                removed += 1
+                if lst:
+                    WORLD.guardians[key] = lst
+                else:
+                    WORLD.guardians.pop(key, None)
+        return ToolResponse(content=[TextBlock(type="text", text=f"已将 {g} 从所有守护中移除（涉及 {removed} 名被保护者）")], metadata={"guardian": g, "affected": removed})
+    # both provided
+    lst = WORLD.guardians.get(p, [])
+    if g in lst:
+        lst = [x for x in lst if x != g]
+        if lst:
+            WORLD.guardians[p] = lst
+        else:
+            WORLD.guardians.pop(p, None)
+        changed = 1
+    return ToolResponse(content=[TextBlock(type="text", text=f"已移除守护：{g} -> {p}")], metadata={"removed": changed, "protectee": p, "guardian": g})
+
+
 def get_position(name: str) -> ToolResponse:
     pos = WORLD.positions.get(str(name))
     if pos is None:
@@ -322,6 +387,67 @@ def get_distance_steps_between(name_a: str, name_b: str) -> Optional[int]:
 
 
 # Removed meter-based distance helper; use steps only (get_distance_steps_between).
+
+
+def _resolve_guard_interception(attacker: str, defender: str, reach_steps: int) -> tuple[str, Optional[Dict[str, Any]], List[TextBlock]]:
+    """Resolve protection interception.
+
+    Rules (as confirmed by user):
+    - Guardian must be adjacent (<=1 step) to protectee.
+    - Consumes the guardian's Reaction (one per round).
+    - If multiple guardians are eligible, choose the one closest to the attacker;
+      ties break by registration order.
+    - Applies to all attacks that check reach/range by steps; guardian must also
+      be within the attacker's current reach (steps) for the interception to hold.
+    - No auto cleanup; explicit clear only.
+
+    Returns: (final_defender, guard_meta or None, pre_logs)
+    """
+    protectee = str(defender)
+    guardians = list(WORLD.guardians.get(protectee, []) or [])
+    if not guardians:
+        return defender, None, []
+
+    # Build candidate list with computed distances
+    cand = []  # (distance_attacker_to_guardian, order_index, guardian)
+    for idx, g in enumerate(guardians):
+        g = str(g)
+        # must be alive
+        if not _is_alive(g):
+            continue
+        # adjacency to protectee
+        d_gp = get_distance_steps_between(g, protectee)
+        if d_gp is None or d_gp > 1:
+            continue
+        # reaction available
+        st = WORLD.turn_state.get(g, {})
+        if not st.get("reaction_available", True):
+            continue
+        # attacker must be within reach vs guardian as well
+        d_ag = get_distance_steps_between(attacker, g)
+        if d_ag is None or d_ag > int(reach_steps):
+            continue
+        cand.append((int(d_ag), idx, g))
+
+    if not cand:
+        return defender, None, []
+
+    # choose by nearest to attacker (ascending), tiebreaker by registration order (ascending idx)
+    cand.sort(key=lambda t: (t[0], t[1]))
+    chosen = None
+    for _, _, g in cand:
+        # spend reaction; if cannot, try next
+        resp = use_action(str(g), "reaction")
+        ok = bool((resp.metadata or {}).get("ok", False))
+        if ok:
+            chosen = str(g)
+            break
+    if not chosen:
+        return defender, None, []
+
+    pre = [TextBlock(type="text", text=f"{chosen} 保护 {protectee}，消耗反应，挡在其前，成为被攻击目标。")]
+    meta = {"protector": chosen, "protected": protectee, "used_reaction": True}
+    return chosen, meta, pre
 
 
 def _band_for_steps(steps: int) -> str:
@@ -1122,10 +1248,21 @@ def resolve_melee_attack(attacker: str, defender: str, atk_mod: int = 0, dc: int
         dmg_expr: 伤害骰表达式（如 1d4, 1d6+1）
         advantage: 'none'|'advantage'|'disadvantage'
     """
+    # Protection interception (treat as melee, reach 1 step)
+    pre_logs: List[TextBlock] = []
+    guard_meta: Optional[Dict[str, Any]] = None
+    new_defender, meta_guard, pre = _resolve_guard_interception(attacker, defender, reach_steps=1)
+    if new_defender != defender:
+        defender = new_defender
+    if pre:
+        pre_logs.extend(pre)
+    if meta_guard:
+        guard_meta = dict(meta_guard)
+
     # Attack roll
     atk_res = skill_check(target=int(dc), modifier=int(atk_mod), advantage=advantage)
     success = bool(atk_res.metadata.get("success")) if atk_res.metadata else False
-    parts: list[TextBlock] = []
+    parts: List[TextBlock] = list(pre_logs)
     # Describe the attack roll
     parts.append(TextBlock(type="text", text=f"攻击检定：{attacker} d20+{int(atk_mod)} vs DC {int(dc)} -> {'成功' if success else '失败'}"))
     if success:
@@ -1145,6 +1282,7 @@ def resolve_melee_attack(attacker: str, defender: str, atk_mod: int = 0, dc: int
         "attacker": attacker,
         "defender": defender,
         "attack": atk_res.metadata,
+        **({"guard": guard_meta} if guard_meta else {}),
     }
     return ToolResponse(content=parts, metadata=out_meta)
 
@@ -1496,8 +1634,6 @@ def attack_with_weapon(
     - ability/damage_expr/proficient_default are sourced from weapon defs with safe defaults.
     """
     atk = WORLD.characters.get(attacker, {})
-    dfd = WORLD.characters.get(defender, {})
-    ac = int(dfd.get("ac", 10))
     w = WORLD.weapon_defs.get(str(weapon), {})
     try:
         reach_steps = max(1, int(w.get("reach_steps", DEFAULT_REACH_STEPS)))
@@ -1512,8 +1648,7 @@ def attack_with_weapon(
     prof = int(atk.get("prof", 2)) if proficient_default else 0
     base = mod + prof
 
-    # Distance gate
-    distance_before = get_distance_steps_between(attacker, defender)
+    # Distance string helper
     def _fmt_distance(steps: Optional[int]) -> str:
         if steps is None:
             return "未知"
@@ -1534,10 +1669,25 @@ def attack_with_weapon(
             },
         )
 
+    # Protection interception (may change defender)
+    pre_logs: List[TextBlock] = []
+    guard_meta: Optional[Dict[str, Any]] = None
+    new_defender, meta_guard, pre = _resolve_guard_interception(attacker, defender, reach_steps)
+    if new_defender != defender:
+        defender = new_defender
+    if pre:
+        pre_logs.extend(pre)
+    if meta_guard:
+        guard_meta = dict(meta_guard)
+
+    # Post-interception snapshot for defender stat and distance gate
+    dfd = WORLD.characters.get(defender, {})
+    ac = int(dfd.get("ac", 10))
+    distance_before = get_distance_steps_between(attacker, defender)
     if distance_before is not None and distance_before > reach_steps:
         msg = TextBlock(type="text", text=f"距离不足：{attacker} 使用 {weapon} 攻击 {defender} 失败（距离 {_fmt_distance(distance_before)}，触及 {_fmt_distance(reach_steps)}）")
         return ToolResponse(
-            content=[msg],
+            content=pre_logs + [msg],
             metadata={
                 "attacker": attacker,
                 "defender": defender,
@@ -1547,13 +1697,14 @@ def attack_with_weapon(
                 "distance_before": distance_before,
                 "distance_after": distance_before,
                 "reach_steps": reach_steps,
+                **({"guard": guard_meta} if guard_meta else {}),
             },
         )
 
     # Attack roll
     atk_res = skill_check(target=int(ac), modifier=base, advantage=advantage)
     success = bool((atk_res.metadata or {}).get("success"))
-    parts: List[TextBlock] = []
+    parts: List[TextBlock] = list(pre_logs)
     parts.append(TextBlock(type="text", text=f"攻击：{attacker} 使用 {weapon} -> {defender} d20{_signed(base)} vs AC {ac} -> {'命中' if success else '未中'}"))
     hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
     dmg_total = 0
@@ -1584,6 +1735,7 @@ def attack_with_weapon(
             "distance_before": distance_before,
             "distance_after": distance_after,
             "reach_steps": reach_steps,
+            **({"guard": guard_meta} if guard_meta else {}),
         },
     )
 

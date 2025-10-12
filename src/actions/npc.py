@@ -149,17 +149,51 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         )
         return resp
 
+    def set_protection(guardian: str, protectee: str, reason: str = ""):
+        resp = world.set_guard(guardian, protectee)
+        meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(f"protect {guardian} -> {protectee} reason={reason_text}")
+        return resp
+
+    def clear_protection(guardian: str = "", protectee: str = "", reason: str = ""):
+        g = guardian if guardian else None
+        p = protectee if protectee else None
+        resp = world.clear_guard(g, p)
+        meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(f"clear_protect guardian={g} protectee={p} reason={reason_text}")
+        return resp
+
     tool_list: List[object] = [
         perform_attack,
         advance_position,
         adjust_relation,
         transfer_item,
+        set_protection,
+        clear_protection,
     ]
     tool_dispatch: Dict[str, object] = {
         "perform_attack": perform_attack,
         "advance_position": advance_position,
         "adjust_relation": adjust_relation,
         "transfer_item": transfer_item,
+        "set_protection": set_protection,
+        "clear_protection": clear_protection,
     }
 
     return tool_list, tool_dispatch
