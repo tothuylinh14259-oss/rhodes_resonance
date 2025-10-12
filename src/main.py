@@ -229,7 +229,7 @@ async def run_demo(
 
     # Build actors from configs or fallback
     char_cfg = dict(characters or {})
-    npcs_list: List[ReActAgent] = []
+    npcs_list: List[ReActAgent] = []  # legacy name; no longer used for turn order
     participants_order: List[AgentBase] = []
     actor_entries: Dict[str, dict] = {}
     try:
@@ -241,6 +241,12 @@ async def run_demo(
         }
     except Exception:
         actor_entries = {}
+    # Map actor name -> type ("npc" or "player"); default to npc
+    actor_types: Dict[str, str] = {}
+    try:
+        actor_types = {str(nm): str((entry or {}).get("type", "npc")).lower() for nm, entry in actor_entries.items()}
+    except Exception:
+        actor_types = {}
     # Participants resolution per request: derive purely from story positions that were ingested
     # into `story_positions` (supports top-level initial_positions/positions 或 initial.positions)。
     # If none present, run without participants (no implicit fallback to any default pair).
@@ -318,6 +324,8 @@ async def run_demo(
     except Exception:
         pass
 
+    # Build agents for NPCs only; players由命令行输入驱动
+    npcs_llm_only: List[ReActAgent] = []
     if allowed_names_world:
         for name in allowed_names_world:
             entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
@@ -384,29 +392,36 @@ async def run_demo(
                 raise ValueError(f"缺少角色人设(persona)：{name}")
             appearance = sheet.get("appearance")
             quotes = sheet.get("quotes")
-            sys_prompt_text = _build_sys_prompt(
-                name=name,
-                persona=persona,
-                appearance=appearance,
-                quotes=quotes,
-                relation_brief=_relation_brief(name),
-                weapon_brief=_weapon_brief_for(name),
-                allowed_names=allowed_names_str,
-            )
-            agent = build_agent(
-                name,
-                persona,
-                model_cfg,
-                sys_prompt=sys_prompt_text,
-                allowed_names=allowed_names_str,
-                appearance=appearance,
-                quotes=quotes,
-                relation_brief=_relation_brief(name),
-                weapon_brief=_weapon_brief_for(name),
-                tools=tool_list,
-            )
-            npcs_list.append(agent)
-            participants_order.append(agent)
+            # Player 角色不创建 LLM agent；其对白来自命令行
+            if str(actor_types.get(name, "npc")) == "player":
+                # 不加入 participants_order（Hub 仅管理 NPC Agent 的内存）
+                pass
+            else:
+                sys_prompt_text = _build_sys_prompt(
+                    name=name,
+                    persona=persona,
+                    appearance=appearance,
+                    quotes=quotes,
+                    relation_brief=_relation_brief(name),
+                    weapon_brief=_weapon_brief_for(name),
+                    allowed_names=allowed_names_str,
+                )
+                agent = build_agent(
+                    name,
+                    persona,
+                    model_cfg,
+                    sys_prompt=sys_prompt_text,
+                    allowed_names=allowed_names_str,
+                    appearance=appearance,
+                    quotes=quotes,
+                    relation_brief=_relation_brief(name),
+                    weapon_brief=_weapon_brief_for(name),
+                    tools=tool_list,
+                )
+                # 仅 NPC 参与 Hub 和初始化 pipeline
+                npcs_list.append(agent)
+                participants_order.append(agent)
+                npcs_llm_only.append(agent)
         # preload non-participant actors (e.g., enemies) into world sheets
         for name, entry in actor_entries.items():
             if name in allowed_names_world:
@@ -560,6 +575,14 @@ async def run_demo(
     recap_enabled = True
     recap_msg_limit = 6
     recap_action_limit = 6
+
+    # Async CLI input helper (avoid blocking event loop when玩家发言)
+    async def _async_input(prompt: str) -> str:
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(None, lambda: input(prompt))
+        except Exception:
+            return ""
 
     def _safe_text(msg: Msg) -> str:
         try:
@@ -960,8 +983,8 @@ async def run_demo(
         _emit("error", phase="scene", data={"message": "写入场景细节失败", "error_type": "scene_details_append", "exception": str(exc)})
     announcement_text = opening_line + "\n" + _participants_header
 
-    # 若无可用 NPC/参与者，则在进入 Hub 前直接记录并结束
-    if not npcs_list:
+    # 若无参与者（按 positions 推断）则在进入 Hub 前直接记录并结束
+    if not allowed_names_world:
         try:
             _emit("state_update", phase="initial", data={"state": world.snapshot()})
         except Exception:
@@ -984,7 +1007,8 @@ async def run_demo(
             "assistant",
         ),
     ) as hub:
-        await sequential_pipeline(npcs_list)
+        # 仅对 NPC 跑一次开场 pipeline；玩家不涉及模型初始化
+        await sequential_pipeline(npcs_llm_only)
         _emit("state_update", phase="initial", data={"state": world.snapshot()})
         round_idx = 1
         max_rounds = None
@@ -1104,8 +1128,9 @@ async def run_demo(
                     break
 
             combat_cleared = False
-            for agent in npcs_list:
-                name = getattr(agent, 'name', '')
+            # 按参与者名称轮转；玩家与 NPC 均在其中
+            for name in (list(allowed_names_world) or []):
+                name = str(name)
                 # Skip turn only if the character is truly dead (hp<=0 and not in dying state)
                 try:
                     sheet = (world.snapshot().get("characters") or {}).get(name, {}) or {}
@@ -1172,8 +1197,7 @@ async def run_demo(
                 except Exception:
                     pass
 
-                # Build an ephemeral agent for this turn to include a per-turn private tip in sys_prompt
-                # and avoid accumulating any long-lived memory between turns.
+                # Build per-turn private tip（仅 NPC 使用；玩家仅对白不走模型）
                 # 1) Compute per-turn private section for this actor（回合资源 + 状态提示）
                 private_section = None
                 try:
@@ -1211,70 +1235,84 @@ async def run_demo(
                 except Exception:
                     private_section = None
 
-                # 2) Rebuild an ephemeral agent with sys_prompt = base_prompt + optional private section
-                try:
-                    sheet_now = (world.snapshot().get("characters") or {}).get(name, {}) or {}
-                    persona_now = sheet_now.get("persona") or ""
-                    appearance_now = sheet_now.get("appearance")
-                    quotes_now = sheet_now.get("quotes")
-                except Exception:
-                    persona_now = ""; appearance_now = None; quotes_now = None
-                sys_prompt_text = _build_sys_prompt(
-                    name=name,
-                    persona=str(persona_now or ""),
-                    appearance=appearance_now,
-                    quotes=quotes_now,
-                    relation_brief=_relation_brief(name),
-                    weapon_brief=_weapon_brief_for(name),
-                    allowed_names=allowed_names_str,
-                )
-                if private_section:
-                    sys_prompt_text = sys_prompt_text + "\n" + private_section
+                # 2) 分支：player 走 CLI 输入；npc 走模型
+                if str(actor_types.get(name, "npc")) == "player":
+                    # 简单读入一行文本并广播；不做工具解析/清洗
+                    try:
+                        text_in = ""
+                        try:
+                            text_in = (await _async_input(f"[{name}] 请输入对白： ")).strip()
+                        except Exception:
+                            text_in = ""
+                        if text_in:
+                            await _bcast(hub, Msg(name, text_in, "assistant"), phase=f"player:{name}")
+                    except Exception:
+                        pass
+                else:
+                    # 2a) Rebuild an ephemeral NPC agent with per-turn private section
+                    try:
+                        sheet_now = (world.snapshot().get("characters") or {}).get(name, {}) or {}
+                        persona_now = sheet_now.get("persona") or ""
+                        appearance_now = sheet_now.get("appearance")
+                        quotes_now = sheet_now.get("quotes")
+                    except Exception:
+                        persona_now = ""; appearance_now = None; quotes_now = None
+                    sys_prompt_text = _build_sys_prompt(
+                        name=name,
+                        persona=str(persona_now or ""),
+                        appearance=appearance_now,
+                        quotes=quotes_now,
+                        relation_brief=_relation_brief(name),
+                        weapon_brief=_weapon_brief_for(name),
+                        allowed_names=allowed_names_str,
+                    )
+                    if private_section:
+                        sys_prompt_text = sys_prompt_text + "\n" + private_section
 
-                ephemeral = build_agent(
-                    name,
-                    str(persona_now or ""),
-                    model_cfg,
-                    sys_prompt=sys_prompt_text,
-                    allowed_names=allowed_names_str,
-                    appearance=appearance_now,
-                    quotes=quotes_now,
-                    relation_brief=_relation_brief(name),
-                    weapon_brief=_weapon_brief_for(name),
-                    tools=tool_list,
-                )
+                    ephemeral = build_agent(
+                        name,
+                        str(persona_now or ""),
+                        model_cfg,
+                        sys_prompt=sys_prompt_text,
+                        allowed_names=allowed_names_str,
+                        appearance=appearance_now,
+                        quotes=quotes_now,
+                        relation_brief=_relation_brief(name),
+                        weapon_brief=_weapon_brief_for(name),
+                        tools=tool_list,
+                    )
 
-                # 3) Seed this ephemeral agent with this turn's shared context in order (1 环境信息, 2 场景回顾)
-                try:
-                    env_text = _world_summary_text(world.snapshot())
-                    await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
-                except Exception:
-                    pass
-                try:
-                    if recap_msg is not None:
-                        await ephemeral.memory.add(recap_msg)
-                except Exception:
-                    pass
+                    # 3) Seed this ephemeral agent with this turn's shared context in order (1 环境信息, 2 场景回顾)
+                    try:
+                        env_text = _world_summary_text(world.snapshot())
+                        await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
+                    except Exception:
+                        pass
+                    try:
+                        if recap_msg is not None:
+                            await ephemeral.memory.add(recap_msg)
+                    except Exception:
+                        pass
 
-                out = await ephemeral(None)
-                try:
-                    raw_text = _safe_text(out)
-                    cleaned = _strip_tool_calls_from_text(raw_text)
-                    if cleaned and cleaned.strip():
-                        msg_clean = Msg(getattr(out, "name", name), cleaned, getattr(out, "role", "assistant") or "assistant")
+                    out = await ephemeral(None)
+                    try:
+                        raw_text = _safe_text(out)
+                        cleaned = _strip_tool_calls_from_text(raw_text)
+                        if cleaned and cleaned.strip():
+                            msg_clean = Msg(getattr(out, "name", name), cleaned, getattr(out, "role", "assistant") or "assistant")
+                            await _bcast(
+                                hub,
+                                msg_clean,
+                                phase=f"npc:{name}",
+                            )
+                    except Exception:
+                        # If anything goes wrong, fall back to broadcasting the original
                         await _bcast(
                             hub,
-                            msg_clean,
-                            phase=f"npc:{name or agent.__class__.__name__}",
+                            out,
+                            phase=f"npc:{name}",
                         )
-                except Exception:
-                    # If anything goes wrong, fall back to broadcasting the original
-                    await _bcast(
-                        hub,
-                        out,
-                        phase=f"npc:{name or agent.__class__.__name__}",
-                    )
-                await _handle_tool_calls(out, hub)
+                    await _handle_tool_calls(out, hub)
 
                 # End-of-turn: if actor is in dying state, decrement their own dying timer now
                 try:
