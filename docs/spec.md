@@ -1,71 +1,65 @@
-# 项目规范（NPC 群聊与剧情驱动 Demo）
+# 项目规范（NPC 群聊 Demo）
 
-目标
-- 以 MsgHub 管理 NPC 群聊，支持轮流发言与动态插入事件/敌人。
-- 提供可扩展骨架：旁白、D&D 检定/攻击、剧情节拍与配置化（已移除 KP/裁决）。
+目标与约束
+- 子部件之间不互相依赖：world / actions / agents 通过依赖注入解耦；main 负责编排。
+- 功能分离、好理解：world 管状态与规则；actions 是工具外观；agents 专注于提示词与调用工具。
+- 以数据为起点：参与者与坐标从 story 派生；人物数值/物品/武器从 characters/ weapons 提供。
+- agent 操作世界以运行：通过 CALL_TOOL 直接调用 actions，actions 委托 world 完成状态变更。
 
-组件角色
-- KP：已移除（本分支不包含主持/裁决/导演能力）。
-- NPC Agent：由 LLM 生成对白，并直接通过 CALL_TOOL 调用工具（携带 JSON 参数）。
-- MsgHub：集中管理参与者与消息；`sequential_pipeline` 顺序发言。
-- World/Tools：世界状态与规则工具（时间、关系、物品、D&D、事件时钟、目标）。
-- Narrator：在关键动作后生成中文微叙事（环境/感官白描，避免复述人物）。
+Prompt 组合
+- 指导 prompt（Agent sys_prompt）：包含人设/外观/口癖、关系提示、武器清单与工具规则。
+- 世界概要（Host）：根据 `WORLD.snapshot()` 渲染，高频率在每个 NPC 行动前广播一次。
+- 行动记忆：取“最近播报”（包含工具结果转播），供下一位 NPC 决策参考。
 
-接口与约定
-- 消息对象：`Msg(sender: str, content: str|List[Block], role: 'assistant'|'user')`。
-- 握手：KP 已移除；NPC 直接输出对白与 CALL_TOOL 工具调用。
-- NPC 行动：`await agent.step(transcript)->Msg|str|dict`；建议直接输出对白与 CALL_TOOL。
-- 裁决：已移除；当前仅展示 NPC 对白与工具调用，不进行裁决/导演动作。
+流程概述（无 KP）
+1) 载入配置：prompts/model/story/characters/weapons（缺失的 prompts 将使用默认模板）。
+2) 由 story 的初始坐标推导参与者与顺序；若无参与者，则在进入 Hub 前直接结束（本次更新）。
+3) 初始化角色卡与物品、武器表；根据 `characters.json` 的 `inventory` 给予角色初始武器。
+4) 进入回合循环：
+   - 每名 NPC 回合前：广播世界概要与最近播报；
+   - NPC 输出对白与 CALL_TOOL；派发工具并广播结果；
+   - 若场上无敌对则退出战斗并结束；否则进入下一回合。
 
-工具调用格式（CALL_TOOL）
-```
-CALL_TOOL tool_name({json})
+世界模型与关键规则（world/tools.py）
+- 时间/天气/地点/目标/细节、坐标、关系、人物卡（含 persona/appearance/quotes）、物品、武器表、战斗轮转、守护关系。
+- 武器攻击：`attack_with_weapon(attacker, defender, weapon, advantage?)`
+  - 触及范围与伤害表达式从 `weapons.json` 获取；必须“持有”该武器；不会自动靠近；距离不足直接失败。
+  - 守护：`set_protection(guardian, protectee)`，拦截条件为相邻（≤1步）且 guardian 有可用反应，且在攻击者触及范围内。
+- 检定：`skill_check_dnd(name, skill, dc, advantage)`；豁免、对抗等参见实现。
 
-# 也支持：
-CALL_TOOL tool_name
-{json}
-```
-- 示例：
-```
-阿米娅压低声音：‘靠近目标位置。’
-CALL_TOOL advance_position({"name": "Amiya", "target": {"x": 1, "y": 1}, "steps": 2, "reason": "接近掩体"})
+工具外观（actions/npc.py）
+- perform_attack(attacker, defender, weapon, reason)
+- advance_position(name, target[x,y], steps, reason)
+- adjust_relation(a, b, value, reason)
+- transfer_item(target, item, n, reason)
+- set_protection(guardian, protectee, reason)
+- clear_protection(guardian?, protectee?, reason)
 
-CALL_TOOL perform_attack({"attacker": "Amiya", "defender": "Rogue", "weapon": "amiya_focus", "reason": "压制敌人"})
-```
-- 约定：每次调用工具参数 JSON 必须包含 `reason` 字段，用一句话说明行动理由；若缺省可记录为“未提供”。
+错误可观测性（本次更新）
+- 世界概要广播失败：记录 `error(context_world_render)` 事件但不中断。
+- 场景细节写入失败：记录 `error(scene_details_append)`。
+- 武器表载入失败：记录 `error(weapon_defs_load)`。
 
-工具规范
-- 纯函数优先、幂等可回放；返回 `ToolResponse({blocks}, {metadata})`。
-- 变更附理由：如关系/目标变化记录 `reason/note`，便于追踪。
-- D&D 检定/攻击：`skill_check_dnd`、`saving_throw_dnd`、`attack_roll_dnd`（支持 advantage、熟练、能力修正、伤害表达式）。
-- 事件时钟：`schedule_event` + `process_events`（由 `advance_time` 自动触发）。
-- 目标管理：`add_objective / complete_objective / block_objective`。
-
-目录结构
+目录结构（当前）
 ```
 src/
-  main.py             # 兼容入口
-  npc_talk/
-    cli.py            # 真正入口
-    app.py            # 回合驱动
-    agents/
-      npc.py          # 简单 Agent 基类实现（目前未用）
-      narrator.py     # 旁白
-      factory.py      # Agent 构造
-    world/
-      tools.py        # 世界状态与工具
-configs/               # 角色、模型、提示词、旁白策略、规则、剧情设定
-  story.json          # 场景/位置/剧情节拍
-docs/
+  main.py
+  actions/
+    npc.py
+  agents/
+    factory.py
+  world/
+    tools.py
+  eventlog/
+    *.py
+  settings/
+    loader.py
+configs/
+  characters.json
+  story.json
+  model.json
+  weapons.json
+logs/
+  run_events.jsonl
+  run_story.log
 ```
-
-运行与环境
-- Python 3.11；真实 Agentscope（`agentscope.pipeline`）
-- LLM：通过 Kimi 的 OpenAI 兼容接口（需 `MOONSHOT_API_KEY`；可配 `KIMI_BASE_URL/KIMI_MODEL`）
-- 运行：`conda env create -f environment.yml && conda activate npc-talk && python src/main.py`
-
-演进路线
-- M0：当前 Demo（回合 + 握手 + 审判 + 旁白 + 事件时钟）
-- M1：结构化输出校验与重试；关系/目标可视化；剧情图驱动
-- M2：接入游戏引擎（HTTP/MCP 工具）；事件总线驱动
-- M3：Tracing/回放、成本与一致性调优、自动化测试

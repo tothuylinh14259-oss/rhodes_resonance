@@ -42,10 +42,8 @@ repo/
     characters.json       # 角色配置（人设/D&D数值/关系）
     story.json            # 场景配置、初始位置、剧情节拍
     model.json            # LLM 接入（base_url、npc 模型等）
-    prompts.json          # 可选：玩家人设、NPC提示词模板、名称映射（示例见 prompts.json.example）
+    prompts.json          # 可选：NPC 提示词模板（若缺省将使用内置默认模板）
     weapons.json          # 武器定义（reach_steps/ability/damage_expr）
-    time_rules.json       # 意图用时规则
-    relation_rules.json   # 关系变更规则
   docs/
     spec.md               # 项目规范（设计/接口/约定）
   environment.yml         # Conda 环境（Python 3.11 + Agentscope）
@@ -57,13 +55,33 @@ repo/
 备注：自本次变更起，`src/runtime/engine.py` 已删除，其内容合并到 `src/main.py` 的 `run_demo()` 与辅助函数中。
 ```
 
+
+
+## 架构与期望
+
+- 中心-子部件：`main` 作为编排器；子部件分离：
+  - world：关于环境-攻击-位置-角色（包含外貌、人设、口癖等元信息）
+  - actions：将 world 的接口包装为工具，供 agents 直接调用
+  - agents：角色的调用（LLM NPC），仅依赖提示词与工具，不直接耦合 world
+- 以数据为起点：
+  - 参与者来源于 `story.json` 的坐标键；若无参与者，运行会在进入 Hub 前自动结束（本次更新）。
+  - 角色数值/物品来自 `characters.json`；武器触及与伤害来自 `weapons.json`。
+- Prompt 组合（每次行动前）：
+  - 世界概要（Host 生成、当前状态）+ 行动记忆（最近播报，含工具结果）+ 指导 prompt（Agent 的系统提示，人设/外观/关系/武器/工具规则）
+- 行为约束：
+  - 攻击不会自动靠近：若距离不足，请先 `advance_position()` 再 `perform_attack()`。
+  - 工具调用 JSON 必须包含 `reason` 字段（行为理由）。
+  - 需要武器“持有”才能攻击；守护（`set_protection`）要求相邻且有反应可用。
+- 错误与可观测性（本次更新）：
+  - 世界概要广播失败与场景细节写入失败、武器表载入失败，均会记录 error 事件，但不中断流程。
+
 ## 运行时交互
 
-- 本分支已移除 KP/玩家输入流程，仅 NPC 轮流行动，输出对白与一个 CALL_TOOL 工具调用。
-- 每回合流程（简化）：
-  1) 主持信息 + 世界概要
-  2) NPC 依序行动（不进行裁决/导演动作）
-  3) 回合推进（默认无限回合）
+- KP/裁决已移除；仅 NPC 轮流行动，输出对白与 CALL_TOOL。
+- 每回合流程：
+  1) 开场公告（含参与者与初始坐标）；
+  2) 对于每名 NPC 的行动：先广播一份世界概要与“最近播报”（行动记忆），随后由 NPC 发言并调用工具；
+  3) 回合推进；若无敌对则退出战斗；若 `story` 无参与者则在进入 Hub 前直接结束；
 
 ## 日志输出
 

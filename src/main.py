@@ -851,9 +851,25 @@ async def run_demo(
         if opening_line and opening_line not in details0:
             details_new = details0 + [opening_line]
             world.set_scene(current_loc, None, append=True, details=details_new)
-    except Exception:
-        pass
+    except Exception as exc:
+        _emit("error", phase="scene", data={"message": "写入场景细节失败", "error_type": "scene_details_append", "exception": str(exc)})
     announcement_text = opening_line + "\n" + _participants_header
+
+    # 若无可用 NPC/参与者，则在进入 Hub 前直接记录并结束
+    if not npcs_list:
+        try:
+            _emit("state_update", phase="initial", data={"state": world.snapshot()})
+        except Exception:
+            pass
+        try:
+            _emit("system", phase="system", data={"message": f"无参与者，自动结束。{_participants_header}"})
+        except Exception:
+            pass
+        try:
+            _emit("state_update", phase="final", data={"state": world.snapshot()})
+        except Exception:
+            pass
+        return
 
     async with MsgHub(
         participants=list(participants_order),
@@ -1038,9 +1054,9 @@ async def run_demo(
                             Msg("Host", _world_summary_text(world.snapshot()), "assistant"),
                             phase="context:world",
                         )
-                    except Exception:
-                        # best-effort; do not block the turn if snapshot/render fails
-                        pass
+                    except Exception as exc:
+                        # 记录世界概要渲染/广播失败，不中断回合
+                        _emit("error", phase="context:world", data={"message": "世界概要广播失败", "error_type": "context_world_render", "exception": str(exc)})
                     recap_msg = _recap_for(name)
                     if recap_msg is not None:
                         await _bcast(hub, recap_msg, phase="context:recap")
@@ -1139,8 +1155,7 @@ def _world_summary_text(snap: dict) -> str:
     lines = [
         f"环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}",
         ("目标：" + "; ".join((f"{str(o)}({obj_status.get(str(o))})" if obj_status.get(str(o)) else str(o)) for o in objectives)) if objectives else "目标：无",
-        # 说明：避免使用“系统提示”措辞以免模型联想出系统旁白
-        ("物品：" + "; ".join(inv_lines)) if inv_lines else "物品：无",
+        # 说明：避免使用“系统提示”措辞以免模型联想出系统旁白；且不显示任何物品信息
         ("坐标：" + "; ".join(pos_lines)) if pos_lines else "坐标：未记录",
         ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
     ]
@@ -1200,8 +1215,17 @@ def main() -> None:
     try:
         # Use the port to avoid leaking the implementation detail
         world.set_weapon_defs(weapons)
-    except Exception:
-        pass
+    except Exception as exc:
+        # 记录武器表载入失败，继续运行（允许无武器配置）
+        emit(
+            event_type="error",
+            phase="init",
+            data={
+                "message": "加载武器表失败",
+                "error_type": "weapon_defs_load",
+                "exception": str(exc),
+            },
+        )
     # Inject the port (adapter) so actions depend on a stable surface
     tool_list, tool_dispatch = make_npc_actions(world=world)
 
