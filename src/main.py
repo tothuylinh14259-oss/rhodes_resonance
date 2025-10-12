@@ -1106,22 +1106,20 @@ async def run_demo(
             combat_cleared = False
             for agent in npcs_list:
                 name = getattr(agent, 'name', '')
-                # Skip turn if the character is down (hp <= 0)
+                # Skip turn only if the character is truly dead (hp<=0 and not in dying state)
                 try:
-                    sheet = (world.snapshot().get("characters") or {}).get(name, {})
-                    if int(sheet.get('hp', 1)) <= 0:
+                    sheet = (world.snapshot().get("characters") or {}).get(name, {}) or {}
+                    hpv = int(sheet.get('hp', 1))
+                    dt = sheet.get('dying_turns_left', None)
+                    is_dead = (hpv <= 0) and (dt is None)
+                    if is_dead:
                         _emit(
                             "turn_start",
                             actor=name,
                             turn=current_round,
                             phase="actor-turn",
-                            data={"round": current_round, "skipped": True, "reason": "down"},
+                            data={"round": current_round, "skipped": True, "reason": "dead"},
                         )
-                        # Even if skipped, a downed/濒死者的“自己的回合”依然流逝：扣减濒死倒计时
-                        try:
-                            world.tick_dying_for(name)
-                        except Exception:
-                            pass
                         _emit(
                             "turn_end",
                             actor=name,
@@ -1257,6 +1255,15 @@ async def run_demo(
                         phase=f"npc:{name or agent.__class__.__name__}",
                     )
                 await _handle_tool_calls(out, hub)
+
+                # End-of-turn: if actor is in dying state, decrement their own dying timer now
+                try:
+                    ch2 = (world.snapshot().get("characters") or {}).get(name, {}) or {}
+                    if int(ch2.get('hp', 0)) <= 0 and ch2.get('dying_turns_left') is not None:
+                        world.tick_dying_for(name)
+                except Exception:
+                    pass
+
                 # After each action, if无敌对则退出战斗但继续对话流程
                 if not _hostiles_present():
                     try:
