@@ -25,7 +25,6 @@ import world.tools as world_impl
 from eventlog import create_logging_context, Event, EventType
 from settings.loader import (
     project_root,
-    load_prompts,
     load_model_config,
     load_story_config,
     load_characters,
@@ -48,6 +47,8 @@ class _WorldPort:
     set_dnd_character_from_config = staticmethod(world_impl.set_dnd_character_from_config)
     set_weapon_defs = staticmethod(world_impl.set_weapon_defs)
     attack_with_weapon = staticmethod(world_impl.attack_with_weapon)
+    # dying helpers
+    tick_dying_for = staticmethod(world_impl.tick_dying_for)
     # tools that actions need directly
     move_towards = staticmethod(world_impl.move_towards)
     skill_check_dnd = staticmethod(world_impl.skill_check_dnd)
@@ -92,7 +93,7 @@ async def run_demo(
     build_agent: Callable[..., ReActAgent],
     tool_fns: List[object] | None,
     tool_dispatch: Dict[str, object] | None,
-    prompts: Mapping[str, Any],
+    # prompts removed: prompt assembly moved to main; templates now come from defaults
     model_cfg: Mapping[str, Any],
     story_cfg: Mapping[str, Any],
     characters: Mapping[str, Any],
@@ -128,7 +129,102 @@ async def run_demo(
         except Exception:
             pass
 
-    npc_prompt_tpl = _join_lines(prompts.get("npc_prompt_template"))
+    # Build sys_prompt for each NPC in main (remove dependency on prompts.json)
+    # Default prompt blocks (copied from legacy factory, now centralized here)
+    DEFAULT_PROMPT_HEADER = (
+        "你是游戏中的NPC：{name}.\n"
+        "人设：{persona}\n"
+        "外观特征：{appearance}\n"
+        "常用语气/台词：{quotes}\n"
+        "当前立场提示（仅你视角）：{relation_brief}\n"
+        "可用武器：{weapon_brief}\n"
+    )
+    DEFAULT_PROMPT_RULES = (
+        "对话要求：\n"
+        "- 先用中文说1-2句对白/想法/微动作，符合人设。\n"
+        "- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{\"key\": \"value\"}}))，不要再输出意图 JSON。\n"
+        "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
+        "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
+        "- 若必须违背既定关系行事，若要违背，请在对白中说明充分理由，否则拒绝执行。\n"
+        "- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为‘未提供’。\n"
+        "- 当存在敌对关系（关系<=-10）时，每回合至少调用一次工具；否则视为违规。\n"
+        "- 不要输出任何“系统提示”或括号内的系统旁白；只输出对白与 CALL_TOOL。\n"
+        "- 参与者名称（仅可用）：{allowed_names}\n"
+    )
+    DEFAULT_PROMPT_TOOL_GUIDE = (
+        "可用工具：\n"
+        "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；必须提供行动理由（reason）。攻击不会自动靠近，若距离不足请先调用 advance_position()。\n"
+        "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
+        "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
+        "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
+        "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
+        "- clear_protection(guardian=\"\", protectee=\"\", reason)：清除守护关系；可按守护者/被保护者/全部清理。\n"
+    )
+    DEFAULT_PROMPT_EXAMPLE = (
+        "输出示例：\n"
+        "阿米娅压低声音：‘靠近目标位置。’\n"
+        'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2, "reason": "接近掩体"}})\n'
+    )
+    DEFAULT_PROMPT_GUARD_GUIDE = (
+        "守护生效规则：\n"
+        "- set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用‘反应’。\n"
+        "- 攻击者到 guardian 的距离也必须在本次武器触及/射程内，否则无法替代承伤。\n"
+        "- 多名守护者同时满足时，系统选择距离攻击者最近者（同距按登记顺序）。\n"
+        "- 建议建立守护后使用 advance_position 贴身到被保护者旁并保持相邻，以确保拦截能生效。\n"
+    )
+    DEFAULT_PROMPT_GUARD_EXAMPLE = (
+        "守护使用示例：\n"
+        "德克萨斯侧身一步：‘我来护你。’\n"
+        'CALL_TOOL set_protection({{"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"}})\n'
+        "德克萨斯快步靠近：\n"
+        'CALL_TOOL advance_position({{"name": "Texas", "target": {{"x": 1, "y": 1}}, "steps": 1, "reason": "保持相邻以便拦截"}})\n'
+    )
+    DEFAULT_PROMPT_TEMPLATE = (
+        DEFAULT_PROMPT_HEADER
+        + DEFAULT_PROMPT_RULES
+        + DEFAULT_PROMPT_TOOL_GUIDE
+        + DEFAULT_PROMPT_EXAMPLE
+        + DEFAULT_PROMPT_GUARD_GUIDE
+        + DEFAULT_PROMPT_GUARD_EXAMPLE
+    )
+    def _build_sys_prompt(
+        *,
+        name: str,
+        persona: str,
+        appearance: Optional[str],
+        quotes: Optional[list[str] | str],
+        relation_brief: Optional[str],
+        weapon_brief: Optional[str],
+        allowed_names: str,
+    ) -> str:
+        # Mirror factory's argument normalization to keep identical prompting
+        appearance_text = (appearance or "外观描写未提供，可根据设定自行补充细节。").strip()
+        if not appearance_text:
+            appearance_text = "外观描写未提供，可根据设定自行补充细节。"
+        if isinstance(quotes, (list, tuple)):
+            quote_items = [str(q).strip() for q in quotes if str(q).strip()]
+            quotes_text = " / ".join(quote_items) if quote_items else "保持原角色语气自行发挥。"
+        elif isinstance(quotes, str):
+            quotes_text = quotes.strip() or "保持原角色语气自行发挥。"
+        else:
+            quotes_text = "保持原角色语气自行发挥。"
+        relation_text = (relation_brief or "暂无明确关系记录，默认保持谨慎中立。").strip() or "暂无明确关系记录，默认保持谨慎中立。"
+        tools_text = "perform_attack(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection()"
+        args = {
+            "name": name,
+            "persona": persona,
+            "appearance": appearance_text,
+            "quotes": quotes_text,
+            "relation_brief": relation_text,
+            "weapon_brief": (weapon_brief or "无"),
+            "tools": tools_text,
+            "allowed_names": allowed_names,
+        }
+        try:
+            return str(DEFAULT_PROMPT_TEMPLATE.format(**args))
+        except Exception:
+            # Minimal fallback
+            return f"你是游戏中的NPC：{name}. 人设：{persona}. 参与者：{allowed_names}. 可用工具：{tools_text}"
 
 
     # Build actors from configs or fallback
@@ -288,11 +384,20 @@ async def run_demo(
                 raise ValueError(f"缺少角色人设(persona)：{name}")
             appearance = sheet.get("appearance")
             quotes = sheet.get("quotes")
+            sys_prompt_text = _build_sys_prompt(
+                name=name,
+                persona=persona,
+                appearance=appearance,
+                quotes=quotes,
+                relation_brief=_relation_brief(name),
+                weapon_brief=_weapon_brief_for(name),
+                allowed_names=allowed_names_str,
+            )
             agent = build_agent(
                 name,
                 persona,
                 model_cfg,
-                prompt_template=npc_prompt_tpl,
+                sys_prompt=sys_prompt_text,
                 allowed_names=allowed_names_str,
                 appearance=appearance,
                 quotes=quotes,
@@ -1012,6 +1117,11 @@ async def run_demo(
                             phase="actor-turn",
                             data={"round": current_round, "skipped": True, "reason": "down"},
                         )
+                        # Even if skipped, a downed/濒死者的“自己的回合”依然流逝：扣减濒死倒计时
+                        try:
+                            world.tick_dying_for(name)
+                        except Exception:
+                            pass
                         _emit(
                             "turn_end",
                             actor=name,
@@ -1060,10 +1170,75 @@ async def run_demo(
                     recap_msg = _recap_for(name)
                     if recap_msg is not None:
                         await _bcast(hub, recap_msg, phase="context:recap")
+                    # 3: 不再注入“私人提示”到 agent 的内存，按你的选择仅使用 环境信息 + 场景回顾 作为上下文
                 except Exception:
                     pass
 
-                out = await agent(None)
+                # Build an ephemeral agent for this turn to include a per-turn private tip in sys_prompt
+                # and avoid accumulating any long-lived memory between turns.
+                # 1) Compute optional private tip for this actor (e.g., 濒死)
+                private_section = None
+                try:
+                    ch = (world.snapshot().get("characters") or {}).get(name, {}) or {}
+                    dt = ch.get("dying_turns_left", None)
+                    hpv = ch.get("hp", None)
+                    if dt is not None:
+                        lines = [
+                            f"状态提示（仅你可见）——你处于濒死状态（HP={hpv}）：",
+                            "- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。",
+                            f"- 你将在 {int(dt)} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。",
+                            "- 请专注对白/呼救/传递信息/请求治疗或援助。",
+                        ]
+                        private_section = "\n".join(lines)
+                except Exception:
+                    private_section = None
+
+                # 2) Rebuild an ephemeral agent with sys_prompt = base_prompt + optional private section
+                try:
+                    sheet_now = (world.snapshot().get("characters") or {}).get(name, {}) or {}
+                    persona_now = sheet_now.get("persona") or ""
+                    appearance_now = sheet_now.get("appearance")
+                    quotes_now = sheet_now.get("quotes")
+                except Exception:
+                    persona_now = ""; appearance_now = None; quotes_now = None
+                sys_prompt_text = _build_sys_prompt(
+                    name=name,
+                    persona=str(persona_now or ""),
+                    appearance=appearance_now,
+                    quotes=quotes_now,
+                    relation_brief=_relation_brief(name),
+                    weapon_brief=_weapon_brief_for(name),
+                    allowed_names=allowed_names_str,
+                )
+                if private_section:
+                    sys_prompt_text = sys_prompt_text + "\n" + private_section
+
+                ephemeral = build_agent(
+                    name,
+                    str(persona_now or ""),
+                    model_cfg,
+                    sys_prompt=sys_prompt_text,
+                    allowed_names=allowed_names_str,
+                    appearance=appearance_now,
+                    quotes=quotes_now,
+                    relation_brief=_relation_brief(name),
+                    weapon_brief=_weapon_brief_for(name),
+                    tools=tool_list,
+                )
+
+                # 3) Seed this ephemeral agent with this turn's shared context in order (1 环境信息, 2 场景回顾)
+                try:
+                    env_text = _world_summary_text(world.snapshot())
+                    await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
+                except Exception:
+                    pass
+                try:
+                    if recap_msg is not None:
+                        await ephemeral.memory.add(recap_msg)
+                except Exception:
+                    pass
+
+                out = await ephemeral(None)
                 try:
                     raw_text = _safe_text(out)
                     cleaned = _strip_tool_calls_from_text(raw_text)
@@ -1147,7 +1322,17 @@ def _world_summary_text(snap: dict) -> str:
         for nm, st in chars.items():
             hp = st.get("hp"); max_hp = st.get("max_hp")
             if hp is not None and max_hp is not None:
-                char_lines.append(f"{nm}(HP {hp}/{max_hp})")
+                extra = ""
+                # Append dying turns-left or death marker if applicable
+                try:
+                    dt = st.get("dying_turns_left", None)
+                    if dt is not None:
+                        extra = f"（濒死{int(dt)}）"
+                    elif int(hp) <= 0:
+                        extra = "（死亡）"
+                except Exception:
+                    extra = extra
+                char_lines.append(f"{nm}(HP {hp}/{max_hp}){extra}")
     except Exception:
         pass
 
@@ -1172,7 +1357,6 @@ def main() -> None:
     print("============================================================")
 
     # Load configs
-    prompts = load_prompts()
     model_cfg_obj = load_model_config()
     story_cfg = load_story_config()
     characters = load_characters()
@@ -1240,7 +1424,7 @@ def main() -> None:
                 build_agent=build_agent,
                 tool_fns=tool_list,
                 tool_dispatch=tool_dispatch,
-                prompts=prompts,
+                # prompts removed
                 model_cfg=model_cfg,
                 story_cfg=story_cfg,
                 characters=characters,

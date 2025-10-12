@@ -24,6 +24,9 @@ except Exception:  # Fallback minimal stubs when Agentscope is unavailable
 # Distances use grid steps only (简称“步”).
 DEFAULT_MOVE_SPEED_STEPS = 6  # standard humanoid walk in steps per turn
 DEFAULT_REACH_STEPS = 1       # default melee reach in steps
+# Dying rules: per-user request, a character at 0 HP enters a "dying" state and
+# dies after N of their own turns (or immediately upon taking damage again).
+DYING_TURNS_DEFAULT = 3
 
 
 def format_distance_steps(steps: int) -> str:
@@ -279,6 +282,9 @@ def grant_item(target: str, item: str, n: int = 1):
 
 def set_position(name: str, x: int, y: int) -> ToolResponse:
     """Set or update the grid position of an actor."""
+    # Note: position can still be updated externally (e.g., shove/push). We do not
+    # block here for dying/dead, because forced movement is allowed. Voluntary
+    # movement is gated in move_towards().
     WORLD.positions[str(name)] = (int(x), int(y))
     refresh_range_bands_for(str(name))
     return ToolResponse(
@@ -500,6 +506,16 @@ def get_reach_steps(name: str) -> int:
 
 def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse:
     """Move an actor toward target grid up to `steps` 4-way steps."""
+    # Gate voluntary movement if the actor is down/dying/dead
+    st = WORLD.characters.get(str(name), {})
+    hp_now = int(st.get("hp", 0)) if st else 0
+    if hp_now <= 0 or st.get("dying_turns_left") is not None:
+        # Keep position unchanged; this is voluntary move, blocked by dying/death.
+        pos = WORLD.positions.get(str(name)) or (0, 0)
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"{name} 处于濒死/倒地，无法移动。")],
+            metadata={"moved": 0, "position": list(pos), "blocked": True},
+        )
     steps = max(0, int(steps))
     if steps == 0:
         pos = WORLD.positions.get(str(name)) or (0, 0)
@@ -1136,25 +1152,123 @@ def get_character(name: str):
     )
 
 
+def _enter_dying(name: str, *, turns: int = DYING_TURNS_DEFAULT) -> ToolResponse:
+    """Put character into dying state: HP=0, set turns-left, add condition tag.
+
+    This does not broadcast; callers compose its text with their own narration.
+    """
+    nm = str(name)
+    st = WORLD.characters.setdefault(nm, {"hp": 0, "max_hp": 0})
+    st["hp"] = 0
+    st["dying_turns_left"] = int(max(0, turns))
+    # Also mark a condition for transparency; do not rely on it functionally.
+    try:
+        apply_condition(nm, "dying")
+    except Exception:
+        pass
+    note = TextBlock(type="text", text=f"{nm} 进入濒死（{st['dying_turns_left']}回合后死亡；再次受伤即死）")
+    return ToolResponse(content=[note], metadata={"name": nm, "dying": True, "turns_left": st["dying_turns_left"]})
+
+
+def _die(name: str, *, reason: str = "wounds") -> ToolResponse:
+    """Finalize death: HP=0, clear dying, add dead condition."""
+    nm = str(name)
+    st = WORLD.characters.setdefault(nm, {"hp": 0, "max_hp": 0})
+    st["hp"] = 0
+    # Clear dying bookkeeping
+    if "dying_turns_left" in st:
+        try:
+            st.pop("dying_turns_left", None)
+        except Exception:
+            st["dying_turns_left"] = None
+    try:
+        clear_condition(nm, "dying")
+    except Exception:
+        pass
+    try:
+        apply_condition(nm, "dead")
+    except Exception:
+        pass
+    note = TextBlock(type="text", text=f"{nm} 死亡。")
+    return ToolResponse(content=[note], metadata={"name": nm, "dead": True, "reason": reason})
+
+
+def tick_dying_for(name: str) -> ToolResponse:
+    """Decrement dying turns for a character (their own 'turn' tick).
+
+    - If not dying: no-op.
+    - If reaches 0: die.
+    """
+    nm = str(name)
+    st = WORLD.characters.get(nm, {})
+    if not st or st.get("dying_turns_left") is None:
+        return ToolResponse(content=[], metadata={"name": nm, "affected": False})
+    try:
+        left = int(st.get("dying_turns_left", 0))
+    except Exception:
+        left = 0
+    # Already scheduled to die
+    if left <= 0:
+        res = _die(nm, reason="timeout")
+        return res
+    st["dying_turns_left"] = left - 1
+    if st["dying_turns_left"] <= 0:
+        res = _die(nm, reason="timeout")
+        return res
+    # Otherwise, report remaining
+    note = TextBlock(type="text", text=f"{nm} 濒死剩余 {st['dying_turns_left']} 回合。")
+    return ToolResponse(content=[note], metadata={"name": nm, "turns_left": st["dying_turns_left"], "affected": True})
+
+
 def damage(name: str, amount: int):
     amt = max(0, int(amount))
-    st = WORLD.characters.setdefault(name, {"hp": 0, "max_hp": 0})
-    st["hp"] = max(0, int(st.get("hp", 0)) - amt)
-    dead = st["hp"] <= 0
+    nm = str(name)
+    st = WORLD.characters.setdefault(nm, {"hp": 0, "max_hp": 0})
+    hp_before = int(st.get("hp", 0))
+    # If already dying, any damage kills immediately
+    if st.get("dying_turns_left") is not None:
+        die_res = _die(nm, reason="reinjury")
+        parts: List[TextBlock] = [TextBlock(type="text", text=f"{nm} 在濒死状态下再次受到 {amt} 伤害，立即死亡。")]
+        parts.extend(die_res.content or [])
+        return ToolResponse(content=parts, metadata={"name": nm, "hp": 0, "max_hp": st.get("max_hp"), "dead": True})
+
+    # Apply damage normally
+    st["hp"] = max(0, hp_before - amt)
+    dead_or_down = st["hp"] <= 0
+    parts = [TextBlock(type="text", text=f"{nm} 受到 {amt} 伤害，HP {st['hp']}/{st.get('max_hp', st['hp'])}{'（倒地）' if dead_or_down else ''}")]
+    # Transition to dying if this hit reduces to 0
+    if st["hp"] <= 0:
+        # Enter dying instead of immediate death
+        res = _enter_dying(nm, turns=DYING_TURNS_DEFAULT)
+        parts.extend(res.content or [])
+        return ToolResponse(content=parts, metadata={"name": nm, "hp": 0, "max_hp": st.get("max_hp"), "dead": True, "dying": True, "turns_left": st.get("dying_turns_left")})
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"{name} 受到 {amt} 伤害，HP {st['hp']}/{st.get('max_hp', st['hp'])}{'（倒地）' if dead else ''}")],
-        metadata={"name": name, "hp": st["hp"], "max_hp": st.get("max_hp"), "dead": dead},
+        content=parts,
+        metadata={"name": nm, "hp": st["hp"], "max_hp": st.get("max_hp"), "dead": False},
     )
 
 
 def heal(name: str, amount: int):
     amt = max(0, int(amount))
-    st = WORLD.characters.setdefault(name, {"hp": 0, "max_hp": 0})
+    nm = str(name)
+    st = WORLD.characters.setdefault(nm, {"hp": 0, "max_hp": 0})
     max_hp = int(st.get("max_hp", 0))
     st["hp"] = min(max_hp if max_hp > 0 else st.get("hp", 0), int(st.get("hp", 0)) + amt)
+    parts = [TextBlock(type="text", text=f"{nm} 恢复 {amt} 点生命，HP {st['hp']}/{st.get('max_hp', st['hp'])}")]
+    # If healed above 0 while dying, clear dying state
+    if st.get("hp", 0) > 0 and st.get("dying_turns_left") is not None:
+        try:
+            st.pop("dying_turns_left", None)
+        except Exception:
+            st["dying_turns_left"] = None
+        try:
+            clear_condition(nm, "dying")
+        except Exception:
+            pass
+        parts.append(TextBlock(type="text", text=f"{nm} 脱离濒死。"))
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"{name} 恢复 {amt} 点生命，HP {st['hp']}/{st.get('max_hp', st['hp'])}")],
-        metadata={"name": name, "hp": st["hp"], "max_hp": st.get("max_hp")},
+        content=parts,
+        metadata={"name": nm, "hp": st["hp"], "max_hp": st.get("max_hp")},
     )
 
 
@@ -1509,6 +1623,14 @@ def attack_roll_dnd(
     """D&D-like attack roll: d20 + ability mod (+prof) vs AC, on hit apply damage.
     damage_expr 支持 +STR/+DEX/+CON 等修正占位符。
     """
+    # Voluntary attack is blocked if attacker is down/dying/dead (hp<=0 or dying bookkeeping exists)
+    atk_sheet = WORLD.characters.get(attacker, {})
+    try:
+        if int(atk_sheet.get("hp", 0)) <= 0 or atk_sheet.get("dying_turns_left") is not None:
+            msg = TextBlock(type="text", text=f"{attacker} 处于濒死/倒地，无法发动攻击。")
+            return ToolResponse(content=[msg], metadata={"attacker": attacker, "defender": defender, "hit": False, "ok": False, "error_type": "attacker_unable"})
+    except Exception:
+        pass
     atk = WORLD.characters.get(attacker, {})
     dfd = WORLD.characters.get(defender, {})
     ac = int(target_ac if target_ac is not None else dfd.get("ac", 10))
@@ -1634,6 +1756,13 @@ def attack_with_weapon(
     - ability/damage_expr/proficient_default are sourced from weapon defs with safe defaults.
     """
     atk = WORLD.characters.get(attacker, {})
+    # Voluntary attack is blocked if attacker is down/dying/dead (hp<=0 or dying bookkeeping exists)
+    try:
+        if int(atk.get("hp", 0)) <= 0 or atk.get("dying_turns_left") is not None:
+            msg = TextBlock(type="text", text=f"{attacker} 处于濒死/倒地，无法发动攻击。")
+            return ToolResponse(content=[msg], metadata={"attacker": attacker, "defender": defender, "weapon_id": weapon, "ok": False, "error_type": "attacker_unable"})
+    except Exception:
+        pass
     w = WORLD.weapon_defs.get(str(weapon), {})
     try:
         reach_steps = max(1, int(w.get("reach_steps", DEFAULT_REACH_STEPS)))
