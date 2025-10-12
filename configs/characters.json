@@ -27,7 +27,7 @@
       ],
       "move_speed": 6
     },
-    "inventory": { "doctor_baton": 1 }
+    "inventory": { "doctor_knife": 1 }
   },
   "Amiya": {
     "type": "npc",

@@ -48,6 +48,9 @@ class _WorldPort:
     set_dnd_character_from_config = staticmethod(world_impl.set_dnd_character_from_config)
     set_weapon_defs = staticmethod(world_impl.set_weapon_defs)
     attack_with_weapon = staticmethod(world_impl.attack_with_weapon)
+    # participants and character meta helpers
+    set_participants = staticmethod(world_impl.set_participants)
+    set_character_meta = staticmethod(world_impl.set_character_meta)
 
     @staticmethod
     def snapshot() -> Dict[str, Any]:
@@ -62,17 +65,8 @@ class _WorldPort:
             "turn_state": dict(W.turn_state),
             "round": int(W.round),
             "characters": dict(W.characters),
+            "participants": list(getattr(W, "participants", []) or []),
         }
-
-
-
-_DEFAULT_DOCTOR_PERSONA = (
-    "角色：罗德岛‘博士’，战术协调与决策核心。\n"
-    "背景：在凯尔希与阿米娅的协助下进行战略研判，偏好以信息整合与资源调配达成目标。\n"
-    "说话风格：简短、理性、任务导向；避免夸饰与情绪化表达。\n"
-    "边界：不自称超自然或超现实身份；不越权知晓未公开的机密情报。\n"
-)
-
 
 def _join_lines(tpl):
     if isinstance(tpl, list):
@@ -128,7 +122,6 @@ async def run_demo(
         except Exception:
             pass
 
-    doctor_persona = prompts.get("player_persona") or _DEFAULT_DOCTOR_PERSONA
     npc_prompt_tpl = _join_lines(prompts.get("npc_prompt_template"))
 
 
@@ -150,7 +143,16 @@ async def run_demo(
     # into `story_positions` (supports top-level initial_positions/positions 或 initial.positions)。
     # If none present, run without participants (no implicit fallback to any default pair).
     allowed_names: List[str] = list(story_positions.keys())
-    allowed_names_str = ", ".join(allowed_names) if allowed_names else ""
+    # Persist participants to world so all downstream consumers read from world only
+    try:
+        world.set_participants(allowed_names)
+    except Exception:
+        pass
+    try:
+        allowed_names_world: List[str] = list(world.snapshot().get("participants") or [])
+    except Exception:
+        allowed_names_world = list(allowed_names)
+    allowed_names_str = ", ".join(allowed_names_world) if allowed_names_world else ""
 
     rel_cfg_raw = char_cfg.get("relations") if isinstance(char_cfg, dict) else {}
 
@@ -170,28 +172,52 @@ async def run_demo(
         return "中立"
 
     def _relation_brief(name: str) -> str:
-        if not isinstance(rel_cfg_raw, dict):
+        """Build relation brief from world state, not raw config."""
+        try:
+            rel_map = dict(world.snapshot().get("relations") or {})
+        except Exception:
+            rel_map = {}
+        if not rel_map:
             return ""
-        mapping = rel_cfg_raw.get(str(name))
-        if not isinstance(mapping, dict) or not mapping:
-            return ""
+        me = str(name)
         entries: List[str] = []
-        for dst, raw in mapping.items():
-            if str(dst) == str(name):
+        for key, raw in rel_map.items():
+            try:
+                a, b = key.split("->", 1)
+            except Exception:
+                continue
+            if a != me or b == me:
                 continue
             try:
                 score = int(raw)
             except Exception:
                 continue
             label = _relation_category(score)
-            entries.append(f"{dst}:{score:+d}（{label}）")
+            entries.append(f"{b}:{score:+d}（{label}）")
         return "；".join(entries)
 
     # Tool list must be provided by caller (main). Keep empty default.
     tool_list = list(tool_fns) if tool_fns is not None else []
 
-    if allowed_names:
-        for name in allowed_names:
+    # Ensure character persona/appearance/quotes are stored in world for all actors
+    try:
+        for nm, entry in actor_entries.items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                world.set_character_meta(
+                    nm,
+                    persona=entry.get("persona"),
+                    appearance=entry.get("appearance"),
+                    quotes=entry.get("quotes"),
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    if allowed_names_world:
+        for name in allowed_names_world:
             entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
             # Stat block
             dnd = entry.get("dnd") or {}
@@ -228,8 +254,9 @@ async def run_demo(
             # Build per-actor weapon brief for prompt
             def _weapon_brief_for(nm: str) -> str:
                 try:
-                    wdefs = dict(getattr(world_impl.WORLD, "weapon_defs", {}) or {})
-                    bag = dict((world_impl.WORLD.inventory or {}).get(str(nm), {}) or {})
+                    snap = world.snapshot()
+                    wdefs = dict((snap.get("weapon_defs") or {}))
+                    bag = dict((snap.get("inventory") or {}).get(str(nm), {}) or {})
                 except Exception:
                     return "无"
                 entries: List[str] = []
@@ -244,9 +271,16 @@ async def run_demo(
                     dmg = wd.get("damage_expr", "1d4+STR")
                     entries.append(f"{wid}(触及 {rs}步, 伤害 {dmg})")
                 return "；".join(entries) if entries else "无"
-            persona = entry.get("persona") or (doctor_persona if name == "Doctor" else "一个简短的人设描述")
-            appearance = entry.get("appearance")
-            quotes = entry.get("quotes")
+            # Read meta from world (single source of truth)
+            try:
+                sheet = (world.snapshot().get("characters") or {}).get(name, {}) or {}
+            except Exception:
+                sheet = {}
+            persona = sheet.get("persona")
+            if not isinstance(persona, str) or not persona.strip():
+                raise ValueError(f"缺少角色人设(persona)：{name}")
+            appearance = sheet.get("appearance")
+            quotes = sheet.get("quotes")
             agent = build_agent(
                 name,
                 persona,
@@ -263,7 +297,7 @@ async def run_demo(
             participants_order.append(agent)
         # preload non-participant actors (e.g., enemies) into world sheets
         for name, entry in actor_entries.items():
-            if name in allowed_names:
+            if name in allowed_names_world:
                 continue
             dnd = entry.get("dnd") or {}
             if dnd:
@@ -405,7 +439,7 @@ async def run_demo(
 
     # Centralised tool dispatch mapping (must be injected by caller)
     TOOL_DISPATCH = dict(tool_dispatch or {})
-    allowed_set = {str(n) for n in (allowed_names or [])}
+    allowed_set = {str(n) for n in (allowed_names_world or [])}
     # ---- In-memory mini logs for per-turn recap (broadcast to all participants) ----
     CHAT_LOG: List[Dict[str, Any]] = []     # {actor, role, text, turn, phase}
     ACTION_LOG: List[Dict[str, Any]] = []   # {actor, tool, type, text|params, meta, turn}
@@ -776,18 +810,20 @@ async def run_demo(
     # Human-readable header for participants and starting positions
     _start_pos_lines = []
     try:
-        for nm in allowed_names:
-            pos = story_positions.get(nm)
+        parts = list(world.snapshot().get("participants") or [])
+        pos_map = world.snapshot().get("positions") or {}
+        for nm in parts:
+            pos = pos_map.get(nm) or story_positions.get(nm)
             if pos:
                 _start_pos_lines.append(f"{nm}({pos[0]}, {pos[1]})")
     except Exception:
         _start_pos_lines = []
     _participants_header = (
-        "参与者：" + (", ".join(allowed_names) if allowed_names else "(无)") +
+        "参与者：" + (", ".join(world.snapshot().get("participants") or []) if (world.snapshot().get("participants") or []) else "(无)") +
         (" | 初始坐标：" + "; ".join(_start_pos_lines) if _start_pos_lines else "")
     )
 
-    # Opening text: prefer configs/story.json -> scene.description/opening; fallback to legacy hardcoded line
+    # Opening text: read from configs, persist into world.scene_details (append) for single-source-of-truth
     opening_text: Optional[str] = None
     try:
         if isinstance(story_cfg, dict):
@@ -799,7 +835,18 @@ async def run_demo(
     except Exception:
         opening_text = None
     default_opening = "旧城区·北侧仓棚。铁梁回声震耳，每名战斗者都盯紧了自己的对手——退路已绝，只能分出胜负！"
-    announcement_text = (opening_text or default_opening) + "\n" + _participants_header
+    opening_line = (opening_text or default_opening)
+    # Append opening into world.scene_details if not already present
+    try:
+        snap0 = world.snapshot()
+        current_loc = str((snap0 or {}).get("location") or "")
+        details0 = list((snap0 or {}).get("scene_details") or [])
+        if opening_line and opening_line not in details0:
+            details_new = details0 + [opening_line]
+            world.set_scene(current_loc, None, append=True, details=details_new)
+    except Exception:
+        pass
+    announcement_text = opening_line + "\n" + _participants_header
 
     async with MsgHub(
         participants=list(participants_order),
@@ -841,8 +888,8 @@ async def run_demo(
         def _living_field_names() -> List[str]:
             # Prefer participants; else those with positions; else all characters
             base: List[str]
-            if allowed_names:
-                base = list(allowed_names)
+            if allowed_names_world:
+                base = list(allowed_names_world)
             else:
                 snap = world.snapshot()
                 base = list((snap.get("positions") or {}).keys()) or list((snap.get("characters") or {}).keys())

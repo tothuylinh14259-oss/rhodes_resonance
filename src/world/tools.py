@@ -91,8 +91,30 @@ class World:
     triggers: List[Dict[str, Any]] = field(default_factory=list)
     # --- Weapons (simple dictionary, configured at startup) ---
     weapon_defs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Participants order for the current scene (names only)
+    participants: List[str] = field(default_factory=list)
 
     def snapshot(self) -> dict:
+        # Build a sanitized weapon-def summary for consumers (id -> selected fields)
+        def _weapon_summary():
+            out: Dict[str, Dict[str, Any]] = {}
+            for wid, data in (self.weapon_defs or {}).items():
+                try:
+                    d = dict(data or {})
+                except Exception:
+                    d = {}
+                try:
+                    rs = int(d.get("reach_steps", DEFAULT_REACH_STEPS))
+                except Exception:
+                    rs = int(DEFAULT_REACH_STEPS)
+                out[str(wid)] = {
+                    "reach_steps": max(1, rs),
+                    "ability": str(d.get("ability", "STR")).upper(),
+                    "damage_expr": str(d.get("damage_expr", "1d4+STR")),
+                    "proficient_default": bool(d.get("proficient_default", False)),
+                }
+            return out
+
         return {
             "time_min": self.time_min,
             "weather": self.weather,
@@ -109,6 +131,7 @@ class World:
             "objective_notes": dict(self.objective_notes),
             "tension": int(self.tension),
             "marks": list(self.marks),
+            "participants": list(self.participants),
             "combat": {
                 "in_combat": bool(self.in_combat),
                 "round": int(self.round),
@@ -118,14 +141,65 @@ class World:
                 "turn_state": {k: dict(v) for k, v in self.turn_state.items()},
                 "range_bands": {f"{a}&{b}": v for (a, b), v in self.range_bands.items()},
             },
-            # Export only weapon ids to avoid noise
+            # Weapon data
             "weapons": sorted(list(self.weapon_defs.keys())),
+            "weapon_defs": _weapon_summary(),
         }
 
 
 WORLD = World()
 
 # --- tools ---
+
+def set_participants(names: List[str]) -> ToolResponse:
+    """Replace the participants list with the given ordered names.
+
+    Stores only strings; preserves order and removes empty/dupes while keeping first occurrence.
+    """
+    seq: List[str] = []
+    seen = set()
+    for n in list(names or []):
+        s = str(n).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        seq.append(s)
+    WORLD.participants = seq
+    return ToolResponse(content=[TextBlock(type="text", text="参与者设定：" + (", ".join(seq) if seq else "(无)"))], metadata={"participants": list(seq)})
+
+
+def set_character_meta(
+    name: str,
+    *,
+    persona: Optional[str] = None,
+    appearance: Optional[str] = None,
+    quotes: Optional[Union[List[str], str]] = None,
+) -> ToolResponse:
+    """Set human-facing meta info for a character (persona/appearance/quotes).
+
+    These fields live with the character sheet for agent prompting purposes.
+    """
+    nm = str(name)
+    sheet = WORLD.characters.setdefault(nm, {})
+    if persona is not None:
+        p = str(persona).strip()
+        if p:
+            sheet["persona"] = p
+    if appearance is not None:
+        a = str(appearance).strip()
+        if a:
+            sheet["appearance"] = a
+    if quotes is not None:
+        if isinstance(quotes, (list, tuple)):
+            sheet["quotes"] = [str(q).strip() for q in quotes if str(q).strip()]
+        else:
+            q = str(quotes).strip()
+            if q:
+                sheet["quotes"] = q
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"设定角色元信息：{nm}")],
+        metadata={k: sheet.get(k) for k in ("persona", "appearance", "quotes")},
+    )
 
 def advance_time(mins: int):
     """Advance in-game time by a number of minutes.
