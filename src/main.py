@@ -1174,20 +1174,40 @@ async def run_demo(
 
                 # Build an ephemeral agent for this turn to include a per-turn private tip in sys_prompt
                 # and avoid accumulating any long-lived memory between turns.
-                # 1) Compute optional private tip for this actor (e.g., 濒死)
+                # 1) Compute per-turn private section for this actor（回合资源 + 状态提示）
                 private_section = None
                 try:
-                    ch = (world.snapshot().get("characters") or {}).get(name, {}) or {}
+                    snap_now = world.snapshot()
+                    ch = (snap_now.get("characters") or {}).get(name, {}) or {}
+                    ts_all = world.runtime().get("turn_state", {}) or {}
+                    ts = ts_all.get(name, {}) or {}
+                    # 回合资源
+                    try:
+                        mv_left = int(ts.get("move_left", 0))
+                    except Exception:
+                        mv_left = 0
+                    try:
+                        mv_max = int(ch.get("move_speed_steps", mv_left))
+                    except Exception:
+                        mv_max = mv_left
+                    action_used = bool(ts.get("action_used", False))
+                    bonus_used = bool(ts.get("bonus_used", False))
+                    reaction_avail = bool(ts.get("reaction_available", True))
+                    lines_priv: List[str] = []
+                    lines_priv.append("回合资源（仅你可见）：")
+                    lines_priv.append(f"- 移动：{mv_left}/{mv_max} 步")
+                    lines_priv.append(
+                        f"- 动作：{'可用' if not action_used else '已用'}；附赠动作：{'可用' if not bonus_used else '已用'}；反应：{'可用' if reaction_avail else '已用'}"
+                    )
+                    # 濒死状态提示
                     dt = ch.get("dying_turns_left", None)
                     hpv = ch.get("hp", None)
                     if dt is not None:
-                        lines = [
-                            f"状态提示（仅你可见）——你处于濒死状态（HP={hpv}）：",
-                            "- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。",
-                            f"- 你将在 {int(dt)} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。",
-                            "- 请专注对白/呼救/传递信息/请求治疗或援助。",
-                        ]
-                        private_section = "\n".join(lines)
+                        lines_priv.append(f"状态提示（仅你可见）——你处于濒死状态（HP={hpv}）：")
+                        lines_priv.append("- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。")
+                        lines_priv.append(f"- 你将在 {int(dt)} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。")
+                        lines_priv.append("- 请专注对白/呼救/传递信息/请求治疗或援助。")
+                    private_section = "\n".join(lines_priv)
                 except Exception:
                     private_section = None
 
