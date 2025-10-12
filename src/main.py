@@ -1298,6 +1298,47 @@ async def run_demo(
                         lines_priv.append("- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。")
                         lines_priv.append(f"- 你将在 {int(dt)} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。")
                         lines_priv.append("- 请专注对白/呼救/传递信息/请求治疗或援助。")
+
+                    # 距离提示（仅当前行动者私有）：列出与场上所有单位的曼哈顿距离（步）
+                    try:
+                        positions = dict((snap_now.get("positions") or {}))
+                        my_pos = positions.get(name)
+                        # 候选单位：优先 participants；否则使用所有已登记坐标的单位
+                        try:
+                            participants_now = list(world.snapshot().get("participants") or [])
+                        except Exception:
+                            participants_now = []
+                        candidates = [n for n in (participants_now or list(positions.keys()))]
+                        # 排除自己
+                        candidates = [n for n in candidates if str(n) != str(name)]
+                        lines_priv.append("距离提示（仅你可见）：")
+                        # 如果自身坐标缺失，给出说明
+                        if not (isinstance(my_pos, (list, tuple)) and len(my_pos) >= 2):
+                            lines_priv.append("- 无法计算：未记录你的坐标")
+                        else:
+                            mx, my = int(my_pos[0]), int(my_pos[1])
+                            known: List[tuple[int, str]] = []
+                            unknown: List[str] = []
+                            for other in candidates:
+                                pos = positions.get(other)
+                                if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                                    try:
+                                        ox, oy = int(pos[0]), int(pos[1])
+                                        dist = abs(mx - ox) + abs(my - oy)
+                                        known.append((int(dist), str(other)))
+                                    except Exception:
+                                        unknown.append(str(other))
+                                else:
+                                    unknown.append(str(other))
+                            # 距离升序，名称次序作为平手兜底
+                            known.sort(key=lambda t: (t[0], t[1]))
+                            for dist, who in known:
+                                lines_priv.append(f"- {who}：{dist}步")
+                            for who in unknown:
+                                lines_priv.append(f"- {who}：未记录")
+                    except Exception:
+                        # 容错：距离提示失败时跳过，不影响回合
+                        pass
                     private_section = "\n".join(lines_priv)
                 except Exception:
                     private_section = None
@@ -1709,6 +1750,12 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
     log_ctx = create_logging_context(base_path=root)
     _STATE.log_ctx = log_ctx
 
+    # Reset the in-memory world so a new session does not inherit prior state
+    try:
+        world_impl.reset_world()
+    except Exception:
+        # best-effort; if reset fails, we proceed to avoid blocking server start
+        pass
     world = _WorldPort()
     try:
         world.set_weapon_defs(weapons)

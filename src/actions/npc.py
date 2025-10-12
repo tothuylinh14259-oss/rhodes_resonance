@@ -76,6 +76,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
 
     # auto_engage removed: attacks no longer auto-move; call advance_position() explicitly before perform_attack().
 
+
     def perform_skill_check(name, skill, dc, advantage: str = "none", reason: str = ""):
         resp = world.skill_check_dnd(name=name, skill=skill, dc=dc, advantage=advantage)
         meta = resp.metadata or {}

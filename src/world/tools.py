@@ -157,6 +157,14 @@ WORLD = World()
 
 # --- tools ---
 
+def reset_world() -> None:
+    """Reset the global WORLD to a fresh, empty instance.
+
+    Used by server restarts to guarantee a clean state across sessions.
+    """
+    global WORLD
+    WORLD = World()
+
 def set_participants(names: List[str]) -> ToolResponse:
     """Replace the participants list with the given ordered names.
 
@@ -1459,6 +1467,9 @@ def set_dnd_character(
         "proficient_skills": [s.lower() for s in (proficient_skills or [])],
         "proficient_saves": [s.upper() for s in (proficient_saves or [])],
     })
+    # If this character was in a dying state in a previous session, clear the flag
+    # because a fresh sheet starts at full HP.
+    sheet.pop("dying_turns_left", None)
     # Movement (steps per turn). Prefer explicit steps; fall back to legacy alias `move_speed`.
     ms = (
         move_speed_steps
