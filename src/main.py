@@ -370,6 +370,252 @@ class _WorldPort:
 # reach/attack range normalization moved to world.set_dnd_character_from_config
 
 
+# ============================================================
+# Module-level Constants
+# ============================================================
+
+# Relation thresholds for categorization
+RELATION_INTIMATE_FRIEND = 60
+RELATION_CLOSE_ALLY = 40
+RELATION_ALLY = 10
+RELATION_HOSTILE = -10
+RELATION_ENEMY = -40
+RELATION_ARCH_ENEMY = -60
+
+# Recap limits
+DEFAULT_RECAP_MSG_LIMIT = 6
+DEFAULT_RECAP_ACTION_LIMIT = 6
+
+# Default prompt templates
+DEFAULT_PROMPT_HEADER = (
+    "你是游戏中的NPC：{name}.\n"
+    "人设：{persona}\n"
+    "外观特征：{appearance}\n"
+    "常用语气/台词：{quotes}\n"
+    "当前立场提示（仅你视角）：{relation_brief}\n"
+    "可用武器：{weapon_brief}\n"
+)
+
+DEFAULT_PROMPT_RULES = (
+    "对话要求：\n"
+    "- 先用中文说1-2句对白/想法/微动作，符合人设。\n"
+    "- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{\"key\": \"value\"}}))，不要再输出意图 JSON。\n"
+    "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
+    "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
+    "- 若必须违背既定关系行事，若要违背，请在对白中说明充分理由，否则拒绝执行。\n"
+    "- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为'未提供'。\n"
+    "- 当存在敌对关系（关系<=-10）时，每回合至少调用一次工具；否则视为违规。\n"
+    '- 不要输出任何"系统提示"或括号内的系统旁白；只输出对白与 CALL_TOOL。\n'
+    "- 参与者名称（仅可用）：{allowed_names}\n"
+)
+
+DEFAULT_PROMPT_TOOL_GUIDE = (
+    "可用工具：\n"
+    "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；必须提供行动理由（reason）。攻击不会自动靠近，若距离不足请先调用 advance_position()。\n"
+    "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
+    "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
+    "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
+    "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
+    "- clear_protection(guardian=\"\", protectee=\"\", reason)：清除守护关系；可按守护者/被保护者/全部清理。\n"
+)
+
+DEFAULT_PROMPT_EXAMPLE = (
+    "输出示例：\n"
+    "阿米娅压低声音：'靠近目标位置。'\n"
+    'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2, "reason": "接近掩体"}})\n'
+)
+
+DEFAULT_PROMPT_GUARD_GUIDE = (
+    "守护生效规则：\n"
+    "- set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用'反应'。\n"
+    "- 攻击者到 guardian 的距离也必须在本次武器触及/射程内，否则无法替代承伤。\n"
+    "- 多名守护者同时满足时，系统选择距离攻击者最近者（同距按登记顺序）。\n"
+    "- 建议建立守护后使用 advance_position 贴身到被保护者旁并保持相邻，以确保拦截能生效。\n"
+)
+
+DEFAULT_PROMPT_GUARD_EXAMPLE = (
+    "守护使用示例：\n"
+    "德克萨斯侧身一步：'我来护你。'\n"
+    'CALL_TOOL set_protection({{"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"}})\n'
+    "德克萨斯快步靠近：\n"
+    'CALL_TOOL advance_position({{"name": "Texas", "target": {{"x": 1, "y": 1}}, "steps": 1, "reason": "保持相邻以便拦截"}})\n'
+)
+
+DEFAULT_PROMPT_TEMPLATE = (
+    DEFAULT_PROMPT_HEADER
+    + DEFAULT_PROMPT_RULES
+    + DEFAULT_PROMPT_TOOL_GUIDE
+    + DEFAULT_PROMPT_EXAMPLE
+    + DEFAULT_PROMPT_GUARD_GUIDE
+    + DEFAULT_PROMPT_GUARD_EXAMPLE
+)
+
+# Tool name to actor parameter keys mapping (for validation)
+TOOL_ACTOR_PARAMS = {
+    "perform_attack": ["attacker", "defender"],
+    "advance_position": ["name"],
+    "adjust_relation": ["a", "b"],
+    "transfer_item": ["target"],
+    "set_protection": ["guardian", "protectee"],
+    "clear_protection": ["guardian", "protectee"],
+}
+
+# Tool call pattern
+TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+
+
+# ============================================================
+# Utility Functions
+# ============================================================
+
+def _relation_category(score: int) -> str:
+    """Categorize relation score into human-readable labels."""
+    if score >= RELATION_INTIMATE_FRIEND:
+        return "挚友"
+    if score >= RELATION_CLOSE_ALLY:
+        return "亲密同伴"
+    if score >= RELATION_ALLY:
+        return "盟友"
+    if score <= RELATION_ARCH_ENEMY:
+        return "死敌"
+    if score <= RELATION_ENEMY:
+        return "仇视"
+    if score <= RELATION_HOSTILE:
+        return "敌对"
+    return "中立"
+
+
+def _safe_text(msg: Msg) -> str:
+    """Extract text content from a Msg object, handling various content formats."""
+    try:
+        text = msg.get_text_content()
+    except Exception:
+        text = None
+    if text is not None:
+        return str(text)
+    content = getattr(msg, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        lines = []
+        for blk in content:
+            if hasattr(blk, "text"):
+                lines.append(str(getattr(blk, "text", "")))
+            elif isinstance(blk, dict):
+                lines.append(str(blk.get("text", "")))
+        return "\n".join(line for line in lines if line)
+    return str(content)
+
+
+def _clip(text: str, limit: int = 160) -> str:
+    """Truncate text to a maximum length with ellipsis."""
+    s = str(text or "")
+    if len(s) <= limit:
+        return s
+    return s[: max(0, limit - 3)] + "..."
+
+
+def _extract_json_after(s: str, start_pos: int) -> Tuple[Optional[str], int]:
+    """Extract the first balanced JSON object from string starting at position.
+
+    Returns (json_string, end_position) or (None, start_pos) if not found.
+    """
+    n = len(s)
+    i = s.find('{', start_pos)
+    if i == -1:
+        return None, start_pos
+    brace = 0
+    in_str = False
+    esc = False
+    j = i
+    while j < n:
+        ch = s[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == '{':
+                brace += 1
+            elif ch == '}':
+                brace -= 1
+                if brace == 0:
+                    return s[i:j+1], j+1
+        j += 1
+    return None, start_pos
+
+
+def _parse_tool_calls(text: str) -> List[Tuple[str, dict]]:
+    """Parse CALL_TOOL invocations from agent output.
+
+    Supports both formats:
+    - CALL_TOOL name({json})
+    - CALL_TOOL name\\n{json}
+    """
+    calls: List[Tuple[str, dict]] = []
+    if not text:
+        return calls
+
+    idx = 0
+    while True:
+        m = TOOL_CALL_PATTERN.search(text, idx)
+        if not m:
+            break
+        name = m.group("name")
+        scan_from = m.end()
+        json_body, end_pos = _extract_json_after(text, scan_from)
+        params: dict = {}
+        if json_body:
+            try:
+                params = json.loads(json_body)
+            except Exception:
+                params = {}
+            calls.append((name, params))
+            idx = end_pos
+        else:
+            idx = scan_from
+    return calls
+
+
+def _strip_tool_calls_from_text(text: str) -> str:
+    """Return text with all CALL_TOOL ... {json} segments removed."""
+    if not text:
+        return text
+
+    idx = 0
+    out_parts: List[str] = []
+    while True:
+        m = TOOL_CALL_PATTERN.search(text, idx)
+        if not m:
+            out_parts.append(text[idx:])
+            break
+        out_parts.append(text[idx:m.start()])
+        scan_from = m.end()
+        json_body, end_pos = _extract_json_after(text, scan_from)
+        if json_body:
+            idx = end_pos
+        else:
+            idx = scan_from
+    return "".join(out_parts)
+
+
+def _parse_story_positions(raw: Any, target: Dict[str, Tuple[int, int]]) -> None:
+    """Extract actor positions from story config and store in target dict."""
+    if not isinstance(raw, dict):
+        return
+    for actor_name, pos in raw.items():
+        if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+            try:
+                target[str(actor_name)] = (int(pos[0]), int(pos[1]))
+            except Exception:
+                continue
+
+
 async def run_demo(
     *,
     emit: Callable[..., None],
@@ -387,22 +633,12 @@ async def run_demo(
 
     story_positions: Dict[str, Tuple[int, int]] = {}
 
-    def _ingest_positions(raw: Any) -> None:
-        if not isinstance(raw, dict):
-            return
-        for actor_name, pos in raw.items():
-            if isinstance(pos, (list, tuple)) and len(pos) >= 2:
-                try:
-                    story_positions[str(actor_name)] = (int(pos[0]), int(pos[1]))
-                except Exception:
-                    continue
-
     if isinstance(story_cfg, dict):
-        _ingest_positions(story_cfg.get("initial_positions") or {})
-        _ingest_positions(story_cfg.get("positions") or {})
+        _parse_story_positions(story_cfg.get("initial_positions") or {}, story_positions)
+        _parse_story_positions(story_cfg.get("positions") or {}, story_positions)
         initial_section = story_cfg.get("initial")
         if isinstance(initial_section, dict):
-            _ingest_positions(initial_section.get("positions") or {})
+            _parse_story_positions(initial_section.get("positions") or {}, story_positions)
 
     def _apply_story_position(name: str) -> None:
         pos = story_positions.get(str(name))
@@ -413,64 +649,6 @@ async def run_demo(
         except Exception:
             pass
 
-    # Build sys_prompt for each NPC in main (remove dependency on prompts.json)
-    # Default prompt blocks (copied from legacy factory, now centralized here)
-    DEFAULT_PROMPT_HEADER = (
-        "你是游戏中的NPC：{name}.\n"
-        "人设：{persona}\n"
-        "外观特征：{appearance}\n"
-        "常用语气/台词：{quotes}\n"
-        "当前立场提示（仅你视角）：{relation_brief}\n"
-        "可用武器：{weapon_brief}\n"
-    )
-    DEFAULT_PROMPT_RULES = (
-        "对话要求：\n"
-        "- 先用中文说1-2句对白/想法/微动作，符合人设。\n"
-        "- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{\"key\": \"value\"}}))，不要再输出意图 JSON。\n"
-        "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
-        "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
-        "- 若必须违背既定关系行事，若要违背，请在对白中说明充分理由，否则拒绝执行。\n"
-        "- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为‘未提供’。\n"
-        "- 当存在敌对关系（关系<=-10）时，每回合至少调用一次工具；否则视为违规。\n"
-        "- 不要输出任何“系统提示”或括号内的系统旁白；只输出对白与 CALL_TOOL。\n"
-        "- 参与者名称（仅可用）：{allowed_names}\n"
-    )
-    DEFAULT_PROMPT_TOOL_GUIDE = (
-        "可用工具：\n"
-        "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；必须提供行动理由（reason）。攻击不会自动靠近，若距离不足请先调用 advance_position()。\n"
-        "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
-        "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
-        "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
-        "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
-        "- clear_protection(guardian=\"\", protectee=\"\", reason)：清除守护关系；可按守护者/被保护者/全部清理。\n"
-    )
-    DEFAULT_PROMPT_EXAMPLE = (
-        "输出示例：\n"
-        "阿米娅压低声音：‘靠近目标位置。’\n"
-        'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2, "reason": "接近掩体"}})\n'
-    )
-    DEFAULT_PROMPT_GUARD_GUIDE = (
-        "守护生效规则：\n"
-        "- set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用‘反应’。\n"
-        "- 攻击者到 guardian 的距离也必须在本次武器触及/射程内，否则无法替代承伤。\n"
-        "- 多名守护者同时满足时，系统选择距离攻击者最近者（同距按登记顺序）。\n"
-        "- 建议建立守护后使用 advance_position 贴身到被保护者旁并保持相邻，以确保拦截能生效。\n"
-    )
-    DEFAULT_PROMPT_GUARD_EXAMPLE = (
-        "守护使用示例：\n"
-        "德克萨斯侧身一步：‘我来护你。’\n"
-        'CALL_TOOL set_protection({{"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"}})\n'
-        "德克萨斯快步靠近：\n"
-        'CALL_TOOL advance_position({{"name": "Texas", "target": {{"x": 1, "y": 1}}, "steps": 1, "reason": "保持相邻以便拦截"}})\n'
-    )
-    DEFAULT_PROMPT_TEMPLATE = (
-        DEFAULT_PROMPT_HEADER
-        + DEFAULT_PROMPT_RULES
-        + DEFAULT_PROMPT_TOOL_GUIDE
-        + DEFAULT_PROMPT_EXAMPLE
-        + DEFAULT_PROMPT_GUARD_GUIDE
-        + DEFAULT_PROMPT_GUARD_EXAMPLE
-    )
     def _build_sys_prompt(
         *,
         name: str,
@@ -547,21 +725,6 @@ async def run_demo(
     allowed_names_str = ", ".join(allowed_names_world) if allowed_names_world else ""
 
     rel_cfg_raw = char_cfg.get("relations") if isinstance(char_cfg, dict) else {}
-
-    def _relation_category(score: int) -> str:
-        if score >= 60:
-            return "挚友"
-        if score >= 40:
-            return "亲密同伴"
-        if score >= 10:
-            return "盟友"
-        if score <= -60:
-            return "死敌"
-        if score <= -40:
-            return "仇视"
-        if score <= -10:
-            return "敌对"
-        return "中立"
 
     def _relation_brief(name: str) -> str:
         """Build relation brief from world state, not raw config."""
@@ -838,47 +1001,6 @@ async def run_demo(
         except Exception:
             pass
 
-    # Accept both styles that agents may output:
-    # 1) CALL_TOOL name({json})
-    # 2) CALL_TOOL name\n{json}
-    # Some models also append a suffix like ":3" after the tool name (e.g. for footnotes).
-    # We therefore avoid a strict regex on parentheses and instead scan forward
-    # for the next balanced JSON object after the tool name token.
-    TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
-
-
-    # Shared JSON extractor for tool parsing and stripping
-    def _extract_json_after(s: str, start_pos: int) -> tuple[Optional[str], int]:
-        n = len(s)
-        i = s.find('{', start_pos)
-        if i == -1:
-            return None, start_pos
-        brace = 0
-        in_str = False
-        esc = False
-        j = i
-        while j < n:
-            ch = s[j]
-            if in_str:
-                if esc:
-                    esc = False
-                elif ch == "\\":
-                    esc = True
-                elif ch == '"':
-                    in_str = False
-            else:
-                if ch == '"':
-                    in_str = True
-                elif ch == '{':
-                    brace += 1
-                elif ch == '}':
-                    brace -= 1
-                    if brace == 0:
-                        return s[i:j+1], j+1
-            j += 1
-        return None, start_pos
-
-
     # Centralised tool dispatch mapping (must be injected by caller)
     TOOL_DISPATCH = dict(tool_dispatch or {})
     allowed_set = {str(n) for n in (allowed_names_world or [])}
@@ -898,89 +1020,6 @@ async def run_demo(
             return await loop.run_in_executor(None, lambda: input(prompt))
         except Exception:
             return ""
-
-    def _safe_text(msg: Msg) -> str:
-        try:
-            text = msg.get_text_content()
-        except Exception:
-            text = None
-        if text is not None:
-            return str(text)
-        content = getattr(msg, "content", None)
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            lines = []
-            for blk in content:
-                if hasattr(blk, "text"):
-                    lines.append(str(getattr(blk, "text", "")))
-                elif isinstance(blk, dict):
-                    lines.append(str(blk.get("text", "")))
-            return "\n".join(line for line in lines if line)
-        return str(content)
-
-    def _parse_tool_calls(text: str) -> List[Tuple[str, dict]]:
-        calls: List[Tuple[str, dict]] = []
-        if not text:
-            return calls
-
-        idx = 0
-        while True:
-            m = TOOL_CALL_PATTERN.search(text, idx)
-            if not m:
-                break
-            name = m.group("name")
-            # Skip any suffix like ":3" or whitespace/colon before the JSON
-            scan_from = m.end()
-            # Extract JSON object following the tool name (with or without parentheses)
-            json_body, end_pos = _extract_json_after(text, scan_from)
-            params: dict = {}
-            if json_body:
-                try:
-                    params = json.loads(json_body)
-                except Exception:
-                    params = {}
-                calls.append((name, params))
-                idx = end_pos
-            else:
-                # No JSON body found; advance to avoid infinite loop
-                idx = scan_from
-        return calls
-
-    def _strip_tool_calls_from_text(text: str) -> str:
-        """Return `text` with all CALL_TOOL ... {json} segments removed.
-
-        Compatible with both styles:
-        - CALL_TOOL name({json})
-        - CALL_TOOL name\n{json}
-        Also tolerant to suffix like `:3` after tool name.
-        """
-        if not text:
-            return text
-
-        idx = 0
-        out_parts: List[str] = []
-        while True:
-            m = TOOL_CALL_PATTERN.search(text, idx)
-            if not m:
-                out_parts.append(text[idx:])
-                break
-            # Keep text before the tool call
-            out_parts.append(text[idx:m.start()])
-            scan_from = m.end()
-            # Remove the following JSON object if present
-            json_body, end_pos = _extract_json_after(text, scan_from)
-            if json_body:
-                idx = end_pos
-            else:
-                idx = scan_from
-        return "".join(out_parts)
-
-    def _clip(text: str, limit: int = 160) -> str:
-        s = str(text or "")
-        if len(s) <= limit:
-            return s
-        return s[: max(0, limit - 3)] + "..."
 
     # --- Dev-only context snapshot: write a compact card per-actor to logs/<actor>_context_dev.log ---
     def _write_dev_context_card(name: str) -> None:
