@@ -318,7 +318,6 @@ async def run_demo(
         pass
 
     # Build agents for NPCs only; players由命令行输入驱动
-    npcs_llm_only: List[ReActAgent] = []
     if allowed_names_world:
         for name in allowed_names_world:
             entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
@@ -414,7 +413,6 @@ async def run_demo(
                 # 仅 NPC 参与 Hub 和初始化 pipeline
                 npcs_list.append(agent)
                 participants_order.append(agent)
-                npcs_llm_only.append(agent)
         # preload non-participant actors (e.g., enemies) into world sheets
         for name, entry in actor_entries.items():
             if name in allowed_names_world:
@@ -452,68 +450,68 @@ async def run_demo(
                 except Exception:
                     pass
 
-    # Ensure Doctor exists only if he is a participant
-    try:
-        world_chars = world.runtime().get("characters") or {}
-    except Exception:
-        world_chars = {}
+    # Scene setup from story config
+    def _normalize_scene_cfg(sc: Optional[Mapping[str, Any]]):
+        name = None
+        objectives: List[str] = []
+        details: List[str] = []
+        weather: Optional[str] = None
+        time_min: Optional[int] = None
+        if isinstance(sc, dict):
+            name_candidate = sc.get("name")
+            if isinstance(name_candidate, str) and name_candidate.strip():
+                name = name_candidate.strip()
+            objs = sc.get("objectives")
+            if isinstance(objs, list):
+                for obj in objs:
+                    if isinstance(obj, str) and obj.strip():
+                        objectives.append(obj.strip())
+            details_val = sc.get("details")
+            if isinstance(details_val, str) and details_val.strip():
+                details = [details_val.strip()]
+            elif isinstance(details_val, list):
+                for d in details_val:
+                    if isinstance(d, str) and d.strip():
+                        details.append(d.strip())
+            # Prefer HH:MM string if provided; fallback to time_min
+            tstr = sc.get("time")
+            if isinstance(tstr, str) and tstr:
+                m = re.match(r"^(\d{1,2}):(\d{2})$", tstr.strip())
+                if m:
+                    hh, mm = int(m.group(1)), int(m.group(2))
+                    if 0 <= hh < 24 and 0 <= mm < 60:
+                        time_min = hh * 60 + mm
+            if time_min is None:
+                tm = sc.get("time_min", None)
+                if isinstance(tm, (int, float)):
+                    try:
+                        time_min = int(tm)
+                    except Exception:
+                        time_min = None
+            w = sc.get("weather")
+            if isinstance(w, str) and w.strip():
+                weather = w.strip()
+        return name, objectives, details, weather, time_min
 
-    # Scene setup sourced from story config (time/weather/details from JSON; no hardcoded defaults)
-    scene_cfg = story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
-    scene_name = None
-    scene_objectives: List[str] = []
-    scene_details: List[str] = []
-    scene_weather: Optional[str] = None
-    scene_time_min: Optional[int] = None
-    if isinstance(scene_cfg, dict):
-        name_candidate = scene_cfg.get("name")
-        if isinstance(name_candidate, str) and name_candidate.strip():
-            scene_name = name_candidate.strip()
-        objs = scene_cfg.get("objectives")
-        if isinstance(objs, list):
-            for obj in objs:
-                if isinstance(obj, str) and obj.strip():
-                    scene_objectives.append(obj.strip())
-        details_val = scene_cfg.get("details")
-        if isinstance(details_val, str) and details_val.strip():
-            scene_details = [details_val.strip()]
-        elif isinstance(details_val, list):
-            for d in details_val:
-                if isinstance(d, str) and d.strip():
-                    scene_details.append(d.strip())
-        # Prefer HH:MM string if provided; fallback to time_min
-        tstr = scene_cfg.get("time")
-        if isinstance(tstr, str) and tstr:
-            m = re.match(r"^(\d{1,2}):(\d{2})$", tstr.strip())
-            if m:
-                hh, mm = int(m.group(1)), int(m.group(2))
-                if 0 <= hh < 24 and 0 <= mm < 60:
-                    scene_time_min = hh * 60 + mm
-        if scene_time_min is None:
-            tm = scene_cfg.get("time_min", None)
-            if isinstance(tm, (int, float)):
-                try:
-                    scene_time_min = int(tm)
-                except Exception:
-                    scene_time_min = None
-        w = scene_cfg.get("weather")
-        if isinstance(w, str) and w.strip():
-            scene_weather = w.strip()
-    # Apply story config if any; otherwise keep current world defaults
-    if any([scene_name, scene_objectives, scene_details, scene_weather, scene_time_min is not None]):
+    def _apply_scene_to_world(name, objectives, details, weather, time_min):
         try:
             snap0 = world.snapshot()
             current_loc = str((snap0 or {}).get("location") or "")
         except Exception:
             current_loc = ""
         world.set_scene(
-            scene_name or current_loc,
-            scene_objectives or None,
+            name or current_loc,
+            objectives or None,
             append=False,
-            details=scene_details or None,
-            time_min=scene_time_min,
-            weather=scene_weather,
+            details=details or None,
+            time_min=time_min,
+            weather=weather,
         )
+
+    scene_cfg = story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
+    scene_name, scene_objectives, scene_details, scene_weather, scene_time_min = _normalize_scene_cfg(scene_cfg)
+    if any([scene_name, scene_objectives, scene_details, scene_weather, scene_time_min is not None]):
+        _apply_scene_to_world(scene_name, scene_objectives, scene_details, scene_weather, scene_time_min)
 
     current_round = 0
 
@@ -556,6 +554,39 @@ async def run_demo(
     # We therefore avoid a strict regex on parentheses and instead scan forward
     # for the next balanced JSON object after the tool name token.
     TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+
+
+    # Shared JSON extractor for tool parsing and stripping
+    def _extract_json_after(s: str, start_pos: int) -> tuple[Optional[str], int]:
+        n = len(s)
+        i = s.find('{', start_pos)
+        if i == -1:
+            return None, start_pos
+        brace = 0
+        in_str = False
+        esc = False
+        j = i
+        while j < n:
+            ch = s[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == '{':
+                    brace += 1
+                elif ch == '}':
+                    brace -= 1
+                    if brace == 0:
+                        return s[i:j+1], j+1
+            j += 1
+        return None, start_pos
+
 
     # Centralised tool dispatch mapping (must be injected by caller)
     TOOL_DISPATCH = dict(tool_dispatch or {})
@@ -602,41 +633,6 @@ async def run_demo(
         if not text:
             return calls
 
-        def _extract_json_after(s: str, start_pos: int) -> Tuple[Optional[str], int]:
-            """Return (json_text, end_index) for the first balanced {...} after start_pos.
-
-            end_index points to the character index just after the closing brace,
-            or start_pos if nothing could be parsed.
-            """
-            n = len(s)
-            i = s.find("{", start_pos)
-            if i == -1:
-                return None, start_pos
-            brace = 0
-            in_str = False
-            esc = False
-            j = i
-            while j < n:
-                ch = s[j]
-                if in_str:
-                    if esc:
-                        esc = False
-                    elif ch == "\\":
-                        esc = True
-                    elif ch == '"':
-                        in_str = False
-                else:
-                    if ch == '"':
-                        in_str = True
-                    elif ch == '{':
-                        brace += 1
-                    elif ch == '}':
-                        brace -= 1
-                        if brace == 0:
-                            return s[i : j + 1], j + 1
-                j += 1
-            return None, start_pos
-
         idx = 0
         while True:
             m = TOOL_CALL_PATTERN.search(text, idx)
@@ -671,36 +667,6 @@ async def run_demo(
         if not text:
             return text
 
-        def _extract_json_after(s: str, start_pos: int) -> Tuple[Optional[str], int]:
-            n = len(s)
-            i = s.find("{", start_pos)
-            if i == -1:
-                return None, start_pos
-            brace = 0
-            in_str = False
-            esc = False
-            j = i
-            while j < n:
-                ch = s[j]
-                if in_str:
-                    if esc:
-                        esc = False
-                    elif ch == "\\":
-                        esc = True
-                    elif ch == '"':
-                        in_str = False
-                else:
-                    if ch == '"':
-                        in_str = True
-                    elif ch == '{':
-                        brace += 1
-                    elif ch == '}':
-                        brace -= 1
-                        if brace == 0:
-                            return s[i : j + 1], j + 1
-                j += 1
-            return None, start_pos
-
         idx = 0
         out_parts: List[str] = []
         while True:
@@ -718,6 +684,12 @@ async def run_demo(
             else:
                 idx = scan_from
         return "".join(out_parts)
+
+    def _clip(text: str, limit: int = 160) -> str:
+        s = str(text or "")
+        if len(s) <= limit:
+            return s
+        return s[: max(0, limit - 3)] + "..."
 
     # --- Dev-only context snapshot: write a compact card per-actor to logs/<actor>_context_dev.log ---
     def _write_dev_context_card(name: str) -> None:
@@ -748,9 +720,7 @@ async def run_demo(
             if recent_msgs:
                 lines.append("[Recent Messages]")
                 for e in recent_msgs:
-                    txt = str(e.get("text") or "").strip()
-                    if len(txt) > 160:
-                        txt = txt[:157] + "..."
+                    txt = _clip(str(e.get("text") or "").strip(), 160)
                     lines.append(f"- {e.get('actor')}: {txt}")
             # (no Recent Actions section by design)
 
@@ -802,6 +772,8 @@ async def run_demo(
                 "advance_position": ["name"],
                 "adjust_relation": ["a", "b"],
                 "transfer_item": ["target"],
+                "set_protection": ["guardian", "protectee"],
+                "clear_protection": ["guardian", "protectee"],
             }.get(tool_name, [])
             invalid = None
             for k in name_keys:
@@ -823,6 +795,12 @@ async def run_demo(
                 )
                 await _bcast(hub, Msg("Host", f"无效角色名：{invalid}。合法参与者：{', '.join(sorted(allowed_set))}", "assistant"), phase=phase)
                 continue
+            # Ensure a reason exists; if missing, add a default for traceability
+            try:
+                if not str(params.get("reason", "")).strip():
+                    params["reason"] = "未提供"
+            except Exception:
+                params["reason"] = "未提供"
             # omit verbose 'reason' from params for front-end brevity
             params_slim = dict(params or {})
             if "reason" in params_slim:
@@ -946,13 +924,102 @@ async def run_demo(
         if recent_msgs:
             lines.append("最近播报：")
             for e in recent_msgs:
-                txt = str(e.get("text") or "").strip()
-                if len(txt) > 160:
-                    txt = txt[:157] + "..."
+                txt = _clip(str(e.get("text") or "").strip(), 160)
                 lines.append(f"- {e.get('actor')}: {txt}")
         # No separate actions block
         LAST_SEEN[name] = len(CHAT_LOG)
         return Msg("Host", "\\n".join(lines), "assistant")
+
+    # --- State snapshot emitters (helper to reduce duplicate blocks) ---
+    def _emit_turn_state() -> None:
+        try:
+            rt = world.runtime()
+            positions = rt.get("positions", {})
+            in_combat = bool(rt.get("in_combat"))
+            r_avail = rt.get("turn_state", {})
+            _emit(
+                "state_update",
+                phase="turn-state",
+                data={
+                    "positions": {k: list(v) for k, v in positions.items()},
+                    "in_combat": in_combat,
+                    "reaction_available": r_avail,
+                },
+            )
+        except Exception as exc:
+            _emit(
+                "error",
+                phase="turn-state",
+                data={
+                    "message": f"获取回合信息失败: {exc}",
+                    "error_type": "turn_snapshot",
+                },
+            )
+
+    def _emit_world_state(turn_val: int) -> None:
+        snapshot = world.snapshot()
+        _emit("state_update", phase="world", turn=turn_val, data={"state": snapshot})
+
+    # --- Ephemeral NPC helper to remove duplication ---
+    def _make_ephemeral_agent(name: str, private_section: Optional[str]) -> ReActAgent:
+        try:
+            sheet_now = (world.snapshot().get("characters") or {}).get(name, {}) or {}
+            persona_now = sheet_now.get("persona") or ""
+            appearance_now = sheet_now.get("appearance")
+            quotes_now = sheet_now.get("quotes")
+        except Exception:
+            persona_now = ""; appearance_now = None; quotes_now = None
+        sys_prompt_text = _build_sys_prompt(
+            name=name,
+            persona=str(persona_now or ""),
+            appearance=appearance_now,
+            quotes=quotes_now,
+            relation_brief=_relation_brief(name),
+            weapon_brief=_weapon_brief_for(name),
+            allowed_names=allowed_names_str,
+        )
+        if private_section:
+            sys_prompt_text = sys_prompt_text + "\n" + private_section
+        agent = build_agent(
+            name,
+            str(persona_now or ""),
+            model_cfg,
+            sys_prompt=sys_prompt_text,
+            allowed_names=allowed_names_str,
+            appearance=appearance_now,
+            quotes=quotes_now,
+            relation_brief=_relation_brief(name),
+            weapon_brief=_weapon_brief_for(name),
+            tools=tool_list,
+        )
+        return agent
+
+    async def _npc_ephemeral_say(name: str, private_section: Optional[str], hub: MsgHub, recap_msg: Optional[Msg] = None) -> None:
+        ephemeral = _make_ephemeral_agent(name, private_section)
+        # Seed this ephemeral agent with this turn's shared context in order (1 环境信息, 2 场景回顾)
+        try:
+            env_text = _world_summary_text(world.snapshot())
+            await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
+        except Exception:
+            pass
+        try:
+            if recap_msg is not None:
+                await ephemeral.memory.add(recap_msg)
+        except Exception:
+            pass
+        out = await ephemeral(None)
+        try:
+            raw_text = _safe_text(out)
+            cleaned = _strip_tool_calls_from_text(raw_text)
+            if cleaned and cleaned.strip():
+                msg_clean = Msg(getattr(out, "name", name), cleaned, getattr(out, "role", "assistant") or "assistant")
+                await _bcast(hub, msg_clean, phase=f"npc:{name}")
+            else:
+                await _bcast(hub, out, phase=f"npc:{name}")
+        except Exception:
+            # If anything goes wrong, fall back to broadcasting the original
+            await _bcast(hub, out, phase=f"npc:{name}")
+        await _handle_tool_calls(out, hub)
 
     # Human-readable header for participants and starting positions
     _start_pos_lines = []
@@ -1011,6 +1078,12 @@ async def run_demo(
             pass
         return
 
+    # 在进入 Hub 和任何 NPC 开口之前，先广播一次完整快照，确保前端尽快拿到带坐标的状态
+    try:
+        _emit("state_update", phase="initial", data={"state": world.snapshot()})
+    except Exception:
+        pass
+
     async with MsgHub(
         participants=list(participants_order),
         announcement=Msg(
@@ -1025,53 +1098,7 @@ async def run_demo(
                 if str(actor_types.get(name, "npc")) != "npc":
                     continue
                 try:
-                    sheet_now = (world.snapshot().get("characters") or {}).get(name, {}) or {}
-                    persona_now = sheet_now.get("persona") or ""
-                    appearance_now = sheet_now.get("appearance")
-                    quotes_now = sheet_now.get("quotes")
-                except Exception:
-                    persona_now = ""; appearance_now = None; quotes_now = None
-                sys_prompt_text = _build_sys_prompt(
-                    name=name,
-                    persona=str(persona_now or ""),
-                    appearance=appearance_now,
-                    quotes=quotes_now,
-                    relation_brief=_relation_brief(name),
-                    weapon_brief=_weapon_brief_for(name),
-                    allowed_names=allowed_names_str,
-                )
-                # 构造一次性 Agent：给出环境概要作为记忆，再让其输出一行对白+可能的 CALL_TOOL
-                ephemeral0 = build_agent(
-                    name,
-                    str(persona_now or ""),
-                    model_cfg,
-                    sys_prompt=sys_prompt_text,
-                    allowed_names=allowed_names_str,
-                    appearance=appearance_now,
-                    quotes=quotes_now,
-                    relation_brief=_relation_brief(name),
-                    weapon_brief=_weapon_brief_for(name),
-                    tools=tool_list,
-                )
-                try:
-                    env_text0 = _world_summary_text(world.snapshot())
-                    await ephemeral0.memory.add(Msg("Host", env_text0, "assistant"))
-                except Exception:
-                    pass
-                try:
-                    out0 = await ephemeral0(None)
-                except Exception:
-                    continue
-                try:
-                    raw0 = _safe_text(out0)
-                    cleaned0 = _strip_tool_calls_from_text(raw0)
-                    if cleaned0 and cleaned0.strip():
-                        await _bcast(hub, Msg(getattr(out0, "name", name), cleaned0, getattr(out0, "role", "assistant") or "assistant"), phase=f"npc:{name}")
-                except Exception:
-                    pass
-                # 处理可能的 CALL_TOOL
-                try:
-                    await _handle_tool_calls(out0, hub)
+                    await _npc_ephemeral_say(name, None, hub, recap_msg=None)
                 except Exception:
                     pass
         except Exception:
@@ -1155,32 +1182,8 @@ async def run_demo(
             except Exception:
                 pass
 
-            try:
-                rt = world.runtime()
-                positions = rt.get("positions", {})
-                in_combat = bool(rt.get("in_combat"))
-                r_avail = rt.get("turn_state", {})
-                _emit(
-                    "state_update",
-                    phase="turn-state",
-                    data={
-                        "positions": {k: list(v) for k, v in positions.items()},
-                        "in_combat": in_combat,
-                        "reaction_available": r_avail,
-                    },
-                )
-            except Exception as exc:
-                _emit(
-                    "error",
-                    phase="turn-state",
-                    data={
-                        "message": f"获取回合信息失败: {exc}",
-                        "error_type": "turn_snapshot",
-                    },
-                )
-
-            snapshot = world.snapshot()
-            _emit("state_update", phase="world", turn=current_round, data={"state": snapshot})
+            _emit_turn_state()
+            _emit_world_state(current_round)
             # 移除回合开始时的世界概要广播；仅在每个 NPC 行动前发送概要（见 context:world）
 
             # If无敌对，则退出战斗模式但不强制结束整体流程（除非显式要求）
@@ -1366,70 +1369,8 @@ async def run_demo(
                     if text_in:
                         await _bcast(hub, Msg(name, text_in, "assistant"), phase=f"player:{name}")
                 else:
-                    # 2a) Rebuild an ephemeral NPC agent with per-turn private section
-                    try:
-                        sheet_now = (world.snapshot().get("characters") or {}).get(name, {}) or {}
-                        persona_now = sheet_now.get("persona") or ""
-                        appearance_now = sheet_now.get("appearance")
-                        quotes_now = sheet_now.get("quotes")
-                    except Exception:
-                        persona_now = ""; appearance_now = None; quotes_now = None
-                    sys_prompt_text = _build_sys_prompt(
-                        name=name,
-                        persona=str(persona_now or ""),
-                        appearance=appearance_now,
-                        quotes=quotes_now,
-                        relation_brief=_relation_brief(name),
-                        weapon_brief=_weapon_brief_for(name),
-                        allowed_names=allowed_names_str,
-                    )
-                    if private_section:
-                        sys_prompt_text = sys_prompt_text + "\n" + private_section
-
-                    ephemeral = build_agent(
-                        name,
-                        str(persona_now or ""),
-                        model_cfg,
-                        sys_prompt=sys_prompt_text,
-                        allowed_names=allowed_names_str,
-                        appearance=appearance_now,
-                        quotes=quotes_now,
-                        relation_brief=_relation_brief(name),
-                        weapon_brief=_weapon_brief_for(name),
-                        tools=tool_list,
-                    )
-
-                    # 3) Seed this ephemeral agent with this turn's shared context in order (1 环境信息, 2 场景回顾)
-                    try:
-                        env_text = _world_summary_text(world.snapshot())
-                        await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
-                    except Exception:
-                        pass
-                    try:
-                        if recap_msg is not None:
-                            await ephemeral.memory.add(recap_msg)
-                    except Exception:
-                        pass
-
-                    out = await ephemeral(None)
-                    try:
-                        raw_text = _safe_text(out)
-                        cleaned = _strip_tool_calls_from_text(raw_text)
-                        if cleaned and cleaned.strip():
-                            msg_clean = Msg(getattr(out, "name", name), cleaned, getattr(out, "role", "assistant") or "assistant")
-                            await _bcast(
-                                hub,
-                                msg_clean,
-                                phase=f"npc:{name}",
-                            )
-                    except Exception:
-                        # If anything goes wrong, fall back to broadcasting the original
-                        await _bcast(
-                            hub,
-                            out,
-                            phase=f"npc:{name}",
-                        )
-                    await _handle_tool_calls(out, hub)
+                    # 2a) NPC：构建一次性 agent（含本回私有提示），注入环境与回顾后输出对白+工具
+                    await _npc_ephemeral_say(name, private_section, hub, recap_msg)
 
                 # End-of-turn: if actor is in dying state, decrement their own dying timer now
                 try:
@@ -1533,26 +1474,34 @@ def _world_summary_text(snap: dict) -> str:
 
 
 
+def _bootstrap_runtime(*, for_server: bool = False):
+    # Load configs and create logging context, optionally reset world for server session
+    model_cfg_obj = load_model_config()
+    story_cfg = load_story_config()
+    characters = load_characters()
+    weapons = load_weapons() or {}
+    if is_dataclass(model_cfg_obj):
+        model_cfg: Dict[str, Any] = asdict(model_cfg_obj)
+    else:
+        model_cfg = dict(getattr(model_cfg_obj, "__dict__", {}) or {})
+    root = project_root()
+    log_ctx = create_logging_context(base_path=root)
+    if for_server:
+        try:
+            world_impl.reset_world()
+        except Exception:
+            pass
+    world = _WorldPort()
+    return model_cfg, story_cfg, characters, weapons, world, log_ctx, root
+
+
 def main() -> None:
     print("============================================================")
     print("NPC Talk Demo (Orchestrator: main.py)")
     print("============================================================")
 
-    # Load configs
-    model_cfg_obj = load_model_config()
-    story_cfg = load_story_config()
-    characters = load_characters()
-    weapons = load_weapons() or {}
-
-    # Convert model config dataclass to mapping
-    if is_dataclass(model_cfg_obj):
-        model_cfg: Dict[str, Any] = asdict(model_cfg_obj)
-    else:
-        model_cfg = dict(getattr(model_cfg_obj, "__dict__", {}) or {})
-
-    # Build logging context under project root
-    root = project_root()
-    log_ctx = create_logging_context(base_path=root)
+    # Bootstrap shared runtime bits
+    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(for_server=False)
 
     # Clean dev context logs at run start (mirror run_story/run_events overwrite)
     try:
@@ -1575,11 +1524,8 @@ def main() -> None:
         ev = Event(event_type=EventType(event_type), actor=actor, phase=phase, turn=turn, data=dict(data or {}))
         log_ctx.bus.publish(ev)
 
-    # Bind world and actions
-    world = _WorldPort()
     # Load weapon table into world before tools are used
     try:
-        # Use the port to avoid leaking the implementation detail
         world.set_weapon_defs(weapons)
     except Exception as exc:
         # 记录武器表载入失败，继续运行（允许无武器配置）
@@ -1639,7 +1585,7 @@ except Exception:  # pragma: no cover - defensive for environments without deps
     CORSMiddleware = None  # type: ignore
     uvicorn = None  # type: ignore
 
-import asyncio as _asyncio
+# Use the same asyncio import consistently
 import uuid as _uuid
 from urllib.parse import parse_qs
 
@@ -1655,7 +1601,7 @@ class _EventBridge:
         self._buf: deque[dict] = deque(maxlen=maxlen)
         self._clients: set = set()  # set[WebSocket]
         self._last_seq: int = 0
-        self._lock = _asyncio.Lock()
+        self._lock = asyncio.Lock()
 
     @property
     def last_sequence(self) -> int:
@@ -1709,21 +1655,21 @@ class _EventBridge:
 
 class _ServerState:
     def __init__(self) -> None:
-        self.task: Optional[_asyncio.Task] = None
+        self.task: Optional[asyncio.Task] = None
         self.running: bool = False
         self.bridge = _EventBridge()
         self.last_snapshot: Dict[str, Any] = {}
         self.session_id: str = ""
         self.log_ctx = None  # LoggingContext
-        self.player_queues: Dict[str, _asyncio.Queue[str]] = {}
+        self.player_queues: Dict[str, asyncio.Queue[str]] = {}
 
     def is_running(self) -> bool:
         return bool(self.task) and not bool(self.task.done()) and self.running
 
-    def get_player_queue(self, name: str) -> _asyncio.Queue[str]:
+    def get_player_queue(self, name: str) -> asyncio.Queue[str]:
         q = self.player_queues.get(name)
         if q is None:
-            q = _asyncio.Queue()
+            q = asyncio.Queue()
             self.player_queues[name] = q
         return q
 
@@ -1736,27 +1682,9 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
     if _STATE.is_running():
         return False, "already running"
 
-    # Build configs/world/runtime similar to main()
-    model_cfg_obj = load_model_config()
-    story_cfg = load_story_config()
-    characters = load_characters()
-    weapons = load_weapons() or {}
-    if is_dataclass(model_cfg_obj):
-        model_cfg: Dict[str, Any] = asdict(model_cfg_obj)
-    else:
-        model_cfg = dict(getattr(model_cfg_obj, "__dict__", {}) or {})
-
-    root = project_root()
-    log_ctx = create_logging_context(base_path=root)
+    # Bootstrap shared bits; in server we reset world to avoid inheriting state
+    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(for_server=True)
     _STATE.log_ctx = log_ctx
-
-    # Reset the in-memory world so a new session does not inherit prior state
-    try:
-        world_impl.reset_world()
-    except Exception:
-        # best-effort; if reset fails, we proceed to avoid blocking server start
-        pass
-    world = _WorldPort()
     try:
         world.set_weapon_defs(weapons)
     except Exception as exc:
@@ -1785,7 +1713,7 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
         # 2) WS broadcast with the normalised dict (sequence/timestamp assigned by bus)
         try:
             payload = published.to_dict() if published else ev.to_dict()  # ev may lack seq/timestamp
-            _asyncio.create_task(_STATE.bridge.on_event(payload))
+            asyncio.create_task(_STATE.bridge.on_event(payload))
         except Exception:
             pass
         # 3) snapshot cache
@@ -1803,11 +1731,45 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
             _STATE.running = True
             # reset event buffer for new session
             await _STATE.bridge.clear()
-            # pre-populate snapshot to reduce initial blank HUD
+            # Pre-populate world & snapshot from story config so hello has positions
             try:
-                _STATE.last_snapshot = world.snapshot()
+                story_positions: Dict[str, Tuple[int, int]] = {}
+                def _ingest_positions(raw: Any) -> None:
+                    if not isinstance(raw, dict):
+                        return
+                    for actor_name, pos in raw.items():
+                        if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                            try:
+                                story_positions[str(actor_name)] = (int(pos[0]), int(pos[1]))
+                            except Exception:
+                                continue
+                if isinstance(story_cfg, dict):
+                    _ingest_positions(story_cfg.get("initial_positions") or {})
+                    _ingest_positions(story_cfg.get("positions") or {})
+                    initial_section = story_cfg.get("initial")
+                    if isinstance(initial_section, dict):
+                        _ingest_positions(initial_section.get("positions") or {})
+                # apply into world before first snapshot
+                for nm, (x, y) in story_positions.items():
+                    try:
+                        world.set_position(nm, x, y)
+                    except Exception:
+                        pass
+                if story_positions:
+                    try:
+                        world.set_participants(list(story_positions.keys()))
+                    except Exception:
+                        pass
+                # snapshot after pre-population
+                try:
+                    _STATE.last_snapshot = world.snapshot()
+                except Exception:
+                    _STATE.last_snapshot = {}
             except Exception:
-                _STATE.last_snapshot = {}
+                try:
+                    _STATE.last_snapshot = world.snapshot()
+                except Exception:
+                    _STATE.last_snapshot = {}
             await run_demo(
                 emit=emit,
                 build_agent=build_agent,
@@ -1824,7 +1786,7 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
             try:
                 err = Event(event_type=EventType.ERROR, phase="final", data={"message": f"runtime error: {exc}"})
                 log_ctx.bus.publish(err)
-                _asyncio.create_task(_STATE.bridge.on_event(err.to_dict()))
+                asyncio.create_task(_STATE.bridge.on_event(err.to_dict()))
             except Exception:
                 pass
         finally:
@@ -1832,7 +1794,7 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
             try:
                 # friendly end marker for clients
                 end_seq = _STATE.bridge.last_sequence + 1
-                _asyncio.create_task(_STATE.bridge.on_event({
+                asyncio.create_task(_STATE.bridge.on_event({
                     "event_id": f"END-{_STATE.session_id}",
                     "sequence": end_seq,
                     "timestamp": "",
@@ -1849,8 +1811,8 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
                 pass
             _STATE.log_ctx = None
 
-    _STATE.task = _asyncio.create_task(_runner())
-    await _asyncio.sleep(0)
+    _STATE.task = asyncio.create_task(_runner())
+    await asyncio.sleep(0)
     return True, "started"
 
 
@@ -2120,7 +2082,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                     break
             # keep-alive; actual events are pushed by bridge
             while True:
-                await _asyncio.sleep(60)
+                await asyncio.sleep(60)
         except WebSocketDisconnect:  # type: ignore[misc]
             pass
         finally:

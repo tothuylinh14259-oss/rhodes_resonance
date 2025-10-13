@@ -70,22 +70,30 @@ class Event:
         self.timestamp = timestamp
 
     def validate(self) -> None:
+        # Validation: most event types require specific fields; state_update allows
+        # either a full snapshot (state) or a delta (positions/in_combat/reaction_available)
+        if self.event_type is EventType.STATE_UPDATE:
+            if "state" in self.data:
+                return
+            delta_ok = any(k in self.data for k in ("positions", "in_combat", "reaction_available"))
+            if not delta_ok:
+                raise ValueError("Event 'state_update' missing required fields: state (or positions/in_combat/reaction_available)")
+            return
+
         required_keys: Dict[EventType, List[str]] = {
             EventType.ACTION: ["action"],
-            EventType.STATE_UPDATE: ["state"],
             EventType.TOOL_CALL: ["tool"],
             EventType.TOOL_RESULT: ["tool"],
             EventType.ERROR: ["message"],
             EventType.NARRATIVE: ["text"],
         }
         expected = required_keys.get(self.event_type)
-        if not expected:
-            return
-        missing = [key for key in expected if key not in self.data]
-        if missing:
-            raise ValueError(
-                f"Event '{self.event_type.value}' missing required fields: {', '.join(missing)}"
-            )
+        if expected:
+            missing = [key for key in expected if key not in self.data]
+            if missing:
+                raise ValueError(
+                    f"Event '{self.event_type.value}' missing required fields: {', '.join(missing)}"
+                )
 
     def to_dict(self) -> Dict[str, Any]:
         if self.timestamp is None or self.sequence is None:
@@ -121,4 +129,3 @@ class SequenceGenerator:
 
     def next(self) -> int:
         return next(self._counter)
-
