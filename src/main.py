@@ -1337,6 +1337,85 @@ async def run_demo(
                 await ephemeral.memory.add(recap_msg)
         except Exception:
             pass
+        # Inject targets preview (Chebyshev reach per held weapon; on-scene units only)
+        try:
+            def _fmt_steps(n: int) -> str:
+                try:
+                    s = int(n)
+                except Exception:
+                    s = 0
+                if s < 0:
+                    s = 0
+                return f"{s}步"
+
+            snap = world.snapshot() or {}
+            pos_map = (snap.get("positions") or {})
+            # Positions are stored as lists [x,y]; convert to tuples where needed
+            if not isinstance(pos_map, dict) or str(name) not in pos_map:
+                raise RuntimeError("no_position")
+            me_pos = pos_map[str(name)]
+            if not isinstance(me_pos, (list, tuple)) or len(me_pos) < 2:
+                raise RuntimeError("bad_position")
+            me_xy = (int(me_pos[0]), int(me_pos[1]))
+
+            # All on-scene units: every entry with a position
+            scene_units = []
+            for nm, p in (pos_map or {}).items():
+                try:
+                    if p is None:
+                        continue
+                    if not isinstance(p, (list, tuple)) or len(p) < 2:
+                        continue
+                    scene_units.append((str(nm), (int(p[0]), int(p[1]))))
+                except Exception:
+                    continue
+
+            inv = (snap.get("inventory") or {}).get(str(name), {}) or {}
+            wdefs = (snap.get("weapon_defs") or {}) or {}
+            # Build a deterministic list of (weapon_id, reach_steps) for all owned weapons in defs with count>0
+            weapons = []
+            for wid, cnt in inv.items():
+                try:
+                    if int(cnt) <= 0:
+                        continue
+                except Exception:
+                    continue
+                wid_str = str(wid)
+                if wid_str not in wdefs:
+                    continue
+                try:
+                    rsteps = int((wdefs[wid_str] or {}).get("reach_steps", 1))
+                except Exception:
+                    rsteps = 1
+                rsteps = max(1, rsteps)
+                weapons.append((wid_str, rsteps))
+            weapons.sort(key=lambda t: (t[1], t[0]))  # sort by reach then name for stability
+
+            def cheb(a, b):
+                return max(abs(int(a[0]) - int(b[0])), abs(int(a[1]) - int(b[1])))
+
+            lines = []
+            for wid, rsteps in weapons:
+                items = []
+                for nm, p in scene_units:
+                    try:
+                        d = cheb(me_xy, p)
+                    except Exception:
+                        continue
+                    if d <= int(rsteps):
+                        items.append((nm, int(d)))
+                if not items:
+                    # If nothing on scene is in reach, skip this weapon line entirely
+                    continue
+                items.sort(key=lambda t: (t[1], t[0]))
+                parts = [f"{nm}({_fmt_steps(d)})" for nm, d in items]
+                lines.append(f"可及目标（{wid}，触及 {_fmt_steps(rsteps)}）：" + ", ".join(parts))
+
+            if lines:
+                await ephemeral.memory.add(Msg("Host", "\n".join(lines), "assistant"))
+        except Exception:
+            # Silent best-effort; preview is advisory only
+            pass
         out = await ephemeral(None)
         try:
             raw_text = _safe_text(out)
@@ -2100,6 +2179,21 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
                     _STATE.last_snapshot = world.snapshot()
                 except Exception:
                     _STATE.last_snapshot = {}
+            # Clean dev context logs at session start (mirror run_story/run_events overwrite)
+            try:
+                logs_dir = root / "logs"
+                if logs_dir.exists():
+                    for _p in logs_dir.glob("*_context_dev.log"):
+                        try:
+                            _p.unlink()  # remove; writer will recreate with append
+                        except Exception:
+                            try:
+                                _p.open("w", encoding="utf-8").close()  # fallback: truncate
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
             await run_demo(
                 emit=emit,
                 build_agent=build_agent,

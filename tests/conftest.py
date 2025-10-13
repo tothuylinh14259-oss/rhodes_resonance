@@ -19,7 +19,6 @@ def reset_world_state():
     WORLD.objective_positions.clear()
     WORLD.hidden_enemies.clear()
     WORLD.characters.clear()
-    WORLD.range_bands.clear()
     WORLD.cover.clear()
     WORLD.conditions.clear()
     WORLD.triggers.clear()

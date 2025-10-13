@@ -84,8 +84,6 @@ class World:
     turn_state: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # default walking speeds stored as grid steps
     speeds: Dict[str, int] = field(default_factory=dict)
-    # range bands between pairs (engaged/near/far/long)
-    range_bands: Dict[Tuple[str, str], str] = field(default_factory=dict)
     # simple cover levels per character
     cover: Dict[str, str] = field(default_factory=dict)
     # conditions per character (hidden/prone/grappled/restrained/readying/...)
@@ -145,7 +143,6 @@ class World:
                 "initiative": list(self.initiative_order),
                 "initiative_scores": dict(self.initiative_scores),
                 "turn_state": {k: dict(v) for k, v in self.turn_state.items()},
-                "range_bands": {f"{a}&{b}": v for (a, b), v in self.range_bands.items()},
             },
             # Weapon data
             "weapons": sorted(list(self.weapon_defs.keys())),
@@ -294,7 +291,6 @@ def set_position(name: str, x: int, y: int) -> ToolResponse:
     # block here for dying/dead, because forced movement is allowed. Voluntary
     # movement is gated in move_towards().
     WORLD.positions[str(name)] = (int(x), int(y))
-    refresh_range_bands_for(str(name))
     return ToolResponse(
         content=[TextBlock(type="text", text=f"设定 {name} 位置 -> ({int(x)}, {int(y)})")],
         metadata={"name": name, "position": [int(x), int(y)]},
@@ -388,7 +384,19 @@ def set_objective_position(name: str, x: int, y: int) -> ToolResponse:
 
 
 def _grid_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    """Manhattan distance in steps (4-way). Used by movement logic.
+
+    Keep this for movement semantics to remain 4-directional.
+    """
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _grid_distance_chebyshev(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    """Chebyshev distance in steps (8-way). Used for reach/guard/range-bands.
+
+    This matches common 5e-on-grid expectations where diagonals cost 1.
+    """
+    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
 
 def get_distance_steps_between(name_a: str, name_b: str) -> Optional[int]:
@@ -398,6 +406,18 @@ def get_distance_steps_between(name_a: str, name_b: str) -> Optional[int]:
     if pa is None or pb is None:
         return None
     return _grid_distance(pa, pb)
+
+
+def get_distance_steps_between_chebyshev(name_a: str, name_b: str) -> Optional[int]:
+    """Return Chebyshev steps between two actors; None if any position missing.
+
+    Used for reach checks, guard adjacency, and range-band classification.
+    """
+    pa = WORLD.positions.get(str(name_a))
+    pb = WORLD.positions.get(str(name_b))
+    if pa is None or pb is None:
+        return None
+    return _grid_distance_chebyshev(pa, pb)
 
 
 # Removed meter-based distance helper; use steps only (get_distance_steps_between).
@@ -430,7 +450,7 @@ def _resolve_guard_interception(attacker: str, defender: str, reach_steps: int) 
         if not _is_alive(g):
             continue
         # adjacency to protectee
-        d_gp = get_distance_steps_between(g, protectee)
+        d_gp = get_distance_steps_between_chebyshev(g, protectee)
         if d_gp is None or d_gp > 1:
             continue
         # reaction available
@@ -438,7 +458,7 @@ def _resolve_guard_interception(attacker: str, defender: str, reach_steps: int) 
         if not st.get("reaction_available", True):
             continue
         # attacker must be within reach vs guardian as well
-        d_ag = get_distance_steps_between(attacker, g)
+        d_ag = get_distance_steps_between_chebyshev(attacker, g)
         if d_ag is None or d_ag > int(reach_steps):
             continue
         cand.append((int(d_ag), idx, g))
@@ -474,15 +494,7 @@ def _band_for_steps(steps: int) -> str:
     return "long"
 
 
-def refresh_range_bands_for(name: str) -> None:
-    pos = WORLD.positions.get(str(name))
-    if pos is None:
-        return
-    for other, o_pos in WORLD.positions.items():
-        if other == str(name) or o_pos is None:
-            continue
-        band = _band_for_steps(_grid_distance(pos, o_pos))
-        WORLD.range_bands[_pair_key(name, other)] = band
+"""Range bands removed: engaged/near/far/long classification no longer maintained."""
 
 
 def get_move_speed_steps(name: str) -> int:
@@ -544,7 +556,6 @@ def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse
             y += 1 if ty > y else -1
         moved += 1
     WORLD.positions[str(name)] = (x, y)
-    refresh_range_bands_for(str(name))
     remaining = _grid_distance((x, y), (tx, ty))
     reached = (x, y) == (tx, ty)
     text = (
@@ -714,7 +725,6 @@ def end_combat():
     WORLD.initiative_order.clear()
     WORLD.initiative_scores.clear()
     WORLD.turn_state.clear()
-    WORLD.range_bands.clear()
     WORLD.cover.clear()
     WORLD.conditions.clear()
     WORLD.triggers.clear()
@@ -894,61 +904,7 @@ def consume_movement(name: str, distance_steps: float) -> ToolResponse:
 ## auto_move_into_reach removed: attacks no longer auto-move into reach.
 
 
-# ---- Range bands & cover/conditions ----
-BANDS = ["engaged", "near", "far", "long"]
-
-
-def set_range_band(a: str, b: str, band: str):
-    band = str(band)
-    if band not in BANDS:
-        return ToolResponse(content=[TextBlock(type="text", text=f"未知距离带 {band}")], metadata={"ok": False})
-    k = _pair_key(a, b)
-    WORLD.range_bands[k] = band
-    return ToolResponse(content=[TextBlock(type="text", text=f"距离：{k[0]}↔{k[1]} = {band}")], metadata={"ok": True, "pair": list(k), "band": band})
-
-
-def get_range_band(a: str, b: str) -> str:
-    return WORLD.range_bands.get(_pair_key(a, b), "near")
-
-
-def _band_steps(fr: str, to: str) -> int:
-    try:
-        i1 = BANDS.index(fr); i2 = BANDS.index(to)
-        return abs(i1 - i2)
-    except Exception:
-        return 0
-
-
-def _band_cost(fr: str, to: str) -> int:
-    # engaged<->near:5; near<->far:30; far<->long:60; accumulate steps
-    if fr == to:
-        return 0
-    idx1 = BANDS.index(fr); idx2 = BANDS.index(to)
-    lo, hi = sorted([idx1, idx2])
-    cost = 0
-    for i in range(lo, hi):
-        a = BANDS[i]; b = BANDS[i + 1]
-        if (a, b) == ("engaged", "near"):
-            cost += 1
-        elif (a, b) == ("near", "far"):
-            cost += 6
-        else:
-            cost += 12
-    return cost
-
-
-def move_to_band(actor: str, target: str, band: str):
-    cur = get_range_band(actor, target)
-    need = _band_cost(cur, band)
-    was_engaged = cur == "engaged" and band != "engaged"
-    res = consume_movement(actor, need)
-    ok = bool((res.metadata or {}).get("ok", True))
-    if ok:
-        set_range_band(actor, target, band)
-        # leaving engagement may provoke OA (queued here; KP消费)
-        if was_engaged and not (WORLD.turn_state.get(actor, {}).get("disengage")):
-            queue_trigger("opportunity_attack", {"attacker": target, "provoker": actor})
-    return ToolResponse(content=(res.content or []), metadata={"ok": ok, "cost": need, "from": cur, "to": band})
+"""Range band system removed: engaged/near/far/long not maintained nor exposed."""
 
 
 def set_cover(name: str, level: str):
@@ -1110,25 +1066,7 @@ def act_grapple(attacker: str, defender: str) -> ToolResponse:
     return ToolResponse(content=out, metadata={"ok": winner == attacker})
 
 
-def act_shove(attacker: str, defender: str, mode: str = "prone") -> ToolResponse:
-    res = contest(attacker, "athletics", defender, "acrobatics")
-    winner = res.metadata.get("winner") if res.metadata else None
-    out = list(res.content or [])
-    if winner == attacker:
-        if mode == "prone":
-            tr = apply_condition(defender, "prone")
-            out.extend(tr.content or [])
-        else:
-            # push: move defender one band away if known vs attacker
-            cur = get_range_band(attacker, defender)
-            try:
-                idx = BANDS.index(cur)
-                target_band = BANDS[min(idx+1, len(BANDS)-1)]
-            except Exception:
-                target_band = "near"
-            mv = move_to_band(defender, attacker, target_band)
-            out.extend(mv.content or [])
-    return ToolResponse(content=out, metadata={"ok": winner == attacker})
+"""act_shove removed along with range band system."""
 
 
 def act_ready(name: str, trigger: str, reaction_action: Dict[str, Any]) -> ToolResponse:
@@ -1657,9 +1595,11 @@ def attack_roll_dnd(
     # Note: legacy path relies on character reach (deprecated). New flow should
     # use attack_with_weapon() which sources reach from weapon defs.
     reach_steps = get_reach_steps(attacker)
-    distance_before = get_distance_steps_between(attacker, defender)
-    distance_after = distance_before
+    # Pre-logs reserved for guard messages only; preview now handled by main layer
     pre_logs: List[TextBlock] = []
+    # Use Chebyshev distance for reach checks
+    distance_before = get_distance_steps_between_chebyshev(attacker, defender)
+    distance_after = distance_before
 
     # Distance gate: attack never auto-moves. If out of reach, fail early.
     if distance_before is not None and distance_before > reach_steps:
@@ -1811,6 +1751,7 @@ def attack_with_weapon(
 
     # Protection interception (may change defender)
     pre_logs: List[TextBlock] = []
+    # Preview handled by main; keep pre_logs for guard messages only
     guard_meta: Optional[Dict[str, Any]] = None
     new_defender, meta_guard, pre = _resolve_guard_interception(attacker, defender, reach_steps)
     if new_defender != defender:
@@ -1823,7 +1764,7 @@ def attack_with_weapon(
     # Post-interception snapshot for defender stat and distance gate
     dfd = WORLD.characters.get(defender, {})
     ac = int(dfd.get("ac", 10))
-    distance_before = get_distance_steps_between(attacker, defender)
+    distance_before = get_distance_steps_between_chebyshev(attacker, defender)
     if distance_before is not None and distance_before > reach_steps:
         msg = TextBlock(type="text", text=f"距离不足：{attacker} 使用 {weapon} 攻击 {defender} 失败（距离 {_fmt_distance(distance_before)}，触及 {_fmt_distance(reach_steps)}）")
         return ToolResponse(
