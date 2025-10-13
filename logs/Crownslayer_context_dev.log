@@ -1,0 +1,253 @@
+=== Round 1 | Actor: Crownslayer ===
+[Relation] Doctor:-70（死敌）；Amiya:-70（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:-10（敌对）；Faust:-10（敌对）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-20（敌对）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(0, 0); Amiya(0, 1); Mephisto(7, -1); Faust(12, 2); Texas(8, -3); Exusiai(7, 2); Chen(-1, 0); Hoshiguma(-5, -1); W(11, 3); Crownslayer(8, -3)
+角色：Doctor(HP 12/12); Amiya(HP 10/10); Mephisto(HP 11/11); Faust(HP 12/12); Texas(HP 12/12); Exusiai(HP 4/11); Chen(HP 14/14); Hoshiguma(HP 16/16); W(HP 11/11); Crownslayer(HP 12/12)
+[Recent Messages]
+- Chen: 陈眯眼扫过梁影，指尖在长刀刀镡上轻敲：“浮士德，你吵得我耳鸣。”  
+她压低重心，一步切向掩体——先把博士纳入守备圈，再清场。  
+
+)
+- Chen[tool]: 守护：Chen -> Doctor
+- Hoshiguma: 星熊把巨盾往肩上一扛，目光扫过前方混乱的坐标，低声道：“……啧，阵型散了。先稳住阵脚，别让博士和阿米娅被绕后。”
+
+)
+- Hoshiguma[tool]: 守护：Hoshiguma -> Doctor
+- W: “哎呀，枪声像鞭炮一样热闹……”  
+我舔了舔指尖的火药，笑得眯起眼，“那就再添一把火。”
+
+)
+
+“别眨眼——艺术，就是爆炸。”
+- W[tool]: 攻击：W 使用 w_explosives -> Exusiai d20+6 vs AC 13 -> 命中
+伤害：1d8+4 -> 7
+Exusiai 受到 7 伤害，HP 4/11
+
+=== Round 2 | Actor: Crownslayer ===
+[Relation] Doctor:-70（死敌）；Amiya:-70（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:-10（敌对）；Faust:-10（敌对）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-20（敌对）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(0, 0); Amiya(0, 1); Mephisto(7, -1); Faust(12, 2); Texas(8, -3); Exusiai(7, 2); Chen(0, 1); Hoshiguma(1, -1); W(11, 3); Crownslayer(8, -3)
+角色：Doctor(HP 12/12); Amiya(HP 10/10); Mephisto(HP 11/11); Faust(HP 12/12); Texas(HP 12/12); Exusiai(HP 0/11)（死亡）; Chen(HP 14/14); Hoshiguma(HP 16/16); W(HP 11/11); Crownslayer(HP 4/12)
+[Recent Messages]
+- Chen: 陈目光一凛，扫过倒地不起的蓝羽，指节在刀柄上收紧。  
+“龙门办案，优先救人，再清场。”  
+
+)
+- Chen[tool]: Chen 向 (0, 1) 移动 2步，现位于 (0, 1)。 已抵达目标。
+- Hoshiguma: 星熊低吼一声，把巨盾往身前一横，灰尘被震得四散。  
+“……别慌，我还没倒，就不会让任何人再受伤。”  
+
+她扫了眼濒死的蓝羽，又看看远处蠢蠢欲动的整合运动，心里迅速权衡：  
+- 蓝羽（Exusiai）HP 0/11，濒死2，再挨一次就彻底断气；  
+- 自己与蓝羽相距 15 步，必须全速冲过去才能贴身护住； ...
+- Hoshiguma[tool]: Hoshiguma 向 (7, 2) 移动 6步，现位于 (1, -1)。 距目标还差 9步。
+- W: W舔了舔嘴角，指尖在引爆器上轻轻摩挲，银白短发下的红眼角闪着兴奋的光。
+
+“哎呀，蓝羽小天使要熄火了？……艺术，可不能错过谢幕的烟火。”
+
+)
+- W[tool]: 攻击：W 使用 w_explosives -> Exusiai d20+6 vs AC 13 -> 命中
+伤害：1d8+4 -> 10
+Exusiai 在濒死状态下再次受到 10 伤害，立即死亡。
+Exusiai 死亡。
+
+=== Round 3 | Actor: Crownslayer ===
+[Relation] Doctor:-70（死敌）；Amiya:-70（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:-10（敌对）；Faust:-10（敌对）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-20（敌对）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(0, 0); Amiya(6, 1); Mephisto(6, -1); Faust(12, 2); Texas(8, -3); Exusiai(7, 2); Chen(6, 1); Hoshiguma(1, -1); W(11, 3); Crownslayer(8, -3)
+角色：Doctor(HP 12/12); Amiya(HP 10/10); Mephisto(HP 11/11); Faust(HP 12/12); Texas(HP 12/12); Exusiai(HP 0/11)（死亡）; Chen(HP 14/14); Hoshiguma(HP 16/16); W(HP 11/11); Crownslayer(HP 4/12)
+[Recent Messages]
+- Chen: 陈冷冽地扫视前方，右手按在刀柄上，低声道：“梅菲斯特，你的‘终章’到此为止。”
+
+目标锁定，别轻举妄动。  
+)
+- Chen[tool]: Chen 向 (6, -1) 移动 6步，现位于 (6, 1)。 距目标还差 2步。
+- Hoshiguma: 星熊抬眼扫过战局，巨盾微沉，低声道：“……Exusiai倒下，阵线右翼空出来了。得先稳住中盘，别让梅菲斯特再靠近博士。”
+
+)
+- Hoshiguma[tool]: 守护：Hoshiguma -> Doctor
+- W: W眯起眼，指尖轻敲着引爆器，嘴角勾起一抹意味不明的笑：“哎呀，又死了一只羽雀……真是，艺术就该这样，一声轰响，一地羽毛。”
+
+她扫视战场，目光锁定在Faust身上——那家伙离她最近，2步，正是爆炸的最佳画布。W舔了舔嘴角，低声呢喃：“别眨眼。”
+
+)
+- W[tool]: 攻击：W 使用 w_explosives -> Faust d20+6 vs AC 14 -> 未中
+
+=== Round 4 | Actor: Crownslayer ===
+[Relation] Doctor:-70（死敌）；Amiya:-70（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:-10（敌对）；Faust:-10（敌对）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-20（敌对）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(1, 0); Amiya(6, 1); Mephisto(6, -1); Faust(12, 2); Texas(8, -3); Exusiai(7, 2); Chen(6, -1); Hoshiguma(1, -1); W(6, 3); Crownslayer(6, -3)
+角色：Doctor(HP 12/12); Amiya(HP 5/10); Mephisto(HP 11/11); Faust(HP 12/12); Texas(HP 12/12); Exusiai(HP 0/11)（死亡）; Chen(HP 14/14); Hoshiguma(HP 16/16); W(HP 11/11); Crownslayer(HP 4/12)
+[Recent Messages]
+- Chen: 陈握紧刀柄，眼神冷冽：“龙门办案，目标在眼，先控场再收网。”  
+她侧头低喝：“阿米娅退后，我来断后。”
+
+)
+- Chen[tool]: Chen 向 (6, -1) 移动 2步，现位于 (6, -1)。 已抵达目标。
+- Hoshiguma: 星熊沉声：“别慌，我挡前面。”  
+她抬眼一扫，见阿米娅血线危险，当即迈步贴身护卫。  
+
+)  
+
+星熊扛着巨盾，一步踏到阿米娅侧前方，厚重护甲发出沉闷碰撞声。
+- Hoshiguma[tool]: 守护：Hoshiguma -> Amiya
+- W: W懒洋洋地抬眼，嘴角勾起一抹恶劣的笑：“哎呀，一只羽雀倒下了，羽毛都烧焦了呢……艺术，就是爆炸。”
+
+她指尖轻弹引信，目光扫过场上残血与混乱，锁定Crownslayer——那家伙只剩一口气，正好送她最后一程。
+
+)
+- W[tool]: W 向 (6, -3) 移动 5步，现位于 (6, 3)。 距目标还差 6步。
+
+=== Round 5 | Actor: Crownslayer ===
+[Relation] Doctor:-70（死敌）；Amiya:-70（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:-10（敌对）；Faust:-10（敌对）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-20（敌对）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(1, 0); Amiya(6, -1); Mephisto(6, -1); Faust(12, 2); Texas(6, -3); Exusiai(7, 2); Chen(6, -1); Hoshiguma(1, -1); W(6, 3); Crownslayer(6, -1)
+角色：Doctor(HP 12/12); Amiya(HP 5/10); Mephisto(HP 0/11)（濒死3）; Faust(HP 12/12); Texas(HP 12/12); Exusiai(HP 0/11)（死亡）; Chen(HP 14/14); Hoshiguma(HP 16/16); W(HP 11/11); Crownslayer(HP 4/12)
+[Recent Messages]
+- Chen: 陈目光一凛，长刀微抬：“龙门近卫局，收网时间——梅菲斯特，你的演出到此为止。”  
+)
+- Chen[tool]: 攻击：Chen 使用 chen_blade -> Mephisto d20+6 vs AC 12 -> 命中
+伤害：1d8+4 -> 12
+Mephisto 受到 12 伤害，HP 0/11（倒地）
+Mephisto 进入濒死（3回合后死亡；再次受伤即死）
+- Hoshiguma: 星熊把巨盾往身前一横，灰尘簌簌震落。  
+“别慌，医生，我挡在你前面。”  
+
+)
+- Hoshiguma[tool]: 守护：Hoshiguma -> Doctor
+- W: W舔了舔嘴角，指尖在引爆器上轻轻摩挲，眼神扫过倒下的能天使与濒死的梅菲斯特，笑得意味不明：
+
+“哎呀，又一个倒下了……艺术，果然需要更多颜料。”
+
+)
+
+（攻击后若Amiya未倒地，W将考虑下一步移动或继续施压）
+- W[tool]: 攻击：W 使用 w_explosives -> Amiya d20+6 vs AC 12 -> 未中
+
+=== Round 6 | Actor: Crownslayer ===
+[Relation] Doctor:-70（死敌）；Amiya:-70（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:-10（敌对）；Faust:-10（敌对）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-20（敌对）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(1, 0); Amiya(6, -1); Mephisto(6, -1); Faust(12, 2); Texas(6, -1); Exusiai(7, 2); Chen(6, -1); Hoshiguma(1, -1); W(6, 3); Crownslayer(1, 0)
+角色：Doctor(HP 12/12); Amiya(HP 0/10)（濒死3）; Mephisto(HP 0/11)（死亡）; Faust(HP 12/12); Texas(HP 12/12); Exusiai(HP 0/11)（死亡）; Chen(HP 9/14); Hoshiguma(HP 16/16); W(HP 11/11); Crownslayer(HP 4/12)
+[Recent Messages]
+- Chen: 陈目光一凛，刀柄在掌心发出轻响。  
+“龙门近卫局，收网阶段——倒下的也要守住，站着的全部盯死。”
+
+她一步横到阿米娅身前，披风扬起，将濒死的卡特斯少女完全护在身后。  
+)
+- Chen[tool]: 守护：Chen -> Amiya
+- Hoshiguma: 星熊压低重心，巨盾横栏，目光扫过倒地的阿米娅与死去的梅菲斯特，眉头紧锁。
+
+“……别慌，还活着的，一个都别给我再掉。”
+
+她一步踏前，挡在Doctor与Crownslayer之间，巨盾斜立，准备随时拦截任何胆敢靠近的敌人。
+
+)
+- Hoshiguma[tool]: 守护：Hoshiguma -> Doctor
+- W: W舔了舔嘴角，指尖在引爆器上轻敲，笑得像只刚偷到蛋的狐狸。  
+“哎呀……倒了一地的小兔子，还剩几只大猫能蹦跶？别眨眼——艺术，就要开场了。”
+
+)
+- W[tool]: 攻击：W 使用 w_explosives -> Chen d20+6 vs AC 16 -> 命中
+伤害：1d8+4 -> 5
+Chen 受到 5 伤害，HP 9/14
+
+=== Round 7 | Actor: Crownslayer ===
+[Relation] Doctor:-70（死敌）；Amiya:-70（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:-10（敌对）；Faust:-10（敌对）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-20（敌对）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(1, 0); Amiya(6, -1); Mephisto(6, -1); Faust(12, 2); Texas(6, -1); Exusiai(7, 2); Chen(6, -1); Hoshiguma(1, -1); W(6, 3); Crownslayer(1, 0)
+角色：Doctor(HP 12/12); Amiya(HP 0/10)（濒死2）; Mephisto(HP 0/11)（死亡）; Faust(HP 12/12); Texas(HP 12/12); Exusiai(HP 0/11)（死亡）; Chen(HP 0/14)（濒死3）; Hoshiguma(HP 16/16); W(HP 11/11); Crownslayer(HP 0/12)（濒死3）
+[Recent Messages]
+- Chen: 陈压低刀鞘，目光从倒下的阿米娅扫到断梁上的浮士德，眉心一跳。  
+龙门办案，不等人。优先压制狙击手，再保博士。  
+
+)
+- Chen[tool]: 距离不足：Chen 使用 chen_blade 攻击 Faust 失败（距离 9步，触及 1步）
+- Hoshiguma: 星熊把巨盾往身前一横，目光从倒下的阿米娅扫到梁上的浮士德，牙关咬得咯吱响。  
+“……狙击还没停？先护住博士，再收拾那弩手。”
+
+)
+- Hoshiguma[tool]: 守护：Hoshiguma -> Doctor
+- W: W舔了舔嘴角，眼神像猫看老鼠：“哎呀，倒了一片，剩下的……也一起炸成烟花吧。”
+
+)
+- W[tool]: Chen 保护 Amiya，消耗反应，挡在其前，成为被攻击目标。
+攻击：W 使用 w_explosives -> Chen d20+6 vs AC 16 -> 命中
+伤害：1d8+4 -> 11
+Chen 受到 11 伤害，HP 0/14（倒地）
+Chen 进入濒死（3回合后死亡；再次受伤即死）
+
+=== Round 8 | Actor: Crownslayer ===
+[Relation] Doctor:-70（死敌）；Amiya:-70（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:-10（敌对）；Faust:-10（敌对）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-20（敌对）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(1, 0); Amiya(6, -1); Mephisto(6, -1); Faust(12, 2); Texas(12, -1); Exusiai(7, 2); Chen(6, -1); Hoshiguma(1, -1); W(6, 3); Crownslayer(1, 0)
+角色：Doctor(HP 12/12); Amiya(HP 0/10)（濒死1）; Mephisto(HP 0/11)（死亡）; Faust(HP 12/12); Texas(HP 12/12); Exusiai(HP 0/11)（死亡）; Chen(HP 0/14)（濒死2）; Hoshiguma(HP 16/16); W(HP 11/11); Crownslayer(HP 0/12)（濒死2）
+[Recent Messages]
+- Texas[tool]: Texas 向 (12, 2) 移动 6步，现位于 (12, -1)。 距目标还差 3步。
+- Chen: 陈半跪在地，血迹顺着披风边缘滴落，指节因过度用力而发白。  
+她抬眼，声音低哑却带着不容置疑的命令：“……龙门近卫局……还没死绝……谁还能动，立刻……保护Doctor！”
+
+)
+- Hoshiguma: 星熊抬盾一震，目光扫过地上奄奄一息的陈长官和阿米娅，低声咬牙：“一个都不能再倒下。”  
+她侧步挡在Doctor与Crownslayer之间，沉声：“博士，贴紧我背后，别露头。”
+
+)
+- Hoshiguma[tool]: 守护：Hoshiguma -> Doctor
+- W: W舔了舔嘴角，指尖在雷管上摩挲出细碎火花，笑得像猫看老鼠：  
+“哎呀，舞台打扫得真干净……只剩几个还能喘气的，正好让我把终幕炸得响亮。”
+
+)
+- W[tool]: 距离不足：W 使用 w_explosives 攻击 Doctor 失败（距离 8步，触及 6步）
+
+=== Round 9 | Actor: Crownslayer ===
+[Relation] Doctor:-70（死敌）；Amiya:-70（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:-10（敌对）；Faust:-10（敌对）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-20（敌对）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(1, 0); Amiya(6, -1); Mephisto(6, -1); Faust(12, 2); Texas(11, -1); Exusiai(7, 2); Chen(6, -1); Hoshiguma(1, -1); W(6, 3); Crownslayer(1, 0)
+角色：Doctor(HP 12/12); Amiya(HP 0/10)（死亡）; Mephisto(HP 0/11)（死亡）; Faust(HP 12/12); Texas(HP 12/12); Exusiai(HP 0/11)（死亡）; Chen(HP 0/14)（死亡）; Hoshiguma(HP 16/16); W(HP 11/11); Crownslayer(HP 0/12)（濒死1）
+[Recent Messages]
+- Chen: 陈半跪在血泊里，指节因紧握刀柄而发白，眼前一阵阵发黑。她咬紧牙关，声音低哑却带着不容置疑的命令：
+
+“龙门……还没输……Hoshiguma，护住博士！”
+
+)
+- Chen[tool]: 守护：Hoshiguma -> Doctor
+- Hoshiguma: 星熊握紧巨盾，绿发下的目光一沉，低声道：“……博士，别动，我挡前面。”
+
+)
+- Hoshiguma[tool]: 守护：Hoshiguma -> Doctor
+- W: W嘴角勾起一抹讥笑，指尖轻抚引信：  
+“哎呀，只剩一堆断脊的猫狗……还排着队等烟花呢？”
+
+)
+- W[tool]: 攻击：W 使用 w_explosives -> Chen d20+6 vs AC 16 -> 命中
+伤害：1d8+4 -> 8
+Chen 在濒死状态下再次受到 8 伤害，立即死亡。
+Chen 死亡。
+

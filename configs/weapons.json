@@ -47,5 +47,47 @@
     "ability": "STR",
     "damage_expr": "1d8+STR",
     "proficient_default": true
+  },
+  "texas_blades": {
+    "label": "双短刀",
+    "reach_steps": 1,
+    "ability": "DEX",
+    "damage_expr": "1d6+DEX",
+    "proficient_default": true
+  },
+  "exusiai_pistols": {
+    "label": "圣堂双枪",
+    "reach_steps": 8,
+    "ability": "DEX",
+    "damage_expr": "1d6+DEX",
+    "proficient_default": true
+  },
+  "w_explosives": {
+    "label": "爆破装置",
+    "reach_steps": 6,
+    "ability": "DEX",
+    "damage_expr": "1d8+DEX",
+    "proficient_default": true
+  },
+  "dual_daggers": {
+    "label": "双短刃",
+    "reach_steps": 1,
+    "ability": "DEX",
+    "damage_expr": "1d6+DEX",
+    "proficient_default": true
+  },
+  "chen_blade": {
+    "label": "长刀·赤霄",
+    "reach_steps": 1,
+    "ability": "DEX",
+    "damage_expr": "1d8+DEX",
+    "proficient_default": true
+  },
+  "hoshiguma_ogre_club": {
+    "label": "鬼角金棒",
+    "reach_steps": 1,
+    "ability": "STR",
+    "damage_expr": "1d8+STR",
+    "proficient_default": true
   }
 }
