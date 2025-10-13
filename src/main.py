@@ -401,17 +401,19 @@ DEFAULT_PROMPT_RULES = (
     "- 先用中文说1-2句对白/想法/微动作，符合人设。\n"
     "- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{\"key\": \"value\"}}))，不要再输出意图 JSON。\n"
     "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
+    "- 作战规则（硬性）：只能对“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先用 advance_position 进入触及范围后再发动攻击。\n"
+    "- 有效行动要求：当存在敌对关系（关系<=-10）时，每回合至少进行一次有效行动（advance_position/perform_attack/transfer_item/set_protection/clear_protection）。对超出触及范围的 perform_attack 视为无效行动。\n"
     "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
-    "- 若必须违背既定关系行事，若要违背，请在对白中说明充分理由，否则拒绝执行。\n"
+    "- 若必须违背既定关系行事，请在对白中说明充分理由，否则拒绝执行。\n"
     "- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为'未提供'。\n"
-    "- 当存在敌对关系（关系<=-10）时，每回合至少调用一次工具；否则视为违规。\n"
     '- 不要输出任何"系统提示"或括号内的系统旁白；只输出对白与 CALL_TOOL。\n'
     "- 参与者名称（仅可用）：{allowed_names}\n"
 )
 
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具：\n"
-    "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；必须提供行动理由（reason）。攻击不会自动靠近，若距离不足请先调用 advance_position()。\n"
+    "- 行动清单：先查看 Host 给出的“可及目标”和距离；若目标不在“可及目标”，必须先调用 advance_position 进入触及（步数≈距离−武器触及，取不小于0；target=对方坐标）；进入触及后再 perform_attack。\n"
+    "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；仅能对“可及目标”使用。攻击不会自动靠近；若距离不足必须先调用 advance_position，否则视为违规。\n"
     "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
     "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
     "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
@@ -1324,20 +1326,9 @@ async def run_demo(
         )
         return agent
 
-    async def _npc_ephemeral_say(name: str, private_section: Optional[str], hub: MsgHub, recap_msg: Optional[Msg] = None) -> None:
-        ephemeral = _make_ephemeral_agent(name, private_section)
-        # Seed this ephemeral agent with this turn's shared context in order (1 环境信息, 2 场景回顾)
-        try:
-            env_text = _world_summary_text(world.snapshot())
-            await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
-        except Exception:
-            pass
-        try:
-            if recap_msg is not None:
-                await ephemeral.memory.add(recap_msg)
-        except Exception:
-            pass
-        # Inject targets preview (Chebyshev reach per held weapon; on-scene units only)
+    # Helper: build in-reach target preview lines for a given actor (NPC-only tip)
+    def _reach_preview_lines(name: str) -> List[str]:
+        lines: List[str] = []
         try:
             def _fmt_steps(n: int) -> str:
                 try:
@@ -1350,30 +1341,54 @@ async def run_demo(
 
             snap = world.snapshot() or {}
             pos_map = (snap.get("positions") or {})
-            # Positions are stored as lists [x,y]; convert to tuples where needed
             if not isinstance(pos_map, dict) or str(name) not in pos_map:
-                raise RuntimeError("no_position")
+                return lines  # no position -> no preview
             me_pos = pos_map[str(name)]
             if not isinstance(me_pos, (list, tuple)) or len(me_pos) < 2:
-                raise RuntimeError("bad_position")
+                return lines
             me_xy = (int(me_pos[0]), int(me_pos[1]))
 
-            # All on-scene units: every entry with a position
-            scene_units = []
+            # Units on scene (with positions)
+            scene_units: List[Tuple[str, Tuple[int, int]]] = []
             for nm, p in (pos_map or {}).items():
                 try:
-                    if p is None:
-                        continue
                     if not isinstance(p, (list, tuple)) or len(p) < 2:
                         continue
                     scene_units.append((str(nm), (int(p[0]), int(p[1]))))
                 except Exception:
                     continue
 
+            # Manhattan (L1) distance to align with engine reach rules
+            def manhattan(a, b):
+                return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
+
+            # 1) Adjacency (≤1 step) for guard/protection related actions
+            try:
+                adj = []
+                for nm, p in scene_units:
+                    if nm == str(name):
+                        continue
+                    d = manhattan(me_xy, p)
+                    if d <= 1:
+                        adj.append((nm, int(d)))
+                if adj:
+                    adj.sort(key=lambda t: (t[1], t[0]))
+                    # reaction availability from runtime to hint guard interception readiness
+                    try:
+                        ts = (world.runtime().get("turn_state") or {}).get(str(name), {}) or {}
+                        react_avail = bool(ts.get("reaction_available", True))
+                    except Exception:
+                        react_avail = True
+                    tail = "（反应：可用）" if react_avail else "（反应：已用）"
+                    parts = [f"{nm}({_fmt_steps(d)})" for nm, d in adj]
+                    lines.append("相邻（≤1步）" + tail + "：" + ", ".join(parts))
+            except Exception:
+                pass
+
+            # 2) Per-weapon in-reach preview
             inv = (snap.get("inventory") or {}).get(str(name), {}) or {}
             wdefs = (snap.get("weapon_defs") or {}) or {}
-            # Build a deterministic list of (weapon_id, reach_steps) for all owned weapons in defs with count>0
-            weapons = []
+            weapons = []  # (weapon_id, reach_steps)
             for wid, cnt in inv.items():
                 try:
                     if int(cnt) <= 0:
@@ -1389,29 +1404,49 @@ async def run_demo(
                     rsteps = 1
                 rsteps = max(1, rsteps)
                 weapons.append((wid_str, rsteps))
-            weapons.sort(key=lambda t: (t[1], t[0]))  # sort by reach then name for stability
+            weapons.sort(key=lambda t: (t[1], t[0]))
 
-            def cheb(a, b):
-                return max(abs(int(a[0]) - int(b[0])), abs(int(a[1]) - int(b[1])))
-
-            lines = []
             for wid, rsteps in weapons:
                 items = []
                 for nm, p in scene_units:
                     try:
-                        d = cheb(me_xy, p)
+                        d = manhattan(me_xy, p)
                     except Exception:
+                        continue
+                    if nm == str(name):
                         continue
                     if d <= int(rsteps):
                         items.append((nm, int(d)))
                 if not items:
-                    # If nothing on scene is in reach, skip this weapon line entirely
                     continue
                 items.sort(key=lambda t: (t[1], t[0]))
                 parts = [f"{nm}({_fmt_steps(d)})" for nm, d in items]
                 lines.append(f"可及目标（{wid}，触及 {_fmt_steps(rsteps)}）：" + ", ".join(parts))
+        except Exception:
+            # best-effort
+            return []
+        return lines
 
+    async def _npc_ephemeral_say(name: str, private_section: Optional[str], hub: MsgHub, recap_msg: Optional[Msg] = None) -> None:
+        ephemeral = _make_ephemeral_agent(name, private_section)
+        # Seed this ephemeral agent with this turn's shared context in order (1 环境信息, 2 场景回顾)
+        try:
+            env_text = _world_summary_text(world.snapshot())
+            await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
+        except Exception:
+            pass
+        try:
+            if recap_msg is not None:
+                await ephemeral.memory.add(recap_msg)
+        except Exception:
+            pass
+        # Inject targets preview (Manhattan reach & adjacency; NPC private only)
+        try:
+            lines = _reach_preview_lines(name)
             if lines:
+                # Hard rule up front to prevent out-of-reach attacks.
+                rule_line = "作战规则：只能对“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。"
+                lines = [rule_line] + lines
                 await ephemeral.memory.add(Msg("Host", "\n".join(lines), "assistant"))
         except Exception:
             # Silent best-effort; preview is advisory only
@@ -1702,6 +1737,9 @@ async def run_demo(
                     lines_priv.append(
                         f"- 动作：{'可用' if not action_used else '已用'}；附赠动作：{'可用' if not bonus_used else '已用'}；反应：{'可用' if reaction_avail else '已用'}"
                     )
+                    # Hard combat rules to avoid invalid attacks
+                    lines_priv.append("作战规则（硬性）：只能对“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先用 advance_position 进入触及后再发动攻击。")
+                    lines_priv.append("有效行动要求：存在敌对关系时，每回合至少进行一次有效行动；对超出触及范围的 perform_attack 视为无效。")
                     # 濒死状态提示
                     dt = ch.get("dying_turns_left", None)
                     hpv = ch.get("hp", None)
