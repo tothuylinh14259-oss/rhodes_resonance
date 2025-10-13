@@ -391,12 +391,7 @@ def _grid_distance(a: Tuple[int, int], b: Tuple[int, int]) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
-def _grid_distance_chebyshev(a: Tuple[int, int], b: Tuple[int, int]) -> int:
-    """Chebyshev distance in steps (8-way). Used for reach/guard/range-bands.
-
-    This matches common 5e-on-grid expectations where diagonals cost 1.
-    """
-    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+## L∞-style (diagonal=1) distance helpers removed: project enforces Manhattan (L1) only.
 
 
 def get_distance_steps_between(name_a: str, name_b: str) -> Optional[int]:
@@ -408,16 +403,7 @@ def get_distance_steps_between(name_a: str, name_b: str) -> Optional[int]:
     return _grid_distance(pa, pb)
 
 
-def get_distance_steps_between_chebyshev(name_a: str, name_b: str) -> Optional[int]:
-    """Return Chebyshev steps between two actors; None if any position missing.
-
-    Used for reach checks, guard adjacency, and range-band classification.
-    """
-    pa = WORLD.positions.get(str(name_a))
-    pb = WORLD.positions.get(str(name_b))
-    if pa is None or pb is None:
-        return None
-    return _grid_distance_chebyshev(pa, pb)
+## Legacy L∞ helper removed: use get_distance_steps_between (Manhattan) instead.
 
 
 # Removed meter-based distance helper; use steps only (get_distance_steps_between).
@@ -449,16 +435,16 @@ def _resolve_guard_interception(attacker: str, defender: str, reach_steps: int) 
         # must be alive
         if not _is_alive(g):
             continue
-        # adjacency to protectee
-        d_gp = get_distance_steps_between_chebyshev(g, protectee)
+        # adjacency to protectee (Manhattan distance)
+        d_gp = get_distance_steps_between(g, protectee)
         if d_gp is None or d_gp > 1:
             continue
         # reaction available
         st = WORLD.turn_state.get(g, {})
         if not st.get("reaction_available", True):
             continue
-        # attacker must be within reach vs guardian as well
-        d_ag = get_distance_steps_between_chebyshev(attacker, g)
+        # attacker must be within reach vs guardian as well (Manhattan)
+        d_ag = get_distance_steps_between(attacker, g)
         if d_ag is None or d_ag > int(reach_steps):
             continue
         cand.append((int(d_ag), idx, g))
@@ -1597,8 +1583,8 @@ def attack_roll_dnd(
     reach_steps = get_reach_steps(attacker)
     # Pre-logs reserved for guard messages only; preview now handled by main layer
     pre_logs: List[TextBlock] = []
-    # Use Chebyshev distance for reach checks
-    distance_before = get_distance_steps_between_chebyshev(attacker, defender)
+    # Use Manhattan distance for reach checks
+    distance_before = get_distance_steps_between(attacker, defender)
     distance_after = distance_before
 
     # Distance gate: attack never auto-moves. If out of reach, fail early.
@@ -1764,7 +1750,7 @@ def attack_with_weapon(
     # Post-interception snapshot for defender stat and distance gate
     dfd = WORLD.characters.get(defender, {})
     ac = int(dfd.get("ac", 10))
-    distance_before = get_distance_steps_between_chebyshev(attacker, defender)
+    distance_before = get_distance_steps_between(attacker, defender)
     if distance_before is not None and distance_before > reach_steps:
         msg = TextBlock(type="text", text=f"距离不足：{attacker} 使用 {weapon} 攻击 {defender} 失败（距离 {_fmt_distance(distance_before)}，触及 {_fmt_distance(reach_steps)}）")
         return ToolResponse(
