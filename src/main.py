@@ -18,11 +18,14 @@ from pathlib import Path
 from agentscope.agent import AgentBase, ReActAgent  # type: ignore
 from agentscope.message import Msg  # type: ignore
 from agentscope.pipeline import MsgHub  # type: ignore
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from itertools import count
+from threading import Lock
 
 from actions.npc import make_npc_actions
 import world.tools as world_impl
-from eventlog import create_logging_context, Event, EventType
 from settings.loader import (
     project_root,
     load_model_config,
@@ -31,6 +34,294 @@ from settings.loader import (
     load_weapons,
 )
 from agents.factory import make_kimi_npc
+
+
+# ============================================================
+# Eventlog (inline)
+# ============================================================
+
+class EventType(str, Enum):
+    """Supported event categories for the demo logging pipeline."""
+
+    TURN_START = "turn_start"
+    TURN_END = "turn_end"
+    ACTION = "action"
+    STATE_UPDATE = "state_update"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+    ERROR = "error"
+    NARRATIVE = "narrative"
+    SYSTEM = "system"
+
+
+def _clean_value(value: Any) -> Any:
+    """Recursively remove ``None`` values from dictionaries/lists."""
+
+    if isinstance(value, dict):
+        return {k: _clean_value(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_clean_value(v) for v in value if v is not None]
+    if isinstance(value, tuple):
+        cleaned = [_clean_value(v) for v in value if v is not None]
+        return cleaned
+    return value
+
+
+@dataclass
+class Event:
+    """Structured event emitted by the runtime."""
+
+    event_type: EventType
+    turn: Optional[int] = None
+    phase: Optional[str] = None
+    actor: Optional[str] = None
+    step: Optional[int] = None
+    data: Dict[str, Any] = field(default_factory=dict)
+    timestamp: Optional[datetime] = None
+    sequence: Optional[int] = None
+    correlation_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.event_type, EventType):
+            try:
+                self.event_type = EventType(str(self.event_type))
+            except Exception as exc:  # pragma: no cover - defensive
+                raise ValueError(f"Unsupported event type: {self.event_type}") from exc
+        if self.data is None:
+            self.data = {}
+        if not isinstance(self.data, dict):
+            raise TypeError("Event.data must be a dict")
+        self.data = _clean_value(self.data)  # drop ``None`` children
+
+    @property
+    def event_id(self) -> str:
+        seq = self.sequence or 0
+        return f"EVT-{seq:06d}"
+
+    def assign_runtime_fields(self, sequence: int, timestamp: datetime) -> None:
+        self.sequence = sequence
+        self.timestamp = timestamp
+
+    def validate(self) -> None:
+        # Validation: most event types require specific fields; state_update allows
+        # either a full snapshot (state) or a delta (positions/in_combat/reaction_available)
+        if self.event_type is EventType.STATE_UPDATE:
+            if "state" in self.data:
+                return
+            delta_ok = any(k in self.data for k in ("positions", "in_combat", "reaction_available"))
+            if not delta_ok:
+                raise ValueError("Event 'state_update' missing required fields: state (or positions/in_combat/reaction_available)")
+            return
+
+        required_keys: Dict[EventType, List[str]] = {
+            EventType.ACTION: ["action"],
+            EventType.TOOL_CALL: ["tool"],
+            EventType.TOOL_RESULT: ["tool"],
+            EventType.ERROR: ["message"],
+            EventType.NARRATIVE: ["text"],
+        }
+        expected = required_keys.get(self.event_type)
+        if expected:
+            missing = [key for key in expected if key not in self.data]
+            if missing:
+                raise ValueError(
+                    f"Event '{self.event_type.value}' missing required fields: {', '.join(missing)}"
+                )
+
+    def to_dict(self) -> Dict[str, Any]:
+        if self.timestamp is None or self.sequence is None:
+            raise RuntimeError("Event must be normalised by EventBus before serialisation")
+        payload: Dict[str, Any] = {
+            "event_id": self.event_id,
+            "sequence": self.sequence,
+            "timestamp": self.timestamp.isoformat(),
+            "event_type": self.event_type.value,
+        }
+        if self.turn is not None:
+            payload["turn"] = self.turn
+        if self.phase is not None:
+            payload["phase"] = self.phase
+        if self.actor is not None:
+            payload["actor"] = self.actor
+        if self.step is not None:
+            payload["step"] = self.step
+        if self.correlation_id is not None:
+            payload["correlation_id"] = self.correlation_id
+        for k, v in self.data.items():
+            payload[k] = v
+        return payload
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class SequenceGenerator:
+    def __init__(self) -> None:
+        self._counter = count(1)
+
+    def next(self) -> int:
+        return next(self._counter)
+
+
+EventHandler = Callable[[Event], None]
+
+
+class EventBus:
+    """Simple synchronous event bus with monotonic sequence numbers."""
+
+    def __init__(self) -> None:
+        self._handlers: List[EventHandler] = []
+        self._seq = SequenceGenerator()
+
+    def subscribe(self, handler: EventHandler) -> Callable[[], None]:
+        self._handlers.append(handler)
+
+        def _unsubscribe() -> None:
+            try:
+                self._handlers.remove(handler)
+            except ValueError:
+                pass
+
+        return _unsubscribe
+
+    def publish(self, event: Event) -> Event:
+        event.assign_runtime_fields(self._seq.next(), utc_now())
+        event.validate()
+        errors: List[Exception] = []
+        for handler in list(self._handlers):
+            try:
+                handler(event)
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+        if errors:
+            raise RuntimeError("One or more logging handlers failed") from errors[0]
+        return event
+
+    def clear(self) -> None:
+        self._handlers.clear()
+
+
+class StructuredLogger:
+    """Write structured events to a JSON Lines file."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = Lock()
+        self._file = self._prepare_file(path)
+
+    @staticmethod
+    def _prepare_file(path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path.open("w", encoding="utf-8")
+
+    def handle(self, event: Event) -> None:
+        record = json.dumps(event.to_dict(), ensure_ascii=False)
+        with self._lock:
+            self._file.write(record + "\n")
+            self._file.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._file.closed:
+                self._file.close()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+
+class StoryLogger:
+    """Persist human-readable narrative lines extracted from events.
+
+    This logger is intentionally opinionated: it keeps the core story flow
+    (dialogues/narration and action results) and filters out meta prompts
+    like per-turn recaps and round banners to avoid perceived duplicates
+    in the human-readable story log. Structured logs remain full-fidelity.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = Lock()
+        self._file = self._prepare_file(path)
+        # Keep only the first world-summary (opening background); subsequent
+        # summaries are repetitive for human readers.
+        self._printed_initial_world_summary = False
+
+    @staticmethod
+    def _prepare_file(path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path.open("w", encoding="utf-8")
+
+    def handle(self, event: Event) -> None:
+        # Only record human-facing narrative lines
+        if event.event_type is not EventType.NARRATIVE:
+            return
+
+        # Filter out meta narrative that causes duplication/noise in story log
+        phase = (event.phase or "").strip()
+        if phase.startswith("context:"):
+            # e.g. pre-turn recap blocks
+            return
+        if phase == "round-start":
+            # e.g. "第N回合：小队行动" banners
+            return
+        if phase == "world-summary":
+            # keep only the first world summary as the opening background
+            if self._printed_initial_world_summary:
+                return
+            self._printed_initial_world_summary = True
+
+        text = event.data.get("text", "")
+        actor = event.actor or "system"
+        timestamp = event.timestamp.isoformat() if event.timestamp else ""
+        line = f"[{event.event_id}] {timestamp} {actor}: {text}"
+        with self._lock:
+            self._file.write(line + "\n")
+            self._file.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._file.closed:
+                self._file.close()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+
+@dataclass
+class LoggingContext:
+    bus: EventBus
+    structured: StructuredLogger
+    story: StoryLogger
+
+    def close(self) -> None:
+        self.structured.close()
+        self.story.close()
+
+
+def create_logging_context(base_path: Optional[Path] = None) -> LoggingContext:
+    # Avoid component dependency: `base_path` should be provided by main.
+    # Fallback to repository root heuristic (two levels up from this file).
+    root = base_path or Path(__file__).resolve().parents[1]
+    logs_dir = root / "logs"
+    events_path = logs_dir / "run_events.jsonl"
+    story_path = logs_dir / "run_story.log"
+
+    bus = EventBus()
+    structured = StructuredLogger(events_path)
+    story = StoryLogger(story_path)
+
+    bus.subscribe(structured.handle)
+    bus.subscribe(story.handle)
+
+    return LoggingContext(bus=bus, structured=structured, story=story)
+
+
+# ============================================================
+# End of Eventlog (inline)
+# ============================================================
 
 
 class _WorldPort:

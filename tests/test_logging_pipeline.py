@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from eventlog import Event, EventBus, EventType, StoryLogger, StructuredLogger
+from src.main import Event, EventBus, EventType, StoryLogger, StructuredLogger
 
 
 def test_event_serialisation_drops_none(tmp_path):
