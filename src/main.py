@@ -2480,11 +2480,19 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         # 当运行中：先停止再重启；当未运行：直接启动一局
         if _STATE.is_running():
             await _stop_game_server_mode()
-            try:
-                if _STATE.task is not None:
+            # Await the cancelled task to let its cleanup run; suppress CancelledError
+            if _STATE.task is not None:
+                try:
                     await _STATE.task
-            except Exception:
-                pass
+                except asyncio.CancelledError:
+                    # Expected when the background runner is cancelled while awaiting input
+                    pass
+                except Exception:
+                    # Defensive: ignore any unexpected shutdown errors
+                    pass
+                finally:
+                    # Drop stale reference to avoid confusion across sessions
+                    _STATE.task = None
         ok, msg = await _start_game_server_mode()
         code = 200 if ok else 400
         return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
