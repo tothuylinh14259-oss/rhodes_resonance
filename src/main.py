@@ -791,6 +791,7 @@ DEFAULT_PROMPT_RULES = (
     "- 参与者名称（仅可用）：{allowed_names}\n"
 )
 
+
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具：\n"
     "- 行动清单：先查看 Host 给出的“可及目标”和距离；若目标不在“可及目标”，必须先调用 advance_position 进入触及（步数≈距离−武器触及，取不小于0；target=对方坐标）；进入触及后再 perform_attack。\n"
@@ -807,6 +808,7 @@ DEFAULT_PROMPT_EXAMPLE = (
     "阿米娅压低声音：'靠近目标位置。'\n"
     'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2, "reason": "接近掩体"}})\n'
 )
+
 
 DEFAULT_PROMPT_GUARD_GUIDE = (
     "守护生效规则：\n"
@@ -2225,7 +2227,14 @@ async def run_demo(
                         except Exception:
                             text_in = ""
                     if text_in:
-                        await _bcast(hub, Msg(name, text_in, "assistant"), phase=f"player:{name}")
+                        # 玩家意图仅对该玩家角色可见：注入到本回合临时 agent 的私有系统提示中
+                        private_lines = []
+                        private_lines.append("玩家控制提示（仅你可见）：")
+                        private_lines.append(f"- 你是玩家操控的角色，请严格执行玩家的意图：{text_in}")
+                        private_section_pc = "\n".join(private_lines)
+
+                        # 玩家角色也走一次临时 agent，由模型输出对白并执行工具（不广播原话）
+                        await _npc_ephemeral_say(name, private_section_pc, hub, recap_msg)
                 else:
                     # 2a) NPC：构建一次性 agent（含本回私有提示），注入环境与回顾后输出对白+工具
                     await _npc_ephemeral_say(name, private_section, hub, recap_msg)
