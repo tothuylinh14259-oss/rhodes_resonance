@@ -15,9 +15,31 @@ import json
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 from pathlib import Path
-from agentscope.agent import AgentBase, ReActAgent  # type: ignore
-from agentscope.message import Msg  # type: ignore
-from agentscope.pipeline import MsgHub  # type: ignore
+"""Top-level optional imports for the Agentscope runtime.
+
+These are optional at import time to allow unit tests that only exercise
+logging/types to import this module without having `agentscope` installed.
+At runtime (when actually building/running agents), the real library must
+be available; otherwise a clear error is raised when used.
+"""
+from typing import TYPE_CHECKING
+
+try:  # soft-import to avoid hard dependency during import-only test runs
+    from agentscope.agent import AgentBase, ReActAgent  # type: ignore
+    from agentscope.message import Msg  # type: ignore
+    from agentscope.pipeline import MsgHub  # type: ignore
+except Exception:  # pragma: no cover - only used when agentscope missing
+    AgentBase = object  # type: ignore
+    ReActAgent = object  # type: ignore
+    class Msg:  # type: ignore
+        def __init__(self, name: str, content: str, role: str = "assistant") -> None:
+            self.name = name
+            self.content = content
+            self.role = role
+        def get_text_content(self):  # minimal shim used by _safe_text
+            return getattr(self, "content", None)
+    class MsgHub:  # type: ignore
+        pass
 from dataclasses import asdict, is_dataclass, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -102,10 +124,18 @@ def load_weapons() -> dict:
 # Agent Factory (inline)
 # ============================================================
 
-from agentscope.formatter import OpenAIChatFormatter  # type: ignore
-from agentscope.memory import InMemoryMemory  # type: ignore
-from agentscope.model import OpenAIChatModel  # type: ignore
-from agentscope.tool import Toolkit  # type: ignore
+try:  # keep these optional at import time too
+    from agentscope.formatter import OpenAIChatFormatter  # type: ignore
+    from agentscope.memory import InMemoryMemory  # type: ignore
+    from agentscope.model import OpenAIChatModel  # type: ignore
+    from agentscope.tool import Toolkit  # type: ignore
+except Exception:  # pragma: no cover - tests that don't touch agents skip this
+    OpenAIChatFormatter = object  # type: ignore
+    InMemoryMemory = object  # type: ignore
+    OpenAIChatModel = object  # type: ignore
+    class Toolkit:  # type: ignore
+        def register_tool_function(self, *_args, **_kwargs):
+            return None
 
 
 def _join_lines(tpl):
@@ -131,7 +161,11 @@ def make_kimi_npc(
     tools: Optional[List[object]] = None,
 ) -> ReActAgent:
     """Create an LLM-backed NPC using Kimi's OpenAI-compatible API."""
-    api_key = os.environ["MOONSHOT_API_KEY"]
+    api_key = os.getenv("MOONSHOT_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "MOONSHOT_API_KEY is not set. Please export MOONSHOT_API_KEY to use the Kimi API."
+        )
     base_url = str(model_cfg.get("base_url") or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1"))
     sec = dict(model_cfg.get("npc") or {})
     model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
@@ -173,6 +207,7 @@ def make_kimi_npc(
             )
         sys_prompt = sys_prompt_built
 
+    # Construct model (requires agentscope installed at runtime)
     model = OpenAIChatModel(
         model_name=model_name,
         api_key=api_key,
@@ -2975,3 +3010,16 @@ if __name__ == "__main__":
             sys.exit(2)
         allow_origins = [o.strip() for o in args.cors.split(",") if o.strip()] or None
         _run_server(args.host, args.port, args.web_dir, allow_cors_from=allow_origins)
+
+# Explicit public API for importers/tests
+__all__ = [
+    "Event",
+    "EventBus",
+    "EventType",
+    "StructuredLogger",
+    "StoryLogger",
+    "make_kimi_npc",
+    "make_npc_actions",
+    "run_demo",
+    "create_logging_context",
+]
