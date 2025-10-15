@@ -8,6 +8,10 @@ Central Orchestrator (main layer)
 - 加载配置、创建日志上下文；
 - 构造 world 端口、actions 工具、agents 工厂；
 - 通过依赖注入调用 run_demo（已内联自原 runtime.engine）。
+
+注意：Prompt & Context Policy 在本文件顶部集中定义。
+凡是“会输入到模型”的上下文（系统提示、环境概要、回合回顾、可及目标预览、私人提示等），
+都在下方的 Policy 区块配置。你只需修改那个区块即可全面控制模型看到的内容与顺序。
 """
 
 import asyncio
@@ -22,7 +26,6 @@ logging/types to import this module without having `agentscope` installed.
 At runtime (when actually building/running agents), the real library must
 be available; otherwise a clear error is raised when used.
 """
-from typing import TYPE_CHECKING
 
 try:  # soft-import to avoid hard dependency during import-only test runs
     from agentscope.agent import AgentBase, ReActAgent  # type: ignore
@@ -51,10 +54,150 @@ import os
 import world.tools as world_impl
 
 # ============================================================
+# Prompt & Context Policy (EDIT HERE to control model input)
+# ============================================================
+
+# Injection toggles and order (what gets added to the model's context memory each turn)
+# Order tokens: "env" (环境概要), "recap" (最近播报回顾), "reach_preview" (可及目标/相邻单位预览 + 硬规则行),
+#               "private"（本回合私有提示）
+CTX_INJECTION_ORDER = ["env", "recap", "reach_preview", "private"]
+CTX_INJECT_ENV_SUMMARY = True
+CTX_INJECT_RECAP = True
+CTX_INJECT_REACH_PREVIEW = True
+
+# How to attach the per-turn private section for the acting NPC
+#   - "system": 拼到 system prompt 里（与角色模板同体）
+#   - "memory": 作为本回合的 Host 提示注入到 memory（不拼 system）
+#   - "off": 不注入
+CTX_PRIVATE_SECTION_MODE = "memory"  # "system" | "memory" | "off"
+
+# Whether to broadcast world/recap context to observers (does not directly feed the model,
+# but affects what goes into recap on future turns)
+CTX_BROADCAST_CONTEXT_TO_OBSERVERS = True
+
+# Debug: dump the final system prompt and per-turn injected memory for each actor
+# to logs/prompts/*.txt so you can inspect exactly what was sent to the model.
+DEBUG_DUMP_PROMPTS = True
+
+# Recap limits (how many recent broadcasts are summarized)
+DEFAULT_RECAP_MSG_LIMIT = 6
+DEFAULT_RECAP_ACTION_LIMIT = 6
+
+# System prompt building (tools list + templates)
+DEFAULT_TOOLS_TEXT = (
+    "perform_attack(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection()"
+)
+
+# --- Default system prompt templates ---
+DEFAULT_PROMPT_HEADER = (
+    "你是游戏中的NPC：{name}.\n"
+    "人设：{persona}\n"
+    "外观特征：{appearance}\n"
+    "常用语气/台词：{quotes}\n"
+    "当前立场提示（仅你视角）：{relation_brief}\n"
+    "可用武器：{weapon_brief}\n"
+)
+
+DEFAULT_PROMPT_RULES = (
+    "对话要求：\n"
+    "- 先用中文说1-2句对白/想法/微动作，符合人设。\n"
+    "- 明确指令优先：若本回合的私有提示中出现“优先处理对白”，你应当首先回应，不能忽略或转移话题。\n"
+    "- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{\"key\": \"value\"}}))，不要再输出意图 JSON。\n"
+    "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
+    "- 作战规则（硬性）：只能对reach_preview里的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先用 advance_position 进入触及范围后再发动攻击。\n"
+    "- 有效行动要求：当存在敌对关系（关系<=-10）时，每回合至少进行一次有效行动（advance_position/perform_attack/transfer_item/set_protection/clear_protection）。对超出触及范围的 perform_attack 视为无效行动。\n"
+    "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
+    "- 若必须违背既定关系行事或违反作战硬规则，请在对白中说明充分理由，并拒绝执行，同时给出更稳妥的替代行动。\n"
+    "- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为'未提供'。\n"
+    '- 不要输出任何"系统提示"或括号内的系统旁白；只输出对白与 CALL_TOOL。\n'
+    "- 参与者名称（仅可用）：{allowed_names}\n"
+)
+
+DEFAULT_PROMPT_TOOL_GUIDE = (
+    "可用工具：\n"
+    "- 行动清单：先查看 Host 给出的“可及目标”和距离；若目标不在“可及目标”，必须先调用 advance_position 进入触及（步数≈距离−武器触及，取不小于0；target=对方坐标）；进入触及后再 perform_attack。\n"
+    "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；仅能对“可及目标”使用。攻击不会自动靠近；若距离不足必须先调用 advance_position，否则视为违规。\n"
+    "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
+    "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
+    "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
+    "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
+    "- clear_protection(guardian=\"\", protectee=\"\", reason)：清除守护关系；可按守护者/被保护者/全部清理。\n"
+)
+
+DEFAULT_PROMPT_EXAMPLE = (
+    "输出示例：\n"
+    "阿米娅压低声音：'靠近目标位置。'\n"
+    'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2, "reason": "接近掩体"}})\n'
+)
+
+DEFAULT_PROMPT_GUARD_GUIDE = (
+    "守护生效规则：\n"
+    "- set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用'反应'。\n"
+    "- 攻击者到 guardian 的距离也必须在本次武器触及/射程内，否则无法替代承伤。\n"
+    "- 多名守护者同时满足时，系统选择距离攻击者最近者（同距按登记顺序）。\n"
+    "- 建议建立守护后使用 advance_position 贴身到被保护者旁并保持相邻，以确保拦截能生效。\n"
+)
+
+DEFAULT_PROMPT_GUARD_EXAMPLE = (
+    "守护使用示例：\n"
+    "德克萨斯侧身一步：'我来护你。'\n"
+    'CALL_TOOL set_protection({{"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"}})\n'
+    "德克萨斯快步靠近：\n"
+    'CALL_TOOL advance_position({{"name": "Texas", "target": {{"x": 1, "y": 1}}, "steps": 1, "reason": "保持相邻以便拦截"}})\n'
+)
+
+DEFAULT_PROMPT_TEMPLATE = (
+    DEFAULT_PROMPT_HEADER
+    + DEFAULT_PROMPT_RULES
+    + DEFAULT_PROMPT_TOOL_GUIDE
+    + DEFAULT_PROMPT_EXAMPLE
+    + DEFAULT_PROMPT_GUARD_GUIDE
+    + DEFAULT_PROMPT_GUARD_EXAMPLE
+)
+
+# World summary templates (rendered text; not called "系统提示"避免联想)
+WORLD_SUMMARY_HEADER = "环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}"
+WORLD_SUMMARY_DETAILS = "环境细节：{details}"
+WORLD_SUMMARY_OBJECTIVES = "目标：{objectives}"
+WORLD_SUMMARY_POSITIONS = "坐标：{positions}"
+WORLD_SUMMARY_CHARACTERS = "角色：{chars}"
+
+# Recap
+RECAP_TITLE = "系统回顾（供 {name} 决策）"
+RECAP_SECTION_RECENT = "最近播报："
+RECAP_CLIP_CHARS = 160
+
+# Reach preview & hard rule line
+REACH_RULE_LINE = (
+    "作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。"
+)
+REACH_LABEL_ADJ = "相邻（≤1步）{tail}："
+REACH_LABEL_TARGETS = "可及武器+目标（{weapon}，触及 {steps}步）："
+
+# Player/private tips
+PLAYER_CTRL_TITLE = "玩家控制提示（仅你可见）："
+PLAYER_CTRL_LINE = "- 你是玩家操控的角色，请严格执行玩家的意图：{text}"
+PRIV_SPEECH_TITLE = "优先处理对白（仅你可见）："
+PRIV_SPEECH_SPEAKER = "- 说话者：{who}"
+PRIV_SPEECH_CONTENT = "- 内容：{text}"
+PRIV_SPEECH_REL = "- 你对该角色的关系：{score:+d}（{label}）"
+PRIV_TURN_RES_TITLE = "回合资源（仅你可见）："
+PRIV_DIST_TITLE = "距离提示（仅你可见）："
+PRIV_DIST_LINE = "- {who}：{dist}步"
+PRIV_DIST_UNKNOWN_LINE = "- {who}：未记录"
+PRIV_DIST_CANNOT_COMPUTE = "- 无法计算：未记录你的坐标"
+PRIV_VALID_ACTION_RULE_LINE = "有效行动要求：存在敌对关系时，每回合至少进行一次有效行动；对超出触及范围的 perform_attack 视为无效。"
+PRIV_DYING_TITLE = "状态提示（仅你可见）——你处于濒死状态（HP={hp})："
+PRIV_DYING_LINE_1 = "- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。"
+PRIV_DYING_LINE_2 = "- 你将在 {turns} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。"
+PRIV_DYING_LINE_3 = "- 请专注对白/呼救/传递信息/请求治疗或援助。"
+
+# === End of Policy ===
+
+# ============================================================
 # Settings Loader (inline)
 # ============================================================
 
-from dataclasses import dataclass  # re-import ok for readability
 
 
 def project_root() -> Path:
@@ -170,7 +313,7 @@ def make_kimi_npc(
     sec = dict(model_cfg.get("npc") or {})
     model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
-    tools_text = "perform_attack(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection()"
+    tools_text = DEFAULT_TOOLS_TEXT
     tpl = _join_lines(prompt_template)
 
     appearance_text = (appearance or "外观描写未提供，可根据设定自行补充细节。").strip() if isinstance(appearance, str) else "外观描写未提供，可根据设定自行补充细节。"
@@ -195,17 +338,24 @@ def make_kimi_npc(
     }
 
     if sys_prompt is None or not str(sys_prompt).strip():
-        sys_prompt_built = None
-        if tpl:
-            try:
-                sys_prompt_built = tpl.format(**format_args)
-            except Exception:
-                sys_prompt_built = None
-        if not sys_prompt_built:
-            sys_prompt_built = (
+        # Build using unified system prompt function (consistent with ephemeral agents)
+        try:
+            sys_prompt = build_sys_prompt(
+                name=name,
+                persona=persona,
+                appearance=appearance,
+                quotes=quotes,
+                relation_brief=relation_brief,
+                weapon_brief=weapon_brief,
+                allowed_names=(allowed_names or "Doctor, Amiya"),
+                prompt_template=(tpl if tpl else None),
+                tools_text=tools_text,
+            )
+        except Exception:
+            # Minimal fallback (should not happen in practice)
+            sys_prompt = (
                 f"你是游戏中的NPC：{name}. 人设：{persona}. 参与者：{allowed_names or 'Doctor, Amiya'}. 可用工具：{tools_text}"
             )
-        sys_prompt = sys_prompt_built
 
     # Construct model (requires agentscope installed at runtime)
     model = OpenAIChatModel(
@@ -762,78 +912,56 @@ RELATION_HOSTILE = -10
 RELATION_ENEMY = -40
 RELATION_ARCH_ENEMY = -60
 
-# Recap limits
-DEFAULT_RECAP_MSG_LIMIT = 6
-DEFAULT_RECAP_ACTION_LIMIT = 6
-
-# Default prompt templates
-DEFAULT_PROMPT_HEADER = (
-    "你是游戏中的NPC：{name}.\n"
-    "人设：{persona}\n"
-    "外观特征：{appearance}\n"
-    "常用语气/台词：{quotes}\n"
-    "当前立场提示（仅你视角）：{relation_brief}\n"
-    "可用武器：{weapon_brief}\n"
-)
-
-DEFAULT_PROMPT_RULES = (
-    "对话要求：\n"
-    "- 先用中文说1-2句对白/想法/微动作，符合人设。\n"
-    "- 明确指令优先：若本回合的私有提示中出现“优先处理对白”，你应当首先回应，不能忽略或转移话题。\n"
-    "- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{\"key\": \"value\"}}))，不要再输出意图 JSON。\n"
-    "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
-    "- 作战规则（硬性）：只能对“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先用 advance_position 进入触及范围后再发动攻击。\n"
-    "- 有效行动要求：当存在敌对关系（关系<=-10）时，每回合至少进行一次有效行动（advance_position/perform_attack/transfer_item/set_protection/clear_protection）。对超出触及范围的 perform_attack 视为无效行动。\n"
-    "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
-    "- 若必须违背既定关系行事或违反作战硬规则，请在对白中说明充分理由，并拒绝执行，同时给出更稳妥的替代行动。\n"
-    "- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为'未提供'。\n"
-    '- 不要输出任何"系统提示"或括号内的系统旁白；只输出对白与 CALL_TOOL。\n'
-    "- 参与者名称（仅可用）：{allowed_names}\n"
-)
+##### Prompt templates moved to top in "Prompt & Context Policy" section #####
 
 
-DEFAULT_PROMPT_TOOL_GUIDE = (
-    "可用工具：\n"
-    "- 行动清单：先查看 Host 给出的“可及目标”和距离；若目标不在“可及目标”，必须先调用 advance_position 进入触及（步数≈距离−武器触及，取不小于0；target=对方坐标）；进入触及后再 perform_attack。\n"
-    "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；仅能对“可及目标”使用。攻击不会自动靠近；若距离不足必须先调用 advance_position，否则视为违规。\n"
-    "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
-    "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
-    "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
-    "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
-    "- clear_protection(guardian=\"\", protectee=\"\", reason)：清除守护关系；可按守护者/被保护者/全部清理。\n"
-)
 
-DEFAULT_PROMPT_EXAMPLE = (
-    "输出示例：\n"
-    "阿米娅压低声音：'靠近目标位置。'\n"
-    'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2, "reason": "接近掩体"}})\n'
-)
+def build_sys_prompt(*, name: str, persona: str, appearance: str | None, quotes: list[str] | str | None, relation_brief: str | None, weapon_brief: str | None, allowed_names: str, prompt_template: str | list[str] | None = None, tools_text: str | None = None) -> str:
+    """Build system prompt for an NPC using either a custom template or the default.
 
+    Keeps text normalization consistent across call sites.
+    """
+    # Normalize fields
+    appearance_text = (appearance or '外观描写未提供，可根据设定自行补充细节。').strip() or '外观描写未提供，可根据设定自行补充细节。'
+    if isinstance(quotes, (list, tuple)):
+        items = [str(q).strip() for q in quotes if str(q).strip()]
+        quotes_text = ' / '.join(items) if items else '保持原角色语气自行发挥。'
+    elif isinstance(quotes, str):
+        quotes_text = quotes.strip() or '保持原角色语气自行发挥。'
+    else:
+        quotes_text = '保持原角色语气自行发挥。'
+    relation_text = (relation_brief or '暂无明确关系记录，默认保持谨慎中立。').strip() or '暂无明确关系记录，默认保持谨慎中立。'
+    tools_txt = tools_text or DEFAULT_TOOLS_TEXT
 
-DEFAULT_PROMPT_GUARD_GUIDE = (
-    "守护生效规则：\n"
-    "- set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用'反应'。\n"
-    "- 攻击者到 guardian 的距离也必须在本次武器触及/射程内，否则无法替代承伤。\n"
-    "- 多名守护者同时满足时，系统选择距离攻击者最近者（同距按登记顺序）。\n"
-    "- 建议建立守护后使用 advance_position 贴身到被保护者旁并保持相邻，以确保拦截能生效。\n"
-)
+    args = {
+        'name': name,
+        'persona': persona,
+        'appearance': appearance_text,
+        'quotes': quotes_text,
+        'relation_brief': relation_text,
+        'weapon_brief': (weapon_brief or '无'),
+        'tools': tools_txt,
+        'allowed_names': allowed_names or 'Doctor, Amiya',
+    }
 
-DEFAULT_PROMPT_GUARD_EXAMPLE = (
-    "守护使用示例：\n"
-    "德克萨斯侧身一步：'我来护你。'\n"
-    'CALL_TOOL set_protection({{"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"}})\n'
-    "德克萨斯快步靠近：\n"
-    'CALL_TOOL advance_position({{"name": "Texas", "target": {{"x": 1, "y": 1}}, "steps": 1, "reason": "保持相邻以便拦截"}})\n'
-)
+    # Choose template: provided one (list or str) or the DEFAULT_PROMPT_TEMPLATE
+    tpl = None
+    if prompt_template is not None:
+        try:
+            if isinstance(prompt_template, list):
+                tpl = "\\n".join(str(x) for x in prompt_template)
+            else:
+                tpl = str(prompt_template)
+        except Exception:
+            tpl = None
+    if tpl is None:
+        tpl = DEFAULT_PROMPT_TEMPLATE
 
-DEFAULT_PROMPT_TEMPLATE = (
-    DEFAULT_PROMPT_HEADER
-    + DEFAULT_PROMPT_RULES
-    + DEFAULT_PROMPT_TOOL_GUIDE
-    + DEFAULT_PROMPT_EXAMPLE
-    + DEFAULT_PROMPT_GUARD_GUIDE
-    + DEFAULT_PROMPT_GUARD_EXAMPLE
-)
+    try:
+        return str(tpl.format(**args))
+    except Exception:
+        # Minimal fallback
+        return f"你是游戏中的NPC：{name}. 人设：{persona}. 参与者：{args['allowed_names']}. 可用工具：{tools_txt}"
 
 # Tool name to actor parameter keys mapping (for validation)
 TOOL_ACTOR_PARAMS = {
@@ -1034,45 +1162,12 @@ async def run_demo(
         except Exception:
             pass
 
-    def _build_sys_prompt(
-        *,
-        name: str,
-        persona: str,
-        appearance: Optional[str],
-        quotes: Optional[list[str] | str],
-        relation_brief: Optional[str],
-        weapon_brief: Optional[str],
-        allowed_names: str,
-    ) -> str:
-        # Mirror factory's argument normalization to keep identical prompting
-        appearance_text = (appearance or "外观描写未提供，可根据设定自行补充细节。").strip()
-        if not appearance_text:
-            appearance_text = "外观描写未提供，可根据设定自行补充细节。"
-        if isinstance(quotes, (list, tuple)):
-            quote_items = [str(q).strip() for q in quotes if str(q).strip()]
-            quotes_text = " / ".join(quote_items) if quote_items else "保持原角色语气自行发挥。"
-        elif isinstance(quotes, str):
-            quotes_text = quotes.strip() or "保持原角色语气自行发挥。"
-        else:
-            quotes_text = "保持原角色语气自行发挥。"
-        relation_text = (relation_brief or "暂无明确关系记录，默认保持谨慎中立。").strip() or "暂无明确关系记录，默认保持谨慎中立。"
-        tools_text = "perform_attack(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection()"
-        args = {
-            "name": name,
-            "persona": persona,
-            "appearance": appearance_text,
-            "quotes": quotes_text,
-            "relation_brief": relation_text,
-            "weapon_brief": (weapon_brief or "无"),
-            "tools": tools_text,
-            "allowed_names": allowed_names,
-        }
-        try:
-            return str(DEFAULT_PROMPT_TEMPLATE.format(**args))
-        except Exception:
-            # Minimal fallback
-            return f"你是游戏中的NPC：{name}. 人设：{persona}. 参与者：{allowed_names}. 可用工具：{tools_text}"
-
+    def _build_sys_prompt(*, name: str, persona: str, appearance: Optional[str], quotes: Optional[list[str] | str], relation_brief: Optional[str], weapon_brief: Optional[str], allowed_names: str) -> str:
+        return build_sys_prompt(
+            name=name, persona=persona, appearance=appearance, quotes=quotes,
+            relation_brief=relation_brief, weapon_brief=weapon_brief,
+            allowed_names=allowed_names, prompt_template=None, tools_text=None
+        )
 
     # Build actors from configs or fallback
     char_cfg = dict(characters or {})
@@ -1395,8 +1490,8 @@ async def run_demo(
     LAST_SEEN: Dict[str, int] = {}          # per-actor chat index checkpoint
     # Recap settings: fixed defaults (feature flags removed)
     recap_enabled = True
-    recap_msg_limit = 6
-    recap_action_limit = 6
+    recap_msg_limit = DEFAULT_RECAP_MSG_LIMIT
+    recap_action_limit = DEFAULT_RECAP_ACTION_LIMIT
 
     # Async CLI input helper (avoid blocking event loop when玩家发言)
     async def _async_input(prompt: str) -> str:
@@ -1482,14 +1577,7 @@ async def run_demo(
                 if isinstance(val, str) and val not in allowed_set:
                     return val
                 return None
-            name_keys = {
-                "perform_attack": ["attacker", "defender"],
-                "advance_position": ["name"],
-                "adjust_relation": ["a", "b"],
-                "transfer_item": ["target"],
-                "set_protection": ["guardian", "protectee"],
-                "clear_protection": ["guardian", "protectee"],
-            }.get(tool_name, [])
+            name_keys = TOOL_ACTOR_PARAMS.get(tool_name, [])
             invalid = None
             for k in name_keys:
                 invalid = _bad_actor(params.get(k))
@@ -1635,11 +1723,11 @@ async def run_demo(
         recent_actions = []
         if not recent_msgs:
             return None
-        lines: List[str] = [f"系统回顾（供 {name} 决策）"]
+        lines: List[str] = [RECAP_TITLE.format(name=name)]
         if recent_msgs:
-            lines.append("最近播报：")
+            lines.append(RECAP_SECTION_RECENT)
             for e in recent_msgs:
-                txt = _clip(str(e.get("text") or "").strip(), 160)
+                txt = _clip(str(e.get("text") or "").strip(), RECAP_CLIP_CHARS)
                 lines.append(f"- {e.get('actor')}: {txt}")
         # No separate actions block
         LAST_SEEN[name] = len(CHAT_LOG)
@@ -1693,7 +1781,8 @@ async def run_demo(
             weapon_brief=_weapon_brief_for(name),
             allowed_names=allowed_names_str,
         )
-        if private_section:
+        # Attach per-turn private section based on policy
+        if CTX_PRIVATE_SECTION_MODE == "system" and private_section:
             sys_prompt_text = sys_prompt_text + "\n" + private_section
         agent = build_agent(
             name,
@@ -1707,6 +1796,11 @@ async def run_demo(
             weapon_brief=_weapon_brief_for(name),
             tools=tool_list,
         )
+        # Attach debug sys prompt for dumping (harmless attribute)
+        try:
+            setattr(agent, "_debug_sys_prompt", sys_prompt_text)
+        except Exception:
+            pass
         return agent
 
     # Helper: build in-reach target preview lines for a given actor (NPC-only tip)
@@ -1764,7 +1858,7 @@ async def run_demo(
                         react_avail = True
                     tail = "（反应：可用）" if react_avail else "（反应：已用）"
                     parts = [f"{nm}({_fmt_steps(d)})" for nm, d in adj]
-                    lines.append("相邻（≤1步）" + tail + "：" + ", ".join(parts))
+                    lines.append(REACH_LABEL_ADJ.format(tail=tail) + ", ".join(parts))
             except Exception:
                 pass
 
@@ -1804,7 +1898,7 @@ async def run_demo(
                     continue
                 items.sort(key=lambda t: (t[1], t[0]))
                 parts = [f"{nm}({_fmt_steps(d)})" for nm, d in items]
-                lines.append(f"可及目标（{wid}，触及 {_fmt_steps(rsteps)}）：" + ", ".join(parts))
+                lines.append(REACH_LABEL_TARGETS.format(weapon=wid, steps=int(rsteps)) + ", ".join(parts))
         except Exception:
             # best-effort
             return []
@@ -1812,28 +1906,74 @@ async def run_demo(
 
     async def _npc_ephemeral_say(name: str, private_section: Optional[str], hub: MsgHub, recap_msg: Optional[Msg] = None) -> None:
         ephemeral = _make_ephemeral_agent(name, private_section)
-        # Seed this ephemeral agent with this turn's shared context in order (1 环境信息, 2 场景回顾)
-        try:
-            env_text = _world_summary_text(world.snapshot())
-            await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
-        except Exception:
-            pass
-        try:
-            if recap_msg is not None:
-                await ephemeral.memory.add(recap_msg)
-        except Exception:
-            pass
-        # Inject targets preview (Manhattan reach & adjacency; NPC private only)
-        try:
-            lines = _reach_preview_lines(name)
-            if lines:
-                # Hard rule up front to prevent out-of-reach attacks.
-                rule_line = "作战规则：只能对“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。"
-                lines = [rule_line] + lines
-                await ephemeral.memory.add(Msg("Host", "\n".join(lines), "assistant"))
-        except Exception:
-            # Silent best-effort; preview is advisory only
-            pass
+        # Inject context memory according to policy order and toggles
+        debug_items: List[Tuple[str, str]] = []  # (token, text)
+        for token in list(CTX_INJECTION_ORDER or []):
+            try:
+                tk = str(token).strip().lower()
+                if tk == "env" and CTX_INJECT_ENV_SUMMARY:
+                    try:
+                        env_text = _world_summary_text(world.snapshot())
+                        await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
+                        debug_items.append(("env", env_text))
+                    except Exception:
+                        pass
+                elif tk == "recap" and CTX_INJECT_RECAP:
+                    try:
+                        if recap_msg is not None:
+                            await ephemeral.memory.add(recap_msg)
+                            debug_items.append(("recap", _safe_text(recap_msg)))
+                    except Exception:
+                        pass
+                elif tk == "reach_preview" and CTX_INJECT_REACH_PREVIEW:
+                    try:
+                        lines = _reach_preview_lines(name)
+                        if lines:
+                            lines = [REACH_RULE_LINE] + lines
+                            text = "\n".join(lines)
+                            await ephemeral.memory.add(Msg("Host", text, "assistant"))
+                            debug_items.append(("reach_preview", text))
+                    except Exception:
+                        pass
+                elif tk == "private" and CTX_PRIVATE_SECTION_MODE == "memory" and private_section:
+                    try:
+                        await ephemeral.memory.add(Msg("Host", private_section, "assistant"))
+                        debug_items.append(("private", private_section))
+                    except Exception:
+                        pass
+            except Exception:
+                # Never break the turn due to context injection issues
+                pass
+
+        # Optional: dump the full prompt bundle (system + memory) for inspection
+        if DEBUG_DUMP_PROMPTS:
+            try:
+                root = project_root()
+                dump_dir = root / "logs" / "prompts"
+                dump_dir.mkdir(parents=True, exist_ok=True)
+                # filename: <actor>_r<round>_<timestamp>.txt
+                try:
+                    rt = world.runtime()
+                    rnd = int(rt.get("round", 0))
+                except Exception:
+                    rnd = 0
+                safe = "".join(ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name))
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                path = dump_dir / f"{safe}_r{rnd}_{ts}.txt"
+                sys_text = str(getattr(ephemeral, "_debug_sys_prompt", ""))
+                lines: List[str] = []
+                lines.append("=== SYSTEM PROMPT ===")
+                lines.append(sys_text)
+                lines.append("")
+                lines.append("=== MEMORY MESSAGES (in order) ===")
+                for tk, txt in debug_items:
+                    lines.append(f"--- [{tk}] ---")
+                    lines.append(str(txt or ""))
+                    lines.append("")
+                with path.open("w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+            except Exception:
+                pass
         out = await ephemeral(None)
         try:
             raw_text = _safe_text(out)
@@ -2078,18 +2218,19 @@ async def run_demo(
                     _write_dev_context_card(name)
                     # Also broadcast a fresh world summary right before decision,
                     # so each turn gets "世界概要 + 行动记忆 + 指导 prompt" together.
-                    try:
-                        await _bcast(
-                            hub,
-                            Msg("Host", _world_summary_text(world.snapshot()), "assistant"),
-                            phase="context:world",
-                        )
-                    except Exception as exc:
-                        # 记录世界概要渲染/广播失败，不中断回合
-                        _emit("error", phase="context:world", data={"message": "世界概要广播失败", "error_type": "context_world_render", "exception": str(exc)})
-                    recap_msg = _recap_for(name)
-                    if recap_msg is not None:
-                        await _bcast(hub, recap_msg, phase="context:recap")
+                    if CTX_BROADCAST_CONTEXT_TO_OBSERVERS:
+                        try:
+                            await _bcast(
+                                hub,
+                                Msg("Host", _world_summary_text(world.snapshot()), "assistant"),
+                                phase="context:world",
+                            )
+                        except Exception as exc:
+                            # 记录世界概要渲染/广播失败，不中断回合
+                            _emit("error", phase="context:world", data={"message": "世界概要广播失败", "error_type": "context_world_render", "exception": str(exc)})
+                        recap_msg = _recap_for(name)
+                        if recap_msg is not None:
+                            await _bcast(hub, recap_msg, phase="context:recap")
                     # 3: 不再注入“私人提示”到 agent 的内存，按你的选择仅使用 环境信息 + 场景回顾 作为上下文
                 except Exception:
                     pass
@@ -2129,10 +2270,10 @@ async def run_demo(
                             label = _relation_category(sc)
                         except Exception:
                             label = "中立"
-                        lines_priv.append("优先处理对白（仅你可见）：")
-                        lines_priv.append(f"- 说话者：{sp}")
-                        lines_priv.append(f"- 内容：{txtp}")
-                        lines_priv.append(f"- 你对该角色的关系：{sc:+d}（{label}）")
+                        lines_priv.append(PRIV_SPEECH_TITLE)
+                        lines_priv.append(PRIV_SPEECH_SPEAKER.format(who=sp))
+                        lines_priv.append(PRIV_SPEECH_CONTENT.format(text=txtp))
+                        lines_priv.append(PRIV_SPEECH_REL.format(score=sc, label=label))
                     # 回合资源
                     try:
                         mv_left = int(ts.get("move_left", 0))
@@ -2145,22 +2286,22 @@ async def run_demo(
                     action_used = bool(ts.get("action_used", False))
                     bonus_used = bool(ts.get("bonus_used", False))
                     reaction_avail = bool(ts.get("reaction_available", True))
-                    lines_priv.append("回合资源（仅你可见）：")
+                    lines_priv.append(PRIV_TURN_RES_TITLE)
                     lines_priv.append(f"- 移动：{mv_left}/{mv_max} 步")
                     lines_priv.append(
                         f"- 动作：{'可用' if not action_used else '已用'}；附赠动作：{'可用' if not bonus_used else '已用'}；反应：{'可用' if reaction_avail else '已用'}"
                     )
                     # Hard combat rules to avoid invalid attacks
-                    lines_priv.append("作战规则（硬性）：只能对“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先用 advance_position 进入触及后再发动攻击。")
-                    lines_priv.append("有效行动要求：存在敌对关系时，每回合至少进行一次有效行动；对超出触及范围的 perform_attack 视为无效。")
+                    lines_priv.append(REACH_RULE_LINE)
+                    lines_priv.append(PRIV_VALID_ACTION_RULE_LINE)
                     # 濒死状态提示
                     dt = ch.get("dying_turns_left", None)
                     hpv = ch.get("hp", None)
                     if dt is not None:
-                        lines_priv.append(f"状态提示（仅你可见）——你处于濒死状态（HP={hpv}）：")
-                        lines_priv.append("- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。")
-                        lines_priv.append(f"- 你将在 {int(dt)} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。")
-                        lines_priv.append("- 请专注对白/呼救/传递信息/请求治疗或援助。")
+                        lines_priv.append(PRIV_DYING_TITLE.format(hp=hpv))
+                        lines_priv.append(PRIV_DYING_LINE_1)
+                        lines_priv.append(PRIV_DYING_LINE_2.format(turns=int(dt)))
+                        lines_priv.append(PRIV_DYING_LINE_3)
 
                     # 距离提示（仅当前行动者私有）：列出与场上所有单位的曼哈顿距离（步）
                     try:
@@ -2174,10 +2315,10 @@ async def run_demo(
                         candidates = [n for n in (participants_now or list(positions.keys()))]
                         # 排除自己
                         candidates = [n for n in candidates if str(n) != str(name)]
-                        lines_priv.append("距离提示（仅你可见）：")
+                        lines_priv.append(PRIV_DIST_TITLE)
                         # 如果自身坐标缺失，给出说明
                         if not (isinstance(my_pos, (list, tuple)) and len(my_pos) >= 2):
-                            lines_priv.append("- 无法计算：未记录你的坐标")
+                            lines_priv.append(PRIV_DIST_CANNOT_COMPUTE)
                         else:
                             mx, my = int(my_pos[0]), int(my_pos[1])
                             known: List[tuple[int, str]] = []
@@ -2196,9 +2337,9 @@ async def run_demo(
                             # 距离升序，名称次序作为平手兜底
                             known.sort(key=lambda t: (t[0], t[1]))
                             for dist, who in known:
-                                lines_priv.append(f"- {who}：{dist}步")
+                                lines_priv.append(PRIV_DIST_LINE.format(who=who, dist=int(dist)))
                             for who in unknown:
-                                lines_priv.append(f"- {who}：未记录")
+                                lines_priv.append(PRIV_DIST_UNKNOWN_LINE.format(who=who))
                     except Exception:
                         # 容错：距离提示失败时跳过，不影响回合
                         pass
@@ -2229,8 +2370,8 @@ async def run_demo(
                     if text_in:
                         # 玩家意图仅对该玩家角色可见：注入到本回合临时 agent 的私有系统提示中
                         private_lines = []
-                        private_lines.append("玩家控制提示（仅你可见）：")
-                        private_lines.append(f"- 你是玩家操控的角色，请严格执行玩家的意图：{text_in}")
+                        private_lines.append(PLAYER_CTRL_TITLE)
+                        private_lines.append(PLAYER_CTRL_LINE.format(text=text_in))
                         private_section_pc = "\n".join(private_lines)
 
                         # 玩家角色也走一次临时 agent，由模型输出对白并执行工具（不广播原话）
@@ -2328,15 +2469,28 @@ def _world_summary_text(snap: dict) -> str:
 
     details = [d for d in (snap.get("scene_details") or []) if isinstance(d, str) and d.strip()]
     lines = [
-        f"环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}",
-        ("目标：" + "; ".join((f"{str(o)}({obj_status.get(str(o))})" if obj_status.get(str(o)) else str(o)) for o in objectives)) if objectives else "目标：无",
+        WORLD_SUMMARY_HEADER.format(location=location, hh=hh, mm=mm, weather=weather),
+        WORLD_SUMMARY_OBJECTIVES.format(
+            objectives=(
+                "; ".join(
+                    (
+                        f"{str(o)}({obj_status.get(str(o))})"
+                        if obj_status.get(str(o))
+                        else str(o)
+                    )
+                    for o in objectives
+                )
+                if objectives
+                else "无"
+            )
+        ),
         # 说明：避免使用“系统提示”措辞以免模型联想出系统旁白；且不显示任何物品信息
-        ("坐标：" + "; ".join(pos_lines)) if pos_lines else "坐标：未记录",
-        ("角色：" + "; ".join(char_lines)) if char_lines else "角色：未登记",
+        WORLD_SUMMARY_POSITIONS.format(positions=("; ".join(pos_lines) if pos_lines else "未记录")),
+        WORLD_SUMMARY_CHARACTERS.format(chars=("; ".join(char_lines) if char_lines else "未登记")),
     ]
     if details:
         # Insert details after the header line
-        lines.insert(1, "环境细节：" + "；".join(details))
+        lines.insert(1, WORLD_SUMMARY_DETAILS.format(details="；".join(details)))
     return "\n".join(lines)
 
 
