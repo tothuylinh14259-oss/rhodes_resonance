@@ -24,16 +24,361 @@ from enum import Enum
 from itertools import count
 from threading import Lock
 
-from actions.npc import make_npc_actions
+import logging
+import os
 import world.tools as world_impl
-from settings.loader import (
-    project_root,
-    load_model_config,
-    load_story_config,
-    load_characters,
-    load_weapons,
-)
-from agents.factory import make_kimi_npc
+
+# ============================================================
+# Settings Loader (inline)
+# ============================================================
+
+from dataclasses import dataclass  # re-import ok for readability
+
+
+def project_root() -> Path:
+    """Return repository root (folder that contains configs/ and src/).
+
+    Walk upwards from this file to find a directory that contains a
+    `configs/` folder. Fallback to two levels up from this file.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "configs").exists():
+            return parent
+    try:
+        return here.parents[1] if (here.parents[1] / "configs").exists() else here.parents[2]
+    except Exception:
+        return here.parents[1]
+
+
+def _configs_dir() -> Path:
+    return project_root() / "configs"
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data or {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+
+@dataclass
+class ModelConfig:
+    base_url: str = "https://api.moonshot.cn/v1"
+    npc: Dict[str, Any] = field(default_factory=dict)
+
+    @staticmethod
+    def from_dict(d: dict) -> "ModelConfig":
+        return ModelConfig(
+            base_url=str(d.get("base_url", "https://api.moonshot.cn/v1")),
+            npc=dict(d.get("npc") or {}),
+        )
+
+
+def load_model_config() -> ModelConfig:
+    return ModelConfig.from_dict(_load_json(_configs_dir() / "model.json"))
+
+
+def load_story_config() -> dict:
+    data = _load_json(_configs_dir() / "story.json")
+    if data:
+        return data
+    return _load_json(project_root() / "docs" / "plot.story.json")
+
+
+def load_characters() -> dict:
+    return _load_json(_configs_dir() / "characters.json")
+
+
+def load_weapons() -> dict:
+    return _load_json(_configs_dir() / "weapons.json")
+
+
+# ============================================================
+# Agent Factory (inline)
+# ============================================================
+
+from agentscope.formatter import OpenAIChatFormatter  # type: ignore
+from agentscope.memory import InMemoryMemory  # type: ignore
+from agentscope.model import OpenAIChatModel  # type: ignore
+from agentscope.tool import Toolkit  # type: ignore
+
+
+def _join_lines(tpl):
+    if isinstance(tpl, list):
+        try:
+            return "\n".join(str(x) for x in tpl)
+        except Exception:
+            return "\n".join(tpl)
+    return tpl
+
+
+def make_kimi_npc(
+    name: str,
+    persona: str,
+    model_cfg: Mapping[str, Any],
+    prompt_template: Optional[str | List[str]] = None,
+    sys_prompt: Optional[str] = None,
+    allowed_names: Optional[str] = None,
+    appearance: Optional[str] = None,
+    quotes: Optional[List[str] | str] = None,
+    relation_brief: Optional[str] = None,
+    weapon_brief: Optional[str] = None,
+    tools: Optional[List[object]] = None,
+) -> ReActAgent:
+    """Create an LLM-backed NPC using Kimi's OpenAI-compatible API."""
+    api_key = os.environ["MOONSHOT_API_KEY"]
+    base_url = str(model_cfg.get("base_url") or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1"))
+    sec = dict(model_cfg.get("npc") or {})
+    model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
+
+    tools_text = "perform_attack(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection()"
+    tpl = _join_lines(prompt_template)
+
+    appearance_text = (appearance or "外观描写未提供，可根据设定自行补充细节。").strip() if isinstance(appearance, str) else "外观描写未提供，可根据设定自行补充细节。"
+    if isinstance(quotes, (list, tuple)):
+        quote_items = [str(q).strip() for q in quotes if str(q).strip()]
+        quotes_text = " / ".join(quote_items)
+    elif isinstance(quotes, str):
+        quotes_text = quotes.strip() or "保持原角色语气自行发挥。"
+    else:
+        quotes_text = "保持原角色语气自行发挥。"
+    relation_text = (relation_brief or "暂无明确关系记录，默认保持谨慎中立。").strip() or "暂无明确关系记录，默认保持谨慎中立。"
+
+    format_args = {
+        "name": name,
+        "persona": persona,
+        "appearance": appearance_text,
+        "quotes": quotes_text,
+        "relation_brief": relation_text,
+        "weapon_brief": (weapon_brief or "无"),
+        "tools": tools_text,
+        "allowed_names": allowed_names or "Doctor, Amiya",
+    }
+
+    if sys_prompt is None or not str(sys_prompt).strip():
+        sys_prompt_built = None
+        if tpl:
+            try:
+                sys_prompt_built = tpl.format(**format_args)
+            except Exception:
+                sys_prompt_built = None
+        if not sys_prompt_built:
+            sys_prompt_built = (
+                f"你是游戏中的NPC：{name}. 人设：{persona}. 参与者：{allowed_names or 'Doctor, Amiya'}. 可用工具：{tools_text}"
+            )
+        sys_prompt = sys_prompt_built
+
+    model = OpenAIChatModel(
+        model_name=model_name,
+        api_key=api_key,
+        stream=bool(sec.get("stream", True)),
+        client_args={"base_url": base_url},
+        generate_kwargs={"temperature": float(sec.get("temperature", 0.7))},
+    )
+
+    toolkit = Toolkit()
+    if tools:
+        for fn in tools:
+            try:
+                toolkit.register_tool_function(fn)  # type: ignore[arg-type]
+            except Exception:
+                continue
+
+    return ReActAgent(
+        name=name,
+        sys_prompt=sys_prompt,
+        model=model,
+        formatter=OpenAIChatFormatter(),
+        memory=InMemoryMemory(),
+        toolkit=toolkit,
+    )
+
+
+# ============================================================
+# Actions (inline)
+# ============================================================
+
+def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
+    """Create action tools bound to a provided world API (duck-typed).
+
+    The `world` object is expected to provide functions:
+      - attack_with_weapon(...)
+      - skill_check_dnd(...)
+      - move_towards(...)
+      - set_relation(...)
+      - grant_item(...)
+      - set_guard(...)
+      - clear_guard(...)
+    """
+
+    _ACTION_LOGGER = logging.getLogger("npc_talk_demo")
+
+    def _log_action(msg: str) -> None:
+        try:
+            if not msg:
+                return
+            _ACTION_LOGGER.info(f"[ACTION] {msg}")
+        except Exception:
+            pass
+
+    def perform_attack(
+        attacker,
+        defender,
+        weapon: str,
+        reason: str = "",
+    ):
+        resp = world.attack_with_weapon(
+            attacker=attacker,
+            defender=defender,
+            weapon=weapon,
+        )
+        meta = resp.metadata or {}
+        hit = meta.get("hit")
+        dmg = meta.get("damage_total")
+        hp_before = meta.get("hp_before")
+        hp_after = meta.get("hp_after")
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+        except Exception:
+            pass
+        try:
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(
+            f"attack {attacker} -> {defender} using {meta.get('weapon_id')} | hit={hit} dmg={dmg} hp:{hp_before}->{hp_after} "
+            f"reach_ok={meta.get('reach_ok')} reason={reason_text}"
+        )
+        return resp
+
+    def perform_skill_check(name, skill, dc, advantage: str = "none", reason: str = ""):
+        resp = world.skill_check_dnd(name=name, skill=skill, dc=dc, advantage=advantage)
+        meta = resp.metadata or {}
+        success = meta.get("success")
+        total = meta.get("total")
+        roll = meta.get("roll")
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(
+            f"skill_check {name} skill={skill} dc={dc} -> success={success} total={total} roll={roll} reason={reason_text}"
+        )
+        return resp
+
+    def advance_position(name, target, steps, reason: str = ""):
+        if isinstance(target, dict):
+            tx = target.get("x", 0)
+            ty = target.get("y", 0)
+            tgt = (int(tx), int(ty))
+        elif isinstance(target, (list, tuple)) and len(target) >= 2:
+            tgt = (int(target[0]), int(target[1]))
+        else:
+            tgt = (0, 0)
+        resp = world.move_towards(name=name, target=tgt, steps=int(steps))
+        meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(
+            f"move {name} -> {tgt} steps={steps} moved={meta.get('moved')} remaining={meta.get('remaining')} reason={reason_text}"
+        )
+        return resp
+
+    def adjust_relation(a, b, value, reason: str = ""):
+        resp = world.set_relation(a, b, int(value), reason or "")
+        meta = resp.metadata or {}
+        try:
+            meta["call_reason"] = (str(reason).strip() or "未提供")
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(
+            f"relation {a}->{b} set={value} score={meta.get('score')} reason={reason or '无'}"
+        )
+        return resp
+
+    def transfer_item(target, item, n: int = 1, reason: str = ""):
+        resp = world.grant_item(target=target, item=item, n=int(n))
+        meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(
+            f"transfer item={item} -> {target} qty={n} total={meta.get('count')} reason={reason_text}"
+        )
+        return resp
+
+    def set_protection(guardian: str, protectee: str, reason: str = ""):
+        resp = world.set_guard(guardian, protectee)
+        meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(f"protect {guardian} -> {protectee} reason={reason_text}")
+        return resp
+
+    def clear_protection(guardian: str = "", protectee: str = "", reason: str = ""):
+        g = guardian if guardian else None
+        p = protectee if protectee else None
+        resp = world.clear_guard(g, p)
+        meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(f"clear_protect guardian={g} protectee={p} reason={reason_text}")
+        return resp
+
+    tool_list: List[object] = [
+        perform_attack,
+        advance_position,
+        adjust_relation,
+        transfer_item,
+        set_protection,
+        clear_protection,
+    ]
+    tool_dispatch: Dict[str, object] = {
+        "perform_attack": perform_attack,
+        "advance_position": advance_position,
+        "adjust_relation": adjust_relation,
+        "transfer_item": transfer_item,
+        "set_protection": set_protection,
+        "clear_protection": clear_protection,
+    }
+
+    return tool_list, tool_dispatch
 
 
 # ============================================================
