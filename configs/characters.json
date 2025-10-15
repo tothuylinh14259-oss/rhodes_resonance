@@ -63,8 +63,7 @@
       "move_speed": 6
     },
     "inventory": {
-      "amiya_focus": 1,
-      "faust_crossbow": 1
+      "amiya_focus": 1
     }
   },
   "Mephisto": {
@@ -360,114 +359,114 @@
   },
   "relations": {
     "Doctor": {
-      "Amiya": 60,
-      "Mephisto": -80,
-      "Faust": -75,
-      "Texas": 40,
-      "Exusiai": 35,
-      "Chen": 35,
-      "Hoshiguma": 20,
-      "W": -80,
-      "Crownslayer": -70
+      "Amiya": 85,
+      "Mephisto": -85,
+      "Faust": -80,
+      "Texas": 50,
+      "Exusiai": 50,
+      "Chen": 50,
+      "Hoshiguma": 35,
+      "W": -40,
+      "Crownslayer": -75
     },
     "Amiya": {
-      "Doctor": 60,
-      "Mephisto": -75,
-      "Faust": -70,
-      "Texas": 35,
-      "Exusiai": 35,
-      "Chen": 20,
-      "Hoshiguma": 15,
-      "W": -80,
-      "Crownslayer": -70
+      "Doctor": 85,
+      "Mephisto": -90,
+      "Faust": -85,
+      "Texas": 45,
+      "Exusiai": 45,
+      "Chen": 50,
+      "Hoshiguma": 35,
+      "W": -65,
+      "Crownslayer": -80
     },
     "Mephisto": {
-      "Faust": 70,
-      "Doctor": -80,
-      "Amiya": -75,
+      "Faust": 80,
+      "Doctor": -85,
+      "Amiya": -90,
       "Texas": -70,
       "Exusiai": -60,
       "Chen": -90,
       "Hoshiguma": -85,
-      "W": -20,
-      "Crownslayer": -10
+      "W": -60,
+      "Crownslayer": 10
     },
     "Faust": {
-      "Mephisto": 70,
-      "Doctor": -75,
-      "Amiya": -70,
-      "Texas": -60,
+      "Mephisto": 80,
+      "Doctor": -80,
+      "Amiya": -85,
+      "Texas": -65,
       "Exusiai": -60,
-      "Chen": -80,
-      "Hoshiguma": -75,
-      "W": -20,
-      "Crownslayer": -10
+      "Chen": -85,
+      "Hoshiguma": -80,
+      "W": -60,
+      "Crownslayer": 10
     },
     "Texas": {
-      "Doctor": 40,
-      "Amiya": 35,
+      "Doctor": 50,
+      "Amiya": 45,
       "Mephisto": -70,
-      "Faust": -60,
-      "Chen": 25,
-      "Hoshiguma": 20,
-      "W": -80,
+      "Faust": -65,
+      "Chen": 40,
+      "Hoshiguma": 30,
+      "W": -70,
       "Crownslayer": -70,
-      "Exusiai": 40
+      "Exusiai": 65
     },
     "Exusiai": {
-      "Doctor": 35,
-      "Amiya": 35,
+      "Doctor": 50,
+      "Amiya": 45,
       "Mephisto": -60,
       "Faust": -60,
-      "Chen": 25,
-      "Hoshiguma": 20,
-      "W": -80,
+      "Chen": 40,
+      "Hoshiguma": 30,
+      "W": -70,
       "Crownslayer": -70,
-      "Texas": 40
+      "Texas": 65
     },
     "Chen": {
-      "Doctor": 35,
-      "Amiya": 20,
+      "Doctor": 50,
+      "Amiya": 50,
       "Mephisto": -90,
+      "Faust": -85,
+      "W": -85,
+      "Crownslayer": -80,
+      "Texas": 40,
+      "Exusiai": 40,
+      "Hoshiguma": 60
+    },
+    "Hoshiguma": {
+      "Doctor": 35,
+      "Amiya": 35,
+      "Mephisto": -85,
       "Faust": -80,
       "W": -85,
       "Crownslayer": -80,
-      "Texas": 15,
-      "Exusiai": 10,
-      "Hoshiguma": 45
-    },
-    "Hoshiguma": {
-      "Doctor": 20,
-      "Amiya": 15,
-      "Mephisto": -85,
-      "Faust": -75,
-      "W": -90,
-      "Crownslayer": -80,
-      "Texas": 15,
-      "Exusiai": 10,
-      "Chen": 45
+      "Texas": 30,
+      "Exusiai": 30,
+      "Chen": 60
     },
     "W": {
-      "Doctor": -80,
-      "Amiya": -80,
+      "Doctor": -40,
+      "Amiya": -65,
       "Chen": -85,
       "Hoshiguma": -85,
-      "Mephisto": -20,
-      "Faust": -20,
-      "Texas": -80,
-      "Exusiai": -80,
-      "Crownslayer": -20
-    },
-    "Crownslayer": {
-      "Doctor": -70,
-      "Amiya": -70,
-      "Chen": -80,
-      "Hoshiguma": -80,
-      "Mephisto": -10,
-      "Faust": -10,
+      "Mephisto": -60,
+      "Faust": -60,
       "Texas": -70,
       "Exusiai": -70,
-      "W": -20
+      "Crownslayer": -40
+    },
+    "Crownslayer": {
+      "Doctor": -75,
+      "Amiya": -80,
+      "Chen": -80,
+      "Hoshiguma": -80,
+      "Mephisto": 10,
+      "Faust": 10,
+      "Texas": -70,
+      "Exusiai": -70,
+      "W": -40
     }
   }
 }

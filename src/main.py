@@ -399,12 +399,13 @@ DEFAULT_PROMPT_HEADER = (
 DEFAULT_PROMPT_RULES = (
     "对话要求：\n"
     "- 先用中文说1-2句对白/想法/微动作，符合人设。\n"
+    "- 明确指令优先：若本回合的私有提示中出现“优先处理对白”，你应当首先回应，不能忽略或转移话题。\n"
     "- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{\"key\": \"value\"}}))，不要再输出意图 JSON。\n"
     "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
     "- 作战规则（硬性）：只能对“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先用 advance_position 进入触及范围后再发动攻击。\n"
     "- 有效行动要求：当存在敌对关系（关系<=-10）时，每回合至少进行一次有效行动（advance_position/perform_attack/transfer_item/set_protection/clear_protection）。对超出触及范围的 perform_attack 视为无效行动。\n"
     "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
-    "- 若必须违背既定关系行事，请在对白中说明充分理由，否则拒绝执行。\n"
+    "- 若必须违背既定关系行事或违反作战硬规则，请在对白中说明充分理由，并拒绝执行，同时给出更稳妥的替代行动。\n"
     "- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为'未提供'。\n"
     '- 不要输出任何"系统提示"或括号内的系统旁白；只输出对白与 CALL_TOOL。\n'
     "- 参与者名称（仅可用）：{allowed_names}\n"
@@ -1719,6 +1720,37 @@ async def run_demo(
                     ch = (snap_now.get("characters") or {}).get(name, {}) or {}
                     ts_all = world.runtime().get("turn_state", {}) or {}
                     ts = ts_all.get(name, {}) or {}
+                    # 优先处理对白（中性呈现）：取最近一条来自受控角色的对白（仅后端识别，不在文本中暴露身份）
+                    lines_priv: List[str] = []
+                    priority_msg = None  # (speaker, text)
+                    try:
+                        for e in reversed(CHAT_LOG):
+                            sp = str(e.get("actor") or "")
+                            if not sp or sp == "Host":
+                                continue
+                            if str(actor_types.get(sp, "npc")) == "player":
+                                txtp = str(e.get("text") or "").strip()
+                                if txtp:
+                                    priority_msg = (sp, txtp)
+                                    break
+                    except Exception:
+                        priority_msg = None
+                    if priority_msg is not None:
+                        sp, txtp = priority_msg
+                        # 关系分值与类别（name -> sp）
+                        try:
+                            snap_rel = dict(snap_now.get("relations") or {})
+                            sc = int(snap_rel.get(f"{name}->{sp}", 0))
+                        except Exception:
+                            sc = 0
+                        try:
+                            label = _relation_category(sc)
+                        except Exception:
+                            label = "中立"
+                        lines_priv.append("优先处理对白（仅你可见）：")
+                        lines_priv.append(f"- 说话者：{sp}")
+                        lines_priv.append(f"- 内容：{txtp}")
+                        lines_priv.append(f"- 你对该角色的关系：{sc:+d}（{label}）")
                     # 回合资源
                     try:
                         mv_left = int(ts.get("move_left", 0))
@@ -1731,7 +1763,6 @@ async def run_demo(
                     action_used = bool(ts.get("action_used", False))
                     bonus_used = bool(ts.get("bonus_used", False))
                     reaction_avail = bool(ts.get("reaction_available", True))
-                    lines_priv: List[str] = []
                     lines_priv.append("回合资源（仅你可见）：")
                     lines_priv.append(f"- 移动：{mv_left}/{mv_max} 步")
                     lines_priv.append(

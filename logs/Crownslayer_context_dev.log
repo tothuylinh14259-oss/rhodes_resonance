@@ -1,0 +1,62 @@
+=== Round 1 | Actor: Crownslayer ===
+[Relation] Doctor:-75（死敌）；Amiya:-80（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:+10（盟友）；Faust:+10（盟友）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-40（仇视）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(0, 0); Amiya(0, 1); Mephisto(7, -1); Faust(12, 2); Texas(7, -3); Exusiai(8, 4); Chen(7, 0); Hoshiguma(7, -1); W(12, 2); Crownslayer(8, -3)
+角色：Doctor(HP 12/12); Amiya(HP 10/10); Mephisto(HP 0/11)（死亡）; Faust(HP 2/12); Texas(HP 12/12); Exusiai(HP 11/11); Chen(HP 14/14); Hoshiguma(HP 16/16); W(HP 6/11); Crownslayer(HP 0/12)（濒死3）
+[Recent Messages]
+- Chen: 陈眉头一紧，手按刀柄，冷声喝道：“博士，你疯够了没有？龙门办案，不许胡来！”
+
+她目光一扫，锁定残血Mephisto，拔刀突进，刀锋划破空气直取敌喉。
+
+)
+- Chen[tool]: 攻击：Chen 使用 chen_blade -> Mephisto d20+6 vs AC 12 -> 命中
+伤害：1d8+4 -> 9
+Mephisto 受到 9 伤害，HP 0/11（倒地）
+Mephisto 进入濒死（3回合后死亡；再次受伤即死）
+- Hoshiguma: 星熊冷哼一声，抬眼盯住濒死的Mephisto，脚步未动却微微前倾，如山般挡住身后同伴的方向。
+
+)
+- Hoshiguma[tool]: 攻击：Hoshiguma 使用 hoshiguma_ogre_club -> Mephisto d20+6 vs AC 12 -> 命中
+伤害：1d8+4 -> 12
+Mephisto 在濒死状态下再次受到 12 伤害，立即死亡。
+Mephisto 死亡。
+- W: W舔了舔嘴角，指尖轻敲引爆器，笑得像个恶作剧的小孩。
+
+……自杀？呵，那多没意思。艺术——得由我来点燃。
+
+她眼神一挑，盯向近在咫尺的Faust，语气甜腻却带刺：“别眨眼哦，只会痛一小会儿。”
+
+)
+- W[tool]: 攻击：W 使用 w_explosives -> Faust d20+6 vs AC 14 -> 命中
+伤害：1d8+4 -> 10
+Faust 受到 10 伤害，HP 2/12
+
+=== Round 2 | Actor: Crownslayer ===
+[Relation] Doctor:-75（死敌）；Amiya:-80（死敌）；Chen:-80（死敌）；Hoshiguma:-80（死敌）；Mephisto:+10（盟友）；Faust:+10（盟友）；Texas:-70（死敌）；Exusiai:-70（死敌）；W:-40（仇视）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Doctor(0, 0); Amiya(6, 1); Mephisto(7, -1); Faust(12, 2); Texas(12, -2); Exusiai(12, 2); Chen(6, 1); Hoshiguma(7, -1); W(12, 2); Crownslayer(8, -3)
+角色：Doctor(HP 12/12); Amiya(HP 1/10); Mephisto(HP 0/11)（死亡）; Faust(HP 2/12); Texas(HP 12/12); Exusiai(HP 11/11); Chen(HP 14/14); Hoshiguma(HP 16/16); W(HP 6/11); Crownslayer(HP 0/12)（濒死2）
+[Recent Messages]
+- Chen: 陈：阿米娅！别硬冲，先稳住阵脚！
+
+陈抬手按住耳麦，目光一沉——浮士德弩箭已发，阿米娅危在旦夕。她脚下一踏，披风翻飞，持刀直扑前方。
+
+)
+- Chen[tool]: Chen 向 (6, 1) 移动 2步，现位于 (6, 1)。 已抵达目标。
+- Hoshiguma: （低声）……阿米娅只剩一口气，还敢往前冲？  
+交给我来挡——谁也别想再碰她！
+
+)
+- Hoshiguma[tool]: 守护：Hoshiguma -> Amiya
+- W: “哎呀，小兔子还剩一口气就往前冲？真是……找死都挑最响的方式。”  
+我舔了舔指尖的火药残渣，歪头冲浮士德一笑，“别眨眼——艺术，就是爆炸。”
+
+)
+- W[tool]: 攻击：W 使用 w_explosives -> Faust d20+6 vs AC 14 -> 未中
+
