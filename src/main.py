@@ -248,7 +248,7 @@ def load_model_config() -> ModelConfig:
     return ModelConfig.from_dict(_load_json(_configs_dir() / "model.json"))
 
 
-def load_story_config() -> dict:
+def load_story_config(selected_id: Optional[str] = None) -> dict:
     """Load story configuration.
 
     Supports two shapes:
@@ -264,13 +264,17 @@ def load_story_config() -> dict:
         return _load_json(project_root() / "docs" / "plot.story.json")
 
     try:
-        # container shape
+        # container shape (ignore any legacy active_id; prefer explicit selection)
         if isinstance(data, dict) and isinstance(data.get("stories"), dict):
             stories = data.get("stories") or {}
-            active_id = str(data.get("active_id") or "").strip()
-            # choose the active story or the first available
-            story_id = active_id if active_id in stories else (next(iter(stories.keys())) if stories else "")
-            story = stories.get(story_id) if story_id else None
+            sid = ""
+            sel = (str(selected_id).strip() if selected_id is not None else "")
+            if sel and sel in stories:
+                sid = sel
+            else:
+                # stable default: first by sorted order
+                sid = (sorted(stories.keys())[0] if stories else "")
+            story = stories.get(sid) if sid else None
             if isinstance(story, dict):
                 return story
             # container present but empty/malformed -> fallthrough to legacy
@@ -2527,10 +2531,10 @@ def _world_summary_text(snap: dict) -> str:
 
 
 
-def _bootstrap_runtime(*, for_server: bool = False):
+def _bootstrap_runtime(*, for_server: bool = False, selected_story_id: Optional[str] = None):
     # Load configs and create logging context, optionally reset world for server session
     model_cfg_obj = load_model_config()
-    story_cfg = load_story_config()
+    story_cfg = load_story_config(selected_story_id)
     characters = load_characters()
     weapons = load_weapons() or {}
     if is_dataclass(model_cfg_obj):
@@ -2739,6 +2743,8 @@ class _ServerState:
         self.session_id: str = ""
         self.log_ctx = None  # LoggingContext
         self.player_queues: Dict[str, asyncio.Queue[str]] = {}
+        # runtime-only selected story id (not persisted)
+        self.selected_story_id: str = ""
 
     def is_running(self) -> bool:
         return bool(self.task) and not bool(self.task.done()) and self.running
@@ -2754,13 +2760,23 @@ class _ServerState:
 _STATE = _ServerState()
 
 
-async def _start_game_server_mode() -> Tuple[bool, str]:
+async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) -> Tuple[bool, str]:
     """Start one game run in background if not already running."""
     if _STATE.is_running():
         return True, "already running"
 
     # Bootstrap shared bits; in server we reset world to avoid inheriting state
-    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(for_server=True)
+    # If caller provided an explicit selection, remember it (runtime only)
+    if selected_story_id:
+        try:
+            _STATE.selected_story_id = str(selected_story_id)
+        except Exception:
+            pass
+
+    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(
+        for_server=True,
+        selected_story_id=_STATE.selected_story_id or None,
+    )
     _STATE.log_ctx = log_ctx
     try:
         world.set_weapon_defs(weapons)
@@ -2991,7 +3007,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         """Validate story config.
 
         Accept either a single-story object, or a multi-story container:
-          {"active_id": "id", "stories": {"id": {...}, ...}}
+          {"stories": {"id": {...}, ...}}
         """
 
         def _validate_one(story: dict) -> tuple[bool, str]:
@@ -3027,11 +3043,12 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
 
         if not isinstance(obj, dict):
             return False, "story must be a JSON object"
+        # Hard-delete policy: top-level active_id is not supported
+        if "active_id" in obj:
+            return False, "active_id is not supported"
         # Multi-story container
         if isinstance(obj.get("stories"), dict):
             stories = obj.get("stories") or {}
-            if obj.get("active_id") is not None and not isinstance(obj.get("active_id"), str):
-                return False, "active_id must be a string when provided"
             for sid, s in stories.items():
                 ok, msg = _validate_one(s)
                 if not ok:
@@ -3110,7 +3127,15 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             p = _cfg_path(str(name))
         except KeyError:
             return JSONResponse({"ok": False, "message": f"unsupported config: {name}"}, status_code=404)
-        return {"ok": True, "name": name, "data": _json_load_text(p)}
+        data = _json_load_text(p)
+        # Hard delete policy: never expose legacy active_id back to clients
+        if str(name) == "story" and isinstance(data, dict) and ("active_id" in data):
+            try:
+                data = dict(data)
+                data.pop("active_id", None)
+            except Exception:
+                pass
+        return {"ok": True, "name": name, "data": data}
 
     @app.post("/api/config/{name}")
     async def api_set_config(name: str, payload: dict):  # type: ignore[no-redef]
@@ -3120,6 +3145,9 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         except KeyError:
             return JSONResponse({"ok": False, "message": f"unsupported config: {name}"}, status_code=404)
         data = dict(payload or {})
+        # Hard delete: reject legacy active_id even if provided
+        if name == "story" and isinstance(data, dict) and ("active_id" in data):
+            return JSONResponse({"ok": False, "message": "active_id is not supported"}, status_code=422)
         # validate by type
         ok = True
         msg = "ok"
@@ -3140,9 +3168,57 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             return JSONResponse({"ok": False, "message": f"write failed: {exc}"}, status_code=500)
         return {"ok": True}
 
+    # Helper: list available story ids from config (container -> keys; single -> ['default'] or [])
+    def _list_story_ids() -> list[str]:
+        ids: list[str] = []
+        try:
+            d = _json_load_text(_cfg_path("story"))
+            if isinstance(d, dict) and isinstance(d.get("stories"), dict):
+                ids = sorted(list((d.get("stories") or {}).keys()))
+            elif d:
+                ids = ["default"]
+        except Exception:
+            try:
+                # fallback to demo asset
+                p = project_root() / "docs" / "plot.story.json"
+                d = _json_load_text(p)
+                if d:
+                    ids = ["default"]
+            except Exception:
+                ids = []
+        return ids
+
+    @app.get("/api/stories")
+    async def api_stories():  # type: ignore[no-redef]
+        ids = _list_story_ids()
+        sel = _STATE.selected_story_id if _STATE.selected_story_id in ids else (ids[0] if ids else "")
+        return {"ok": True, "ids": ids, "selected": sel}
+
+    @app.post("/api/select_story")
+    async def api_select_story(payload: dict):  # type: ignore[no-redef]
+        try:
+            sid = str(payload.get("id") or "").strip()
+        except Exception:
+            return JSONResponse({"ok": False, "message": "invalid payload"}, status_code=400)
+        ids = _list_story_ids()
+        if not sid or sid not in ids:
+            return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
+        _STATE.selected_story_id = sid
+        return {"ok": True, "selected": sid}
+
     @app.post("/api/start")
-    async def api_start():  # type: ignore[no-redef]
-        ok, msg = await _start_game_server_mode()
+    async def api_start(payload: dict | None = None):  # type: ignore[no-redef]
+        sid = None
+        try:
+            sid = str((payload or {}).get("story_id") or "").strip()
+        except Exception:
+            sid = None
+        if sid:
+            ids = _list_story_ids()
+            if sid not in ids:
+                return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
+            _STATE.selected_story_id = sid
+        ok, msg = await _start_game_server_mode(selected_story_id=_STATE.selected_story_id or None)
         code = 200 if ok else 409
         return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
 
@@ -3153,7 +3229,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
 
     @app.post("/api/restart")
-    async def api_restart():  # type: ignore[no-redef]
+    async def api_restart(payload: dict | None = None):  # type: ignore[no-redef]
         # 当运行中：先停止再重启；当未运行：直接启动一局
         if _STATE.is_running():
             await _stop_game_server_mode()
@@ -3170,7 +3246,17 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                 finally:
                     # Drop stale reference to avoid confusion across sessions
                     _STATE.task = None
-        ok, msg = await _start_game_server_mode()
+        sid = None
+        try:
+            sid = str((payload or {}).get("story_id") or "").strip()
+        except Exception:
+            sid = None
+        if sid:
+            ids = _list_story_ids()
+            if sid not in ids:
+                return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
+            _STATE.selected_story_id = sid
+        ok, msg = await _start_game_server_mode(selected_story_id=_STATE.selected_story_id or None)
         code = 200 if ok else 400
         return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
 

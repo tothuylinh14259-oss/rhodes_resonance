@@ -4,21 +4,18 @@
 环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
 环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
 目标：冲突终结(pending)
-坐标：Doctor(0, 0); Amiya(0, 1); Mephisto(7, -1); Faust(12, 2)
-角色：Doctor(HP 12/12); Amiya(HP 10/10); Mephisto(HP 0/11)（濒死3）; Faust(HP 12/12)
+坐标：Amiya(6, 1); Doctor(0, 0); Faust(12, 2); Mephisto(6, 1)
+角色：Doctor(HP 12/12); Amiya(HP 10/10); Mephisto(HP 3/11); Faust(HP 12/12)
 [Recent Messages]
-- Amiya: 阿米娅微微抬头，目光扫过前方堆叠的木箱，声音低而坚定：“……他们就在前面。博士，我会优先处理Mephisto。”
-
-她轻踏一步，靠近掩体边缘，准备推进。
-- Mephisto: I noticed that you have interrupted me. What can I do for you?
-- Faust: 浮士德微微侧头，耳边的铁梁震颤声清晰可闻。他抬起弩炮，绿瞳冷静地扫过战场，确认目标的方位。
-
-“梅菲斯特在射程内……其他敌人太远。”  
-他低声自语，弩弦悄然上紧，指尖轻触扳机。
+- Amiya[tool]: Amiya 向 (7, -1) 移动 6步，现位于 (6, 1)。 距目标还差 3步。
+- Faust: I noticed that you have interrupted me. What can I do for you?
+- Mephisto: 梅菲斯特轻抚手杖，唇角勾起病态的笑意：“晨光真是……适合为叛徒送葬。阿米娅，你的歌声还能为我而唱吗？”
 
 )
-- Faust[tool]: 攻击：Faust 使用 faust_crossbow -> Mephisto d20+6 vs AC 12 -> 命中
-伤害：1d8+4 -> 12
-Mephisto 受到 12 伤害，HP 0/11（倒地）
-Mephisto 进入濒死（3回合后死亡；再次受伤即死）
+- Mephisto[tool]: Mephisto 向 (6, 1) 移动 3步，现位于 (6, 1)。 已抵达目标。
+- Amiya: 阿米娅眸光一沉，指尖的源石光芒骤亮，轻声却决绝：“……你的病态玩笑，到此为止。”  
+)
+- Amiya[tool]: 攻击：Amiya 使用 amiya_focus -> Mephisto d20+5 vs AC 12 -> 命中
+伤害：1d6+3 -> 8
+Mephisto 受到 8 伤害，HP 3/11
 
