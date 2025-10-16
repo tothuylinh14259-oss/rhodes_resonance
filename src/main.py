@@ -249,10 +249,35 @@ def load_model_config() -> ModelConfig:
 
 
 def load_story_config() -> dict:
+    """Load story configuration.
+
+    Supports two shapes:
+      1) Single-story (legacy): the file is the story object itself.
+      2) Multi-story container: {"active_id": "id", "stories": {"id": {..}, ...}}
+
+    At runtime we always return a single-story object (the active one) so
+    the rest of the engine remains unchanged.
+    """
     data = _load_json(_configs_dir() / "story.json")
-    if data:
-        return data
-    return _load_json(project_root() / "docs" / "plot.story.json")
+    if not data:
+        # fallback for legacy demo asset
+        return _load_json(project_root() / "docs" / "plot.story.json")
+
+    try:
+        # container shape
+        if isinstance(data, dict) and isinstance(data.get("stories"), dict):
+            stories = data.get("stories") or {}
+            active_id = str(data.get("active_id") or "").strip()
+            # choose the active story or the first available
+            story_id = active_id if active_id in stories else (next(iter(stories.keys())) if stories else "")
+            story = stories.get(story_id) if story_id else None
+            if isinstance(story, dict):
+                return story
+            # container present but empty/malformed -> fallthrough to legacy
+    except Exception:
+        pass
+    # legacy single-story
+    return data
 
 
 def load_characters() -> dict:
@@ -2380,6 +2405,13 @@ async def run_demo(
                     # 2a) NPC：构建一次性 agent（含本回私有提示），注入环境与回顾后输出对白+工具
                     await _npc_ephemeral_say(name, private_section, hub, recap_msg)
 
+                # Close player input prompt if any (frontend expects an explicit end signal)
+                if str(actor_types.get(name, "npc")) == "player":
+                    try:
+                        _emit("system", actor=name, phase="player_input_end", data={"waiting": False})
+                    except Exception:
+                        pass
+
                 # End-of-turn: if actor is in dying state, decrement their own dying timer now
                 try:
                     ch2 = (world.snapshot().get("characters") or {}).get(name, {}) or {}
@@ -2674,6 +2706,30 @@ class _EventBridge:
                 pass
 
 
+    async def send_control(self, typ: str, payload: dict | None = None) -> None:
+        """Broadcast a control message to all clients (non-event)."""
+        dead = []
+        msg = {"type": str(typ)}
+        if payload:
+            try:
+                msg.update(dict(payload))
+            except Exception:
+                pass
+        for ws in list(self._clients):
+            try:
+                await ws.send_json(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            try:
+                await self.unregister(ws)
+            except Exception:
+                pass
+
+    async def send_end(self) -> None:
+        await self.send_control("end")
+
+
 class _ServerState:
     def __init__(self) -> None:
         self.task: Optional[asyncio.Task] = None
@@ -2701,7 +2757,7 @@ _STATE = _ServerState()
 async def _start_game_server_mode() -> Tuple[bool, str]:
     """Start one game run in background if not already running."""
     if _STATE.is_running():
-        return False, "already running"
+        return True, "already running"
 
     # Bootstrap shared bits; in server we reset world to avoid inheriting state
     model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(for_server=True)
@@ -2842,9 +2898,14 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
             except Exception:
                 pass
             try:
+                asyncio.create_task(_STATE.bridge.send_end())
+            except Exception:
+                pass
+            try:
                 log_ctx.close()
             except Exception:
                 pass
+
             _STATE.log_ctx = None
 
     _STATE.task = asyncio.create_task(_runner())
@@ -2853,13 +2914,34 @@ async def _start_game_server_mode() -> Tuple[bool, str]:
 
 
 async def _stop_game_server_mode() -> Tuple[bool, str]:
+    # Idempotent stop: return success when not running; ensure cleanup completes when running.
     if not _STATE.is_running():
-        return False, "not running"
+        try:
+            # Friendly end marker for any stale clients
+            await _STATE.bridge.send_end()
+        except Exception:
+            pass
+        return True, "not running"
     try:
         _STATE.task.cancel()  # cooperative cancellation
     except Exception:
         pass
+    # Await the cancelled task to let its cleanup run; suppress CancelledError
+    if _STATE.task is not None:
+        try:
+            await _STATE.task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        finally:
+            _STATE.task = None
+    try:
+        await _STATE.bridge.send_end()
+    except Exception:
+        pass
     return True, "stopped"
+
 
 
 def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] = None):
@@ -2906,36 +2988,57 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             return {}
 
     def _validate_story(obj: dict) -> tuple[bool, str]:
+        """Validate story config.
+
+        Accept either a single-story object, or a multi-story container:
+          {"active_id": "id", "stories": {"id": {...}, ...}}
+        """
+
+        def _validate_one(story: dict) -> tuple[bool, str]:
+            if not isinstance(story, dict):
+                return False, "story must be a JSON object"
+            scene = story.get("scene")
+            if scene is not None and not isinstance(scene, dict):
+                return False, "scene must be object when provided"
+            if isinstance(scene, dict):
+                # details: list of strings
+                det = scene.get("details")
+                if det is not None:
+                    if not isinstance(det, list) or not all(isinstance(x, str) for x in det):
+                        return False, "scene.details must be an array of strings"
+                # objectives: list of strings
+                objs = scene.get("objectives")
+                if objs is not None:
+                    if not isinstance(objs, list) or not all(isinstance(x, str) for x in objs):
+                        return False, "scene.objectives must be an array of strings"
+            # initial_positions: { name: [x,y] }
+            ip = story.get("initial_positions")
+            if ip is not None:
+                if not isinstance(ip, dict):
+                    return False, "initial_positions must be an object"
+                for k, v in ip.items():
+                    if not (isinstance(v, (list, tuple)) and len(v) >= 2):
+                        return False, f"initial_positions.{k} must be [x,y]"
+                    try:
+                        int(v[0]); int(v[1])
+                    except Exception:
+                        return False, f"initial_positions.{k} coordinates must be integers"
+            return True, "ok"
+
         if not isinstance(obj, dict):
             return False, "story must be a JSON object"
-        # scene (optional but if present should be object)
-        scene = obj.get("scene")
-        if scene is not None and not isinstance(scene, dict):
-            return False, "scene must be object when provided"
-        if isinstance(scene, dict):
-            # details: list of strings
-            det = scene.get("details")
-            if det is not None:
-                if not isinstance(det, list) or not all(isinstance(x, str) for x in det):
-                    return False, "scene.details must be an array of strings"
-            # objectives: list of strings
-            objs = scene.get("objectives")
-            if objs is not None:
-                if not isinstance(objs, list) or not all(isinstance(x, str) for x in objs):
-                    return False, "scene.objectives must be an array of strings"
-        # initial_positions: { name: [x,y] }
-        ip = obj.get("initial_positions")
-        if ip is not None:
-            if not isinstance(ip, dict):
-                return False, "initial_positions must be an object"
-            for k, v in ip.items():
-                if not (isinstance(v, (list, tuple)) and len(v) >= 2):
-                    return False, f"initial_positions.{k} must be [x,y]"
-                try:
-                    int(v[0]); int(v[1])
-                except Exception:
-                    return False, f"initial_positions.{k} coordinates must be integers"
-        return True, "ok"
+        # Multi-story container
+        if isinstance(obj.get("stories"), dict):
+            stories = obj.get("stories") or {}
+            if obj.get("active_id") is not None and not isinstance(obj.get("active_id"), str):
+                return False, "active_id must be a string when provided"
+            for sid, s in stories.items():
+                ok, msg = _validate_one(s)
+                if not ok:
+                    return False, f"story '{sid}' invalid: {msg}"
+            return True, "ok"
+        # Single-story legacy
+        return _validate_one(obj)
 
     def _validate_weapons(obj: dict) -> tuple[bool, str]:
         if not isinstance(obj, dict):
