@@ -1170,6 +1170,7 @@ async def run_demo(
     characters: Mapping[str, Any],
     world: Any,
     player_input_provider: Optional[Callable[[str], Awaitable[str]]] = None,
+    pause_gate: Optional[object] = None,
 ) -> None:
     """Run the NPC talk demo (sequential group chat, no GM/adjudication)."""
 
@@ -2443,6 +2444,14 @@ async def run_demo(
                     data={"round": current_round},
                 )
 
+                # Soft pause: if a pause was requested, block here (between actors)
+                if pause_gate is not None:
+                    try:
+                        await getattr(pause_gate, "wait_if_requested")(after_actor=name, round_val=current_round)
+                    except Exception:
+                        # Defensive: never break the loop due to pause gate errors
+                        pass
+
             _emit("turn_end", phase="round", turn=current_round, data={"round": current_round})
             if combat_cleared:
                 break
@@ -2745,6 +2754,8 @@ class _ServerState:
         self.player_queues: Dict[str, asyncio.Queue[str]] = {}
         # runtime-only selected story id (not persisted)
         self.selected_story_id: str = ""
+        # soft-pause gate (initialized when a session starts)
+        self.pause_gate: Optional["PauseGate"] = None
 
     def is_running(self) -> bool:
         return bool(self.task) and not bool(self.task.done()) and self.running
@@ -2758,6 +2769,71 @@ class _ServerState:
 
 
 _STATE = _ServerState()
+
+
+class PauseGate:
+    """Cooperative soft-pause gate.
+
+    - request(): mark a pause request. The game keeps running until it reaches
+      the next safe point and calls wait_if_requested().
+    - wait_if_requested(): when called at a safe point, transition into paused
+      state, broadcast a control message, and block until resumed.
+    - resume(): clear request and paused state, unblock waiters and broadcast.
+
+    Designed so that clicking "终止" does NOT interrupt the current actor's
+    output; the pause takes effect between turns.
+    """
+
+    def __init__(self) -> None:
+        self.requested: bool = False
+        self.paused: bool = False
+        self._resume_ev: asyncio.Event = asyncio.Event()
+        self._resume_ev.set()  # not paused initially
+        # Optional async callbacks provided by server to notify clients
+        self.on_paused: Optional[Callable[[dict], Awaitable[None]]] = None
+        self.on_resumed: Optional[Callable[[], Awaitable[None]]] = None
+
+    def request(self) -> None:
+        self.requested = True
+
+    def is_paused_or_requested(self) -> bool:
+        return bool(self.requested or self.paused)
+
+    async def wait_if_requested(self, *, after_actor: Optional[str] = None, round_val: Optional[int] = None) -> None:
+        if not self.requested:
+            return
+        # Enter paused state at the first safe point we encounter
+        if not self.paused:
+            self.paused = True
+            try:
+                self._resume_ev.clear()
+            except Exception:
+                pass
+            cb = self.on_paused
+            if callable(cb):
+                try:
+                    payload = {"after_actor": after_actor, "round": round_val}
+                    await cb(payload)
+                except Exception:
+                    pass
+        # Block until resumed
+        await self._resume_ev.wait()
+
+    async def resume(self) -> None:
+        # Clear request; if currently paused, flip state and notify
+        self.requested = False
+        was_paused = self.paused
+        self.paused = False
+        try:
+            self._resume_ev.set()
+        except Exception:
+            pass
+        cb = self.on_resumed
+        if was_paused and callable(cb):
+            try:
+                await cb()
+            except Exception:
+                pass
 
 
 async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) -> Tuple[bool, str]:
@@ -2794,6 +2870,9 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
 
     # New session id for correlation
     _STATE.session_id = str(_uuid.uuid4())
+    # Initialize soft-pause gate for this session
+    gate = PauseGate()
+    _STATE.pause_gate = gate
 
     def emit(*, event_type: str, actor=None, phase=None, turn=None, data=None) -> None:
         ev = Event(event_type=EventType(event_type), actor=actor, phase=phase, turn=turn, data=dict(data or {}))
@@ -2878,6 +2957,22 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
             except Exception:
                 pass
 
+            # Bind pause/resume hooks to broadcast control messages
+            async def _on_paused(payload: dict) -> None:
+                try:
+                    await _STATE.bridge.send_control("paused", payload)
+                except Exception:
+                    pass
+
+            async def _on_resumed() -> None:
+                try:
+                    await _STATE.bridge.send_control("resumed")
+                except Exception:
+                    pass
+
+            gate.on_paused = _on_paused
+            gate.on_resumed = _on_resumed
+
             await run_demo(
                 emit=emit,
                 build_agent=build_agent,
@@ -2888,6 +2983,7 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
                 characters=characters,
                 world=world,
                 player_input_provider=lambda actor_name: _STATE.get_player_queue(str(actor_name)).get(),
+                pause_gate=gate,
             )
         except Exception as exc:
             # Emit a terminal error event
@@ -2930,6 +3026,7 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
 
 
 async def _stop_game_server_mode() -> Tuple[bool, str]:
+    """Hard stop current session (used by restart)."""
     # Idempotent stop: return success when not running; ensure cleanup completes when running.
     if not _STATE.is_running():
         try:
@@ -3208,6 +3305,14 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
 
     @app.post("/api/start")
     async def api_start(payload: dict | None = None):  # type: ignore[no-redef]
+        # When already running and a soft-pause is in effect, this acts as Resume
+        if _STATE.is_running() and _STATE.pause_gate and _STATE.pause_gate.is_paused_or_requested():
+            try:
+                await _STATE.pause_gate.resume()
+            except Exception:
+                return JSONResponse({"ok": False, "message": "resume failed"}, status_code=500)
+            return JSONResponse({"ok": True, "message": "resumed", "session_id": _STATE.session_id})
+        # Otherwise, normal start semantics
         sid = None
         try:
             sid = str((payload or {}).get("story_id") or "").strip()
@@ -3224,9 +3329,17 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
 
     @app.post("/api/stop")
     async def api_stop():  # type: ignore[no-redef]
-        ok, msg = await _stop_game_server_mode()
-        code = 200 if ok else 400
-        return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
+        # Soft pause request (do not cancel the running task).
+        if _STATE.is_running():
+            if _STATE.pause_gate is None:
+                _STATE.pause_gate = PauseGate()
+            try:
+                _STATE.pause_gate.request()
+            except Exception:
+                pass
+            return JSONResponse({"ok": True, "message": "pausing", "session_id": _STATE.session_id})
+        # Not running -> keep idempotent success
+        return JSONResponse({"ok": True, "message": "not running", "session_id": _STATE.session_id})
 
     @app.post("/api/restart")
     async def api_restart(payload: dict | None = None):  # type: ignore[no-redef]
@@ -3264,6 +3377,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
     async def api_state():  # type: ignore[no-redef]
         return {
             "running": _STATE.is_running(),
+            "paused": bool(_STATE.pause_gate.paused) if _STATE.pause_gate else False,
             "last_sequence": _STATE.bridge.last_sequence,
             "state": _STATE.last_snapshot,
             "session_id": _STATE.session_id,
@@ -3307,6 +3421,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                 "last_sequence": _STATE.bridge.last_sequence,
                 "state": _STATE.last_snapshot,
                 "session_id": _STATE.session_id,
+                "paused": bool(_STATE.pause_gate.paused) if _STATE.pause_gate else False,
             })
             for ev in _STATE.bridge.replay_since(since):
                 try:
