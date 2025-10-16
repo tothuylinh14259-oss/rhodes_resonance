@@ -1,6 +1,6 @@
 {
   "stories": {
-    "111": {
+    "default": {
       "initial_positions": {
         "Amiya": [
           0,
