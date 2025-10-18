@@ -7,10 +7,16 @@ import random
 try:
     from agentscope.tool import ToolResponse  # type: ignore
     from agentscope.message import TextBlock  # type: ignore
-except Exception as e:
-    raise ImportError(
-        "agentscope is required at runtime; fallback stubs were removed"
-    ) from e
+except Exception:
+    # Lightweight fallbacks for local tests without agentscope installed
+    class ToolResponse:  # type: ignore
+        def __init__(self, content=None, metadata=None):
+            self.content = content or []
+            self.metadata = metadata or {}
+
+    class TextBlock(dict):  # type: ignore
+        def __init__(self, type: str = "text", text: str = ""):
+            super().__init__(type=type, text=text)
 
 
 # --- Core grid configuration ---
@@ -1012,7 +1018,7 @@ def act_hide(name: str, dc: int = 13):
     return ToolResponse(content=out, metadata={"ok": success})
 
 
-def act_search(name: str, skill: str = "perception", dc: int = 13):
+def act_search(name: str, skill: str = "investigation", dc: int = 13):
     return skill_check_dnd(str(name), str(skill), int(dc))
 
 
@@ -1326,26 +1332,17 @@ def resolve_melee_attack(attacker: str, defender: str, atk_mod: int = 0, dc: int
 
 
 # ================= D&D-like stat block support =================
-ABILITIES = ["STR", "DEX", "CON", "INT", "WIS", "CHA"]
+ABILITIES = ["STR", "DEX", "CON", "INT"]
 SKILL_TO_ABILITY = {
     "acrobatics": "DEX",
-    "animal handling": "WIS",
     "arcana": "INT",
     "athletics": "STR",
-    "deception": "CHA",
     "history": "INT",
-    "insight": "WIS",
-    "intimidation": "CHA",
     "investigation": "INT",
-    "medicine": "WIS",
     "nature": "INT",
-    "perception": "WIS",
-    "performance": "CHA",
-    "persuasion": "CHA",
     "religion": "INT",
     "sleight of hand": "DEX",
     "stealth": "DEX",
-    "survival": "WIS",
 }
 
 
@@ -1367,12 +1364,12 @@ def set_dnd_character(
     """Create/update a D&D-style character sheet (simplified, steps-only distances).
 
     Distances and speeds are stored and displayed in grid steps（步）。
-    abilities: dict with STR/DEX/CON/INT/WIS/CHA as keys.
+    abilities: dict with STR/DEX/CON/INT as keys.
     """
     sheet = WORLD.characters.setdefault(name, {})
     sheet.update({
         "ac": int(ac),
-        "abilities": {k.upper(): int(v) for k, v in abilities.items()},
+        "abilities": {k.upper(): int(v) for k, v in abilities.items() if k and k.upper() in ABILITIES},
         "hp": int(max_hp),
         "max_hp": int(max_hp),
     })
@@ -1417,7 +1414,7 @@ def set_dnd_character_from_config(name: str, dnd: Dict[str, Any]) -> ToolRespons
 
     Supported keys inside `dnd` (all optional):
     - ac, max_hp
-    - abilities: {STR/DEX/CON/INT/WIS/CHA}
+    - abilities: {STR/DEX/CON/INT}
     - move_speed_steps | move_speed  (steps per turn)
     - reach_steps | attack_range_steps | reach | attack_range  (steps)
     """
@@ -1433,9 +1430,9 @@ def set_dnd_character_from_config(name: str, dnd: Dict[str, Any]) -> ToolRespons
 
     abilities_raw = d.get("abilities") or {}
     if not isinstance(abilities_raw, dict) or not abilities_raw:
-        abilities = {"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10}
+        abilities = {"STR": 10, "DEX": 10, "CON": 10, "INT": 10}
     else:
-        abilities = {str(k).upper(): _as_int(v, 10) for k, v in abilities_raw.items()}
+        abilities = {str(k).upper(): _as_int(v, 10) for k, v in abilities_raw.items() if str(k).upper() in ABILITIES}
 
     # Proficiency lists removed from config; all checks/saves use ability mod only.
 

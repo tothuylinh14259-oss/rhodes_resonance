@@ -24,14 +24,14 @@ def test_stat_block_and_attack():
     set_dnd_character(
         name="A",
         ac=12,
-        abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+        abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10},
         max_hp=10,
         move_speed=6,
     )
     set_dnd_character(
         name="B",
         ac=10,
-        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10},
         max_hp=10,
     )
     set_position("A", 0, 0)
@@ -57,14 +57,14 @@ def test_attack_respects_reach_without_auto_move():
     set_dnd_character(
         name="A",
         ac=12,
-        abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+        abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10},
         max_hp=10,
         move_speed=6,
     )
     set_dnd_character(
         name="B",
         ac=10,
-        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10},
         max_hp=10,
     )
     set_position("A", 0, 0)

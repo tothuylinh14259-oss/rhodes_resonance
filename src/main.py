@@ -27,14 +27,19 @@ At runtime (when actually building/running agents), the real library must
 be available; otherwise a clear error is raised when used.
 """
 
-try:  # require agentscope at runtime; fallback stubs removed
+try:  # optional at import time (unit tests may not install agentscope)
     from agentscope.agent import AgentBase, ReActAgent  # type: ignore
     from agentscope.message import Msg  # type: ignore
     from agentscope.pipeline import MsgHub  # type: ignore
-except Exception as e:  # pragma: no cover
-    raise ImportError(
-        "agentscope is required at runtime; fallback stubs were removed"
-    ) from e
+except Exception:  # pragma: no cover - provide light stubs for tests
+    class AgentBase:  # type: ignore
+        pass
+    class ReActAgent:  # type: ignore
+        pass
+    class Msg:  # type: ignore
+        pass
+    class MsgHub:  # type: ignore
+        pass
 from dataclasses import asdict, is_dataclass, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -286,15 +291,22 @@ def load_weapons() -> dict:
 # Agent Factory (inline)
 # ============================================================
 
-try:  # require agentscope modules; fallback stubs removed
+try:  # optional at import time (unit tests may not install agentscope)
     from agentscope.formatter import OpenAIChatFormatter  # type: ignore
     from agentscope.memory import InMemoryMemory  # type: ignore
     from agentscope.model import OpenAIChatModel  # type: ignore
     from agentscope.tool import Toolkit  # type: ignore
-except Exception as e:  # pragma: no cover
-    raise ImportError(
-        "agentscope is required at runtime; fallback stubs were removed"
-    ) from e
+except Exception:  # pragma: no cover - provide light stubs for tests
+    class OpenAIChatFormatter:  # type: ignore
+        pass
+    class InMemoryMemory:  # type: ignore
+        pass
+    class OpenAIChatModel:  # type: ignore
+        def __init__(self, *a, **k):
+            pass
+    class Toolkit:  # type: ignore
+        def register_tool_function(self, *a, **k):
+            pass
 
 
 def _join_lines(tpl):
@@ -1281,7 +1293,7 @@ async def run_demo(
                     world.set_dnd_character(
                         name=name,
                         ac=10,
-                        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+                        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10},
                         max_hp=10,
                         move_speed_steps=6,
                     )
@@ -3131,7 +3143,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
     def _validate_weapons(obj: dict) -> tuple[bool, str]:
         if not isinstance(obj, dict):
             return False, "weapons must be an object"
-        allowed_abilities = {"STR", "DEX", "CON", "INT", "WIS", "CHA"}
+        allowed_abilities = {"STR", "DEX", "CON", "INT"}
         for wid, w in obj.items():
             if not isinstance(w, dict):
                 return False, f"weapon {wid} must be an object"
@@ -3242,12 +3254,14 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         ids: list[str] = []
         try:
             d = _json_load_text(_cfg_path("story"))
-            if isinstance(d, dict) and isinstance(d.get("stories"), dict):
-                ids = sorted(list((d.get("stories") or {}).keys()))
-            elif d:
-                ids = ["default"]
+            if isinstance(d, dict):
+                if isinstance(d.get("stories"), dict):
+                    ids = sorted(list((d.get("stories") or {}).keys()))
+                else:
+                    # Treat any non-container dict (including empty {}) as single-story legacy -> 'default'
+                    ids = ["default"]
         except Exception:
-            # no fallback to demo asset
+            # keep empty on read error
             ids = []
         return ids
 

@@ -20,8 +20,8 @@
   "mephisto_cane": {
     "label": "指挥手杖",
     "reach_steps": 4,
-    "ability": "CHA",
-    "damage_expr": "1d6+CHA"
+    "ability": "INT",
+    "damage_expr": "1d6+INT"
   },
   "faust_crossbow": {
     "label": "重型弩",

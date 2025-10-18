@@ -15,13 +15,13 @@ def test_attack_with_weapon_in_reach():
     set_dnd_character(
         name="A",
         ac=12,
-        abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+        abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10},
         max_hp=10,
     )
     set_dnd_character(
         name="B",
         ac=10,
-        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10},
         max_hp=10,
     )
     set_position("A", 0, 0)
@@ -40,13 +40,13 @@ def test_attack_with_weapon_out_of_reach_fails():
     set_dnd_character(
         name="C",
         ac=12,
-        abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+        abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10},
         max_hp=10,
     )
     set_dnd_character(
         name="D",
         ac=10,
-        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10},
         max_hp=10,
     )
     set_position("C", 0, 0)
