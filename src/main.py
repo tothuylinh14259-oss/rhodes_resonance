@@ -1280,12 +1280,9 @@ async def run_demo(
                     # Ensure the character exists even without dnd config
                     world.set_dnd_character(
                         name=name,
-                        level=1,
                         ac=10,
                         abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
                         max_hp=10,
-                        proficient_skills=[],
-                        proficient_saves=[],
                         move_speed_steps=6,
                     )
             except Exception:
@@ -3151,8 +3148,6 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                     return False, f"weapon {wid}.ability must be one of {sorted(allowed_abilities)}"
             if "damage_expr" in w and not isinstance(w.get("damage_expr"), str):
                 return False, f"weapon {wid}.damage_expr must be a string"
-            if "proficient_default" in w and not isinstance(w.get("proficient_default"), bool):
-                return False, f"weapon {wid}.proficient_default must be boolean"
         return True, "ok"
 
     def _validate_characters(obj: dict) -> tuple[bool, str]:
@@ -3178,7 +3173,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                 return False, f"character {nm} must be an object"
             dnd = data.get("dnd")
             if dnd is not None and isinstance(dnd, dict):
-                for key in ("level", "ac", "max_hp"):
+                for key in ("ac", "max_hp"):
                     if key in dnd:
                         try:
                             int(dnd[key])

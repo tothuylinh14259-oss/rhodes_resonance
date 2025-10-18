@@ -5,7 +5,6 @@
     "appearance": "常穿黑色作战外套与兜帽，面罩下是白发灰瞳的面容（动画版身高约165cm），体力偏弱但行动沉稳。",
     "quotes": [],
     "dnd": {
-      "level": 1,
       "ac": 14,
       "max_hp": 12,
       "abilities": {
@@ -16,15 +15,6 @@
         "WIS": 14,
         "CHA": 10
       },
-      "proficient_skills": [
-        "athletics",
-        "insight",
-        "medicine"
-      ],
-      "proficient_saves": [
-        "STR",
-        "DEX"
-      ],
       "move_speed": 6
     },
     "inventory": {
@@ -40,7 +30,6 @@
       "博士，您还有许多事情需要处理，现在还不能休息哦。"
     ],
     "dnd": {
-      "level": 1,
       "ac": 12,
       "max_hp": 10,
       "abilities": {
@@ -51,15 +40,6 @@
         "WIS": 12,
         "CHA": 12
       },
-      "proficient_skills": [
-        "arcana",
-        "history",
-        "persuasion"
-      ],
-      "proficient_saves": [
-        "INT",
-        "WIS"
-      ],
       "move_speed": 6
     },
     "inventory": {
@@ -75,7 +55,6 @@
       "浮士德，听我的乐章，让他们全部跪下。"
     ],
     "dnd": {
-      "level": 1,
       "ac": 12,
       "max_hp": 11,
       "abilities": {
@@ -86,15 +65,6 @@
         "WIS": 12,
         "CHA": 16
       },
-      "proficient_skills": [
-        "deception",
-        "persuasion",
-        "insight"
-      ],
-      "proficient_saves": [
-        "WIS",
-        "CHA"
-      ],
       "move_speed": 6
     },
     "inventory": {
@@ -110,7 +80,6 @@
       "目标确认——浮士德狙击开始。"
     ],
     "dnd": {
-      "level": 1,
       "ac": 14,
       "max_hp": 12,
       "abilities": {
@@ -121,15 +90,6 @@
         "WIS": 12,
         "CHA": 10
       },
-      "proficient_skills": [
-        "perception",
-        "stealth",
-        "investigation"
-      ],
-      "proficient_saves": [
-        "DEX",
-        "INT"
-      ],
       "move_speed": 6
     },
     "inventory": {

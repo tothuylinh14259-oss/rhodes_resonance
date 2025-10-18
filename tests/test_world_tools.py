@@ -23,24 +23,20 @@ def test_stat_block_and_attack():
     random.seed(42)
     set_dnd_character(
         name="A",
-        level=1,
         ac=12,
         abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
         max_hp=10,
-        proficient_skills=["athletics"],
-        proficient_saves=["STR"],
         move_speed=6,
     )
     set_dnd_character(
         name="B",
-        level=1,
         ac=10,
         abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
         max_hp=10,
     )
     set_position("A", 0, 0)
     set_position("B", 0, 1)
-    res = attack_roll_dnd("A", "B", ability="STR", proficient=True, damage_expr="1d4+STR")
+    res = attack_roll_dnd("A", "B", ability="STR", damage_expr="1d4+STR")
     assert "攻击" in (res.content or [{}])[0].get("text", "")
     # hp should be <= max after damage applied
     hp_after = WORLD.characters["B"]["hp"]
@@ -60,7 +56,6 @@ def test_attack_respects_reach_without_auto_move():
     random.seed(1)
     set_dnd_character(
         name="A",
-        level=1,
         ac=12,
         abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
         max_hp=10,
@@ -68,7 +63,6 @@ def test_attack_respects_reach_without_auto_move():
     )
     set_dnd_character(
         name="B",
-        level=1,
         ac=10,
         abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
         max_hp=10,
@@ -76,7 +70,7 @@ def test_attack_respects_reach_without_auto_move():
     set_position("A", 0, 0)
     set_position("B", 0, 4)
 
-    res = attack_roll_dnd("A", "B", ability="STR", proficient=True, damage_expr="1d4+STR")
+    res = attack_roll_dnd("A", "B", ability="STR", damage_expr="1d4+STR")
     assert res.metadata.get("reach_ok") is False
     assert WORLD.positions["A"] == (0, 0)
 

@@ -14,14 +14,12 @@ def test_attack_with_weapon_in_reach():
     random.seed(7)
     set_dnd_character(
         name="A",
-        level=1,
         ac=12,
         abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
         max_hp=10,
     )
     set_dnd_character(
         name="B",
-        level=1,
         ac=10,
         abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
         max_hp=10,
@@ -29,7 +27,7 @@ def test_attack_with_weapon_in_reach():
     set_position("A", 0, 0)
     set_position("B", 1, 0)
     set_weapon_defs({
-        "longsword": {"reach_steps": 1, "ability": "STR", "damage_expr": "1d8+STR", "proficient_default": True}
+        "longsword": {"reach_steps": 1, "ability": "STR", "damage_expr": "1d8+STR"}
     })
     grant_item("A", "longsword", 1)
     res = attack_with_weapon("A", "B", weapon="longsword")
@@ -41,14 +39,12 @@ def test_attack_with_weapon_out_of_reach_fails():
     random.seed(11)
     set_dnd_character(
         name="C",
-        level=1,
         ac=12,
         abilities={"STR": 12, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
         max_hp=10,
     )
     set_dnd_character(
         name="D",
-        level=1,
         ac=10,
         abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
         max_hp=10,

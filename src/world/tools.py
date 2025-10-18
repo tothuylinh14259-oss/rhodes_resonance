@@ -107,7 +107,6 @@ class World:
                     "reach_steps": max(1, rs),
                     "ability": str(d.get("ability", "STR")).upper(),
                     "damage_expr": str(d.get("damage_expr", "1d4+STR")),
-                    "proficient_default": bool(d.get("proficient_default", False)),
                 }
             return out
 
@@ -1018,15 +1017,15 @@ def act_search(name: str, skill: str = "perception", dc: int = 13):
 
 
 def contest(a: str, a_skill: str, b: str, b_skill: str) -> ToolResponse:
-    # Simple opposed check: d20 + (ability+prof)
+    # Simple opposed check: d20 + ability modifier
     import random as _rand
     def _mod_skill(nm: str, sk: str) -> int:
         st = WORLD.characters.get(nm, {})
         ab_name = SKILL_TO_ABILITY.get(sk.lower())
         ab = int(st.get("abilities", {}).get(ab_name or "STR", 10))
+        # Proficiency lists removed: checks/saves use ability modifier only
         mod = _mod(ab)
-        prof = int(st.get("prof", 2)) if (sk.lower() in (st.get("proficient_skills") or [])) else 0
-        return mod + prof
+        return mod
     a_base = _mod_skill(a, a_skill)
     b_base = _mod_skill(b, b_skill)
     a_roll = _rand.randint(1,20) + a_base
@@ -1356,12 +1355,9 @@ def _mod(score: int) -> int:
 
 def set_dnd_character(
     name: str,
-    level: int,
     ac: int,
     abilities: Dict[str, int],
     max_hp: int,
-    proficient_skills: Optional[List[str]] = None,
-    proficient_saves: Optional[List[str]] = None,
     move_speed_steps: Optional[int] = None,
     reach_steps: Optional[int] = None,
     *,
@@ -1375,14 +1371,10 @@ def set_dnd_character(
     """
     sheet = WORLD.characters.setdefault(name, {})
     sheet.update({
-        "level": int(level),
         "ac": int(ac),
         "abilities": {k.upper(): int(v) for k, v in abilities.items()},
         "hp": int(max_hp),
         "max_hp": int(max_hp),
-        "prof": 2 + max(0, int(level) - 1) // 4,  # L1-4:+2,5-8:+3,...
-        "proficient_skills": [s.lower() for s in (proficient_skills or [])],
-        "proficient_saves": [s.upper() for s in (proficient_saves or [])],
     })
     # If this character was in a dying state in a previous session, clear the flag
     # because a fresh sheet starts at full HP.
@@ -1415,7 +1407,7 @@ def set_dnd_character(
     WORLD.characters[name]["hp"] = sheet["hp"]
     WORLD.characters[name]["max_hp"] = sheet["max_hp"]
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"设定 {name}（Lv{sheet['level']} AC {sheet['ac']} HP {sheet['hp']}/{sheet['max_hp']}，移动 {format_distance_steps(move_steps)}，触及 {format_distance_steps(rsteps)}）")],
+        content=[TextBlock(type="text", text=f"设定 {name}（AC {sheet['ac']} HP {sheet['hp']}/{sheet['max_hp']}，移动 {format_distance_steps(move_steps)}，触及 {format_distance_steps(rsteps)}）")],
         metadata={"name": name, **sheet},
     )
 
@@ -1424,10 +1416,8 @@ def set_dnd_character_from_config(name: str, dnd: Dict[str, Any]) -> ToolRespons
     """Normalize a DnD config dict and delegate to set_dnd_character.
 
     Supported keys inside `dnd` (all optional):
-    - level, ac, max_hp
+    - ac, max_hp
     - abilities: {STR/DEX/CON/INT/WIS/CHA}
-    - proficient_skills: [str]
-    - proficient_saves: [str]
     - move_speed_steps | move_speed  (steps per turn)
     - reach_steps | attack_range_steps | reach | attack_range  (steps)
     """
@@ -1438,7 +1428,6 @@ def set_dnd_character_from_config(name: str, dnd: Dict[str, Any]) -> ToolRespons
             return int(default)
 
     d = dict(dnd or {})
-    level = _as_int(d.get("level", 1), 1)
     ac = _as_int(d.get("ac", 10), 10)
     max_hp = _as_int(d.get("max_hp", 8), 8)
 
@@ -1448,13 +1437,7 @@ def set_dnd_character_from_config(name: str, dnd: Dict[str, Any]) -> ToolRespons
     else:
         abilities = {str(k).upper(): _as_int(v, 10) for k, v in abilities_raw.items()}
 
-    def _as_list(v: Any) -> List[str]:
-        if isinstance(v, list):
-            return [str(x) for x in v]
-        return []
-
-    prof_skills = [s.lower() for s in _as_list(d.get("proficient_skills"))]
-    prof_saves = [s.upper() for s in _as_list(d.get("proficient_saves"))]
+    # Proficiency lists removed from config; all checks/saves use ability mod only.
 
     # Movement speed in steps
     ms_steps = d.get("move_speed_steps")
@@ -1470,12 +1453,9 @@ def set_dnd_character_from_config(name: str, dnd: Dict[str, Any]) -> ToolRespons
 
     return set_dnd_character(
         name=name,
-        level=level,
         ac=ac,
         abilities=abilities,
         max_hp=max_hp,
-        proficient_skills=prof_skills,
-        proficient_saves=prof_saves,
         move_speed_steps=ms_steps,
         reach_steps=reach_steps,
     )
@@ -1490,10 +1470,9 @@ def get_stat_block(name: str) -> ToolResponse:
         f"{k} {v} ({_signed(_mod(v))})" for k, v in ab.items() if k in ABILITIES
     )
     txt = (
-        f"{name} Lv{st.get('level',1)} AC {st.get('ac','?')} "
+        f"{name} AC {st.get('ac','?')} "
         f"HP {st.get('hp','?')}/{st.get('max_hp','?')}\n"
-        f"属性：{ab_line}\n"
-        f"熟练：+{st.get('prof',2)}"
+        f"属性：{ab_line}"
     )
     return ToolResponse(content=[TextBlock(type="text", text=txt)], metadata=st)
 
@@ -1505,9 +1484,8 @@ def skill_check_dnd(name: str, skill: str, dc: int, advantage: str = "none") -> 
         return ToolResponse(content=[TextBlock(type="text", text=f"未知技能 {skill}")], metadata={"success": False})
     ab = int(st.get("abilities", {}).get(ab_name, 10))
     mod = _mod(ab)
-    prof = int(st.get("prof", 2)) if skill.lower() in (st.get("proficient_skills") or []) else 0
-    base = mod + prof
-    base_note = f"{ab_name}修正{_signed(mod)}{' 熟练+%d'%prof if prof else ''}"
+    base = mod
+    base_note = f"{ab_name}修正{_signed(mod)}"
     roll_res = skill_check(target=int(dc), modifier=base, advantage=advantage)
     # rewrite first line to include actor name
     out = []
@@ -1525,9 +1503,8 @@ def saving_throw_dnd(name: str, ability: str, dc: int, advantage: str = "none") 
     ab_name = ability.upper()
     ab = int(st.get("abilities", {}).get(ab_name, 10))
     mod = _mod(ab)
-    prof = int(st.get("prof", 2)) if ab_name in (st.get("proficient_saves") or []) else 0
-    base = mod + prof
-    base_note = f"{ab_name}修正{_signed(mod)}{' 熟练+%d'%prof if prof else ''}"
+    base = mod
+    base_note = f"{ab_name}修正{_signed(mod)}"
     roll_res = skill_check(target=int(dc), modifier=base, advantage=advantage)
     out = []
     if roll_res.content:
@@ -1543,12 +1520,11 @@ def attack_roll_dnd(
     attacker: str,
     defender: str,
     ability: str = "STR",
-    proficient: bool = False,
     target_ac: Optional[int] = None,
     damage_expr: str = "1d4+STR",
     advantage: str = "none",
 ) -> ToolResponse:
-    """D&D-like attack roll: d20 + ability mod (+prof) vs AC, on hit apply damage.
+    """D&D-like attack roll: d20 + ability mod vs AC, on hit apply damage.
     damage_expr 支持 +STR/+DEX/+CON 等修正占位符。
     """
     # Voluntary attack is blocked if attacker is down/dying/dead (hp<=0 or dying bookkeeping exists)
@@ -1563,8 +1539,7 @@ def attack_roll_dnd(
     dfd = WORLD.characters.get(defender, {})
     ac = int(target_ac if target_ac is not None else dfd.get("ac", 10))
     mod = _mod(int(atk.get("abilities", {}).get(ability.upper(), 10)))
-    prof = int(atk.get("prof", 2)) if proficient else 0
-    base = mod + prof
+    base = mod
 
     def _fmt_distance(steps: Optional[int]) -> str:
         if steps is None:
@@ -1659,10 +1634,16 @@ def attack_roll_dnd(
 def set_weapon_defs(defs: Dict[str, Dict[str, Any]]):
     """Replace the entire weapon definition table.
 
-    defs: { weapon_id: { reach_steps:int, ability:str?, damage_expr:str?, proficient_default:bool? } }
+    defs: { weapon_id: { reach_steps:int, ability:str?, damage_expr:str? } }
     """
     try:
-        WORLD.weapon_defs = {str(k): dict(v or {}) for k, v in (defs or {}).items()}
+        cleaned = {}
+        for k, v in (defs or {}).items():
+            d = dict(v or {})
+            # Drop legacy proficient flag if present
+            d.pop("proficient_default", None)
+            cleaned[str(k)] = d
+        WORLD.weapon_defs = cleaned
     except Exception:
         WORLD.weapon_defs = {}
     return ToolResponse(content=[TextBlock(type="text", text=f"武器表载入：{len(WORLD.weapon_defs)} 项")], metadata={"count": len(WORLD.weapon_defs)})
@@ -1670,7 +1651,9 @@ def set_weapon_defs(defs: Dict[str, Dict[str, Any]]):
 
 def define_weapon(weapon_id: str, data: Dict[str, Any]):
     wid = str(weapon_id)
-    WORLD.weapon_defs[wid] = dict(data or {})
+    d = dict(data or {})
+    d.pop("proficient_default", None)
+    WORLD.weapon_defs[wid] = d
     return ToolResponse(content=[TextBlock(type="text", text=f"武器登记：{wid}")], metadata={"id": wid, **WORLD.weapon_defs[wid]})
 
 
@@ -1683,7 +1666,7 @@ def attack_with_weapon(
     """Attack using a named weapon from WORLD.weapon_defs.
 
     - No auto-move; if distance > reach_steps, fail early.
-    - ability/damage_expr/proficient_default are sourced from weapon defs with safe defaults.
+    - ability/damage_expr are sourced from weapon defs with safe defaults.
     """
     atk = WORLD.characters.get(attacker, {})
     # Voluntary attack is blocked if attacker is down/dying/dead (hp<=0 or dying bookkeeping exists)
@@ -1700,12 +1683,9 @@ def attack_with_weapon(
         reach_steps = int(DEFAULT_REACH_STEPS)
     ability = str(w.get("ability", "STR")).upper()
     damage_expr = str(w.get("damage_expr", "1d4+STR"))
-    proficient_default = bool(w.get("proficient_default", False))
-
-    # Build attack base: ability mod + prof (if enabled)
+    # Build attack base: ability modifier only (no proficiency bonus)
     mod = _mod(int(atk.get("abilities", {}).get(ability, 10)))
-    prof = int(atk.get("prof", 2)) if proficient_default else 0
-    base = mod + prof
+    base = mod
 
     # Distance string helper
     def _fmt_distance(steps: Optional[int]) -> str:

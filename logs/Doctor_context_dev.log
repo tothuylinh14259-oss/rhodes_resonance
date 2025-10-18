@@ -8,24 +8,54 @@
 角色：Doctor(HP 12/12); Amiya(HP 0/10)（濒死2）; Mephisto(HP 11/11); Faust(HP 12/12)
 [Recent Messages]
 - Amiya[tool]: Amiya 向 (7, -1) 移动 6步，现位于 (6, 1)。 距目标还差 3步。
-- Faust: 浮士德微微俯身，指尖拂过弩弦，确认张力。  
-“目标确认——浮士德狙击开始。”
+- Faust: 浮士德压低弩身，目光掠过准星。  
+“……目标在射程内。”
 
 )
-- Faust[tool]: 攻击：Faust 使用 faust_crossbow -> Amiya d20+6 vs AC 12 -> 命中
-伤害：1d8+4 -> 7
-Amiya 受到 7 伤害，HP 3/10
-- Mephisto: Mephisto轻轻旋转手杖，嘴角勾起一抹病态的笑意，低声哼起断续的童谣：“再见了，家……再见了，为我唱歌的人。”  
-他抬眼望向阿米娅，绿瞳里闪着扭曲的期待：“你的声音，会是我今日的第一支哀歌吗？”  
+- Faust[tool]: 攻击：Faust 使用 faust_crossbow -> Amiya d20+4 vs AC 12 -> 命中
+伤害：1d8+4 -> 8
+Amiya 受到 8 伤害，HP 2/10
+- Mephisto: 梅菲斯特轻抚手杖，嘴角扬起病态的笑意：“阿米娅……你的歌声快停了，让我用最后的节拍为你送行。”
 
 )
-- Mephisto[tool]: 攻击：Mephisto 使用 mephisto_cane -> Amiya d20+5 vs AC 12 -> 命中
-伤害：1d6+3 -> 9
-Amiya 受到 9 伤害，HP 0/10（倒地）
+- Mephisto[tool]: 攻击：Mephisto 使用 mephisto_cane -> Amiya d20+3 vs AC 12 -> 命中
+伤害：1d6+3 -> 8
+Amiya 受到 8 伤害，HP 0/10（倒地）
 Amiya 进入濒死（3回合后死亡；再次受伤即死）
-- Amiya: 阿米娅的指尖在尘土中微微蜷起，耳尖无力地垂下，血迹顺着额角滑入鬓发。  
-“……博士……”她气若游丝，却仍努力将声音送向那道熟悉的身影，“对不起……我……没能拦住他们……”
+- Amiya: 阿米娅指尖微颤，血迹顺着指节滴落。她抬眼望向博士，声音轻得几乎被铁梁的回响淹没：
 
-她无法移动，也无法再凝聚源石技艺，只能将最后的意志化作一句低语：
-“请……不要靠近我……他们会……以我为饵……”
+“博士……我……撑不住了……”
+
+她咬紧下唇，努力让意识保持清醒，却无法再挪动一步。伤口撕裂，鲜血染湿了地面。
+
+“请……快离开这里……Mephisto……不会停手……”
+
+她的眼神仍固执地锁定博士的方向，哪怕身体已濒临崩溃。
+
+=== Round 2 | Actor: Doctor ===
+[Relation] Amiya:+85（挚友）；Mephisto:-85（死敌）；Faust:-80（死敌）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Amiya(6, 1); Doctor(0, 0); Faust(12, 2); Mephisto(7, -1)
+角色：Doctor(HP 12/12); Amiya(HP 0/10)（濒死1）; Mephisto(HP 11/11); Faust(HP 12/12)
+[Recent Messages]
+- Doctor[tool]: 给予 Amiya 物品 first_aid_pack x1，现有数量=1
+- Faust: 浮士德无声地将弩炮折叠收起，暗绿瞳孔倒映着倒地的阿米娅。  
+“……目标已沉默。博士，下一个坐标是你。”
+
+)
+- Faust[tool]: 攻击：Faust 使用 faust_crossbow -> Amiya d20+4 vs AC 12 -> 未中
+- Mephisto: “……多么感人的宣言，博士。”  
+我抬手整理领口的褶皱，手杖轻敲地面，像在为一首终章打拍子。  
+“可惜，死亡从不听命于你——它只听我的歌。”
+
+)
+- Mephisto[tool]: 攻击：Mephisto 使用 mephisto_cane -> Amiya d20+3 vs AC 12 -> 未中
+- Amiya: 阿米娅指尖微颤，血迹顺着指缝滴落，却努力抬起脸，声音轻得几乎被铁梁回声淹没：
+
+“……博士，别……靠近他们……我……还在这儿……”
+
+她视线开始模糊，却固执地望向Doctor的方向，像要用最后的力气把警告刻进对方心里。
 
