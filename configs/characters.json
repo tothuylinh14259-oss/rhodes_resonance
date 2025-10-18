@@ -4,16 +4,27 @@
     "persona": "罗德岛“博士”：战术协调与决策核心，偏好整合情报、分配资源，在压力下保持冷静并快速下达指令。",
     "appearance": "常穿黑色作战外套与兜帽，面罩下是白发灰瞳的面容（动画版身高约165cm），体力偏弱但行动沉稳。",
     "quotes": [],
-    "dnd": {
-      "ac": 14,
-      "max_hp": 12,
-      "abilities": {
-        "STR": 12,
-        "DEX": 16,
-        "CON": 14,
-        "INT": 10
+    "system": "coc",
+    "coc": {
+      "characteristics": {
+        "STR": 60,
+        "DEX": 80,
+        "CON": 70,
+        "INT": 50,
+        "POW": 55,
+        "APP": 50,
+        "EDU": 60,
+        "SIZ": 45,
+        "LUCK": 50
       },
-      "move_speed": 6
+      "skills": {
+        "Fighting_Blade": 35,
+        "Firearms_Handgun": 30,
+        "Arts_Control": 30,
+        "Throwables_Explosives": 30,
+        "Perception": 45,
+        "Dodge": 40
+      }
     },
     "inventory": {
       "doctor_knife": 1
@@ -27,16 +38,26 @@
       "博士，能再见到您……真是太好了。",
       "博士，您还有许多事情需要处理，现在还不能休息哦。"
     ],
-    "dnd": {
-      "ac": 12,
-      "max_hp": 10,
-      "abilities": {
-        "STR": 8,
-        "DEX": 14,
-        "CON": 12,
-        "INT": 16
+    "system": "coc",
+    "coc": {
+      "characteristics": {
+        "STR": 40,
+        "DEX": 70,
+        "CON": 60,
+        "INT": 80,
+        "POW": 70,
+        "APP": 60,
+        "EDU": 55,
+        "SIZ": 40,
+        "LUCK": 55
       },
-      "move_speed": 6
+      "skills": {
+        "Arts_Offense": 75,
+        "Arts_Control": 55,
+        "Fighting_Blade": 30,
+        "Perception": 50,
+        "Dodge": 35
+      }
     },
     "inventory": {
       "amiya_focus": 1
@@ -50,16 +71,26 @@
       "再见了，家……再见了，为我唱歌的人。",
       "浮士德，听我的乐章，让他们全部跪下。"
     ],
-    "dnd": {
-      "ac": 12,
-      "max_hp": 11,
-      "abilities": {
-        "STR": 8,
-        "DEX": 12,
-        "CON": 12,
-        "INT": 14
+    "system": "coc",
+    "coc": {
+      "characteristics": {
+        "STR": 40,
+        "DEX": 60,
+        "CON": 60,
+        "INT": 70,
+        "POW": 60,
+        "APP": 65,
+        "EDU": 60,
+        "SIZ": 50,
+        "LUCK": 50
       },
-      "move_speed": 6
+      "skills": {
+        "Arts_Control": 70,
+        "Arts_Offense": 45,
+        "Firearms_Handgun": 30,
+        "Perception": 45,
+        "Dodge": 30
+      }
     },
     "inventory": {
       "mephisto_cane": 1
@@ -73,16 +104,27 @@
       "我希望哪怕是一个人，你也要活下去。",
       "目标确认——浮士德狙击开始。"
     ],
-    "dnd": {
-      "ac": 14,
-      "max_hp": 12,
-      "abilities": {
-        "STR": 10,
-        "DEX": 18,
-        "CON": 12,
-        "INT": 14
+    "system": "coc",
+    "coc": {
+      "characteristics": {
+        "STR": 50,
+        "DEX": 90,
+        "CON": 60,
+        "INT": 70,
+        "POW": 50,
+        "APP": 45,
+        "EDU": 55,
+        "SIZ": 60,
+        "LUCK": 50
       },
-      "move_speed": 6
+      "skills": {
+        "Firearms_Rifle_Crossbow": 80,
+        "Heavy_Weapons": 50,
+        "Throwables_Explosives": 40,
+        "Fighting_Brawl": 25,
+        "Perception": 60,
+        "Dodge": 45
+      }
     },
     "inventory": {
       "faust_crossbow": 1

@@ -73,7 +73,7 @@ class World:
     marks: List[str] = field(default_factory=list)
     # Compatibility: legacy field referenced by tests; remains a no-op container
     hidden_enemies: Dict[str, Any] = field(default_factory=dict)
-    # --- Combat (D&D-like, 6s rounds) ---
+    # --- Combat (rounds) ---
     in_combat: bool = False
     round: int = 1
     turn_idx: int = 0
@@ -640,14 +640,13 @@ def add_objective(obj: str):
     return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"objectives": list(WORLD.objectives), "status": dict(WORLD.objective_status)})
 
 
-# ---- D&D combat (initiative/turn economy) ----
-def _dex_mod_of(name: str) -> int:
+def _coc_dex_of(name: str) -> int:
     st = WORLD.characters.get(name, {})
+    coc = dict(st.get("coc") or {})
     try:
-        dex = int(st.get("abilities", {}).get("DEX", 10))
+        return int((coc.get("characteristics") or {}).get("DEX", 50))
     except Exception:
-        dex = 10
-    return _mod(dex)
+        return 50
 
 
 def set_speed(name: str, value: float = DEFAULT_MOVE_SPEED_STEPS, unit: str = "steps"):
@@ -685,11 +684,9 @@ def roll_initiative(participants: Optional[List[str]] = None):
     import random as _rand
     scores: Dict[str, int] = {}
     for nm in names:
-        # d20 + DEX
-        sc = _rand.randint(1, 20) + _dex_mod_of(nm)
-        scores[nm] = sc
-    # sort desc by score; tiebreaker by DEX then name
-    ordered = sorted(names, key=lambda n: (scores.get(n, 0), _dex_mod_of(n), str(n)), reverse=True)
+        scores[nm] = _coc_dex_of(nm)
+    # sort desc by DEX; tiebreaker by random then name
+    ordered = sorted(names, key=lambda n: (scores.get(n, 0), _rand.random(), str(n)), reverse=True)
     WORLD.initiative_scores = scores
     WORLD.initiative_order = ordered
     WORLD.round = 1
@@ -1007,9 +1004,9 @@ def act_help(name: str, target: str):
 
 
 def act_hide(name: str, dc: int = 13):
-    # Perform stealth check; on success, grant hidden
+    # CoC: Perform Stealth check; ignore DC, use skill value
     nm = str(name)
-    res = skill_check_dnd(nm, "stealth", int(dc))
+    res = skill_check_coc(nm, "Stealth")
     success = bool((res.metadata or {}).get("success"))
     out = list(res.content or [])
     if success:
@@ -1018,26 +1015,28 @@ def act_hide(name: str, dc: int = 13):
     return ToolResponse(content=out, metadata={"ok": success})
 
 
-def act_search(name: str, skill: str = "investigation", dc: int = 13):
-    return skill_check_dnd(str(name), str(skill), int(dc))
+def act_search(name: str, skill: str = "Perception", dc: int = 50):
+    # CoC: generic skill check; DC is ignored (percentile system)
+    return skill_check_coc(str(name), str(skill))
 
 
 def contest(a: str, a_skill: str, b: str, b_skill: str) -> ToolResponse:
-    # Simple opposed check: d20 + ability modifier
-    import random as _rand
-    def _mod_skill(nm: str, sk: str) -> int:
-        st = WORLD.characters.get(nm, {})
-        ab_name = SKILL_TO_ABILITY.get(sk.lower())
-        ab = int(st.get("abilities", {}).get(ab_name or "STR", 10))
-        # Proficiency lists removed: checks/saves use ability modifier only
-        mod = _mod(ab)
-        return mod
-    a_base = _mod_skill(a, a_skill)
-    b_base = _mod_skill(b, b_skill)
-    a_roll = _rand.randint(1,20) + a_base
-    b_roll = _rand.randint(1,20) + b_base
-    text = f"对抗：{a} {a_skill}={a_roll} vs {b} {b_skill}={b_roll} -> {'{a}胜' if a_roll>=b_roll else '{b}胜'}"
-    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"a_total": a_roll, "b_total": b_roll, "a_base": a_base, "b_base": b_base, "winner": a if a_roll>=b_roll else b})
+    # CoC opposed check: compare success levels; if equal, lower roll wins
+    ar = skill_check_coc(a, a_skill)
+    br = skill_check_coc(b, b_skill)
+    a_meta = ar.metadata or {}
+    b_meta = br.metadata or {}
+    def _lvl(m):
+        return {"extreme": 3, "hard": 2, "regular": 1, "fail": 0}.get(str(m.get("success_level", "fail")), 0)
+    la, lb = _lvl(a_meta), _lvl(b_meta)
+    if la != lb:
+        winner = a if la > lb else b
+    else:
+        ra = int(a_meta.get("roll", 101) or 101)
+        rb = int(b_meta.get("roll", 101) or 101)
+        winner = a if ra < rb else b
+    text = f"对抗：{a}({a_skill})[{a_meta.get('success_level','fail')}] vs {b}({b_skill})[{b_meta.get('success_level','fail')}] -> {winner} 胜"
+    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"a": a_meta, "b": b_meta, "winner": winner})
 
 
 def act_grapple(attacker: str, defender: str) -> ToolResponse:
@@ -1069,6 +1068,162 @@ def set_character(name: str, hp: int, max_hp: int):
         content=[TextBlock(type="text", text=f"设定角色 {name}：HP {int(hp)}/{int(max_hp)}")],
         metadata={"name": name, "hp": int(hp), "max_hp": int(max_hp)},
     )
+
+
+# ================= CoC 7e support (percentile) =================
+def _coc7_hp_max(con: int, siz: int) -> int:
+    """Compute CoC 7e HP Max from percentile CON/SIZ.
+
+    Formula (7e): floor((CON + SIZ) / 10), min 1.
+    """
+    try:
+        con_i = int(con)
+    except Exception:
+        con_i = 0
+    try:
+        siz_i = int(siz)
+    except Exception:
+        siz_i = 0
+    val = (max(0, con_i) + max(0, siz_i)) // 10
+    return max(1, int(val))
+
+
+def set_coc_character(
+    name: str,
+    *,
+    characteristics: Dict[str, int],
+    skills: Optional[Dict[str, int]] = None,
+    terra: Optional[Dict[str, Any]] = None,
+) -> ToolResponse:
+    """Create/update a CoC 7e character and derive HP by CoC 7e rule.
+
+    Input characteristics are percentile scores like {STR, CON, DEX, INT, POW, APP, EDU, SIZ, LUCK}.
+    HP Max = floor((CON + SIZ) / 10), at least 1. Starts at full HP.
+    Also derives basic SAN/MP if POW present; leaves others to callers.
+    """
+    nm = str(name)
+    char = {k.upper(): int(v) for k, v in (characteristics or {}).items()}
+    con = int(char.get("CON", 0))
+    siz = int(char.get("SIZ", 0))
+    hp_max = _coc7_hp_max(con, siz)
+    # Start at full HP
+    hp_now = int(hp_max)
+    # Optional deriveds
+    pow_v = int(char.get("POW", 0))
+    derived = {
+        "hp": hp_max,
+        **({"san": pow_v} if pow_v > 0 else {}),
+        **({"mp": max(0, pow_v // 5)} if pow_v > 0 else {}),
+    }
+    sheet = WORLD.characters.setdefault(nm, {})
+    sheet.update(
+        {
+            "system": "coc",
+            "hp": hp_now,
+            "max_hp": hp_max,
+            "coc": {
+                "characteristics": char,
+                "derived": derived,
+                **({"skills": {k: int(v) for k, v in (skills or {}).items()}} if skills else {}),
+                **({"terra": dict(terra)} if terra else {}),
+            },
+        }
+    )
+    # Clear any dying flag when creating a fresh sheet
+    sheet.pop("dying_turns_left", None)
+    return ToolResponse(
+        content=[
+            TextBlock(
+                type="text",
+                text=f"设定(CoC) {nm}：HP {hp_now}/{hp_max}（公式：floor((CON+SIZ)/10)）",
+            )
+        ],
+        metadata={"name": nm, "hp": hp_now, "max_hp": hp_max, "system": "coc"},
+    )
+
+
+def recompute_coc_derived(name: str) -> ToolResponse:
+    """Recompute CoC derived values (HP, SAN/MP if POW present) from stored characteristics.
+
+    Safe no-op if the character has no CoC block.
+    """
+    nm = str(name)
+    st = WORLD.characters.get(nm, {})
+    coc = dict(st.get("coc") or {})
+    if not coc:
+        return ToolResponse(content=[], metadata={"name": nm, "ok": False, "reason": "no_coc_block"})
+    ch = {k.upper(): int(v) for k, v in (coc.get("characteristics") or {}).items()}
+    con = int(ch.get("CON", 0))
+    siz = int(ch.get("SIZ", 0))
+    hp_max = _coc7_hp_max(con, siz)
+    # Keep current damage by preserving ratio of current to old max, but clamp to new max.
+    try:
+        old_max = int(st.get("max_hp", hp_max))
+        old_hp = int(st.get("hp", hp_max))
+        ratio = (old_hp / old_max) if old_max > 0 else 1.0
+    except Exception:
+        ratio = 1.0
+    new_hp = min(hp_max, max(0, int(math.floor(hp_max * max(0.0, float(ratio))))))
+    # Update top-level and coc.derived
+    st["max_hp"] = hp_max
+    st["hp"] = new_hp
+    pow_v = int(ch.get("POW", 0))
+    derived = dict(coc.get("derived") or {})
+    derived.update({"hp": hp_max})
+    if pow_v > 0:
+        derived.update({"san": pow_v, "mp": max(0, pow_v // 5)})
+    coc["derived"] = derived
+    st["coc"] = coc
+    WORLD.characters[nm] = st
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"重算(CoC)：{nm} HP {new_hp}/{hp_max}")],
+        metadata={"name": nm, "hp": new_hp, "max_hp": hp_max, "system": st.get("system")},
+    )
+
+
+def set_coc_character_from_config(name: str, coc: Dict[str, Any]) -> ToolResponse:
+    """Normalize a `coc` dict from config and delegate to set_coc_character.
+
+    Expected layout (minimal):
+    { "characteristics": { "CON": 70, "SIZ": 60, ... }, "skills": {...}, "terra": {...} }
+    If "characteristics" is missing, accept flat keys at top-level as a convenience.
+    """
+    d = dict(coc or {})
+    chars = d.get("characteristics")
+    if not isinstance(chars, dict):
+        # Allow flat layout fallback
+        chars = {k: v for k, v in d.items() if isinstance(v, (int, float)) and str(k).isupper()}
+    skills = d.get("skills") if isinstance(d.get("skills"), dict) else None
+    terra = d.get("terra") if isinstance(d.get("terra"), dict) else None
+    return set_coc_character(name=name, characteristics={k: int(v) for k, v in (chars or {}).items()}, skills=skills, terra=terra)
+
+
+def set_coc_character_from_dnd(name: str, dnd: Dict[str, Any]) -> ToolResponse:
+    """Convert a minimal D&D block to a CoC 7e character and register it.
+
+    Mapping (rough, per docs): CoC ~= round(D&D × 5). Missing stats default to mid-line values.
+    - STR/DEX/CON/INT map directly; POW/APP/EDU/LUCK default to 50/50/60/50.
+    - SIZ defaults to 50 (adjust per character later if needed).
+    """
+    d = dict(dnd or {})
+    ab = {str(k).upper(): int(v) for k, v in (d.get("abilities") or {}).items() if k}
+    def to_coc(x: int) -> int:
+        try:
+            return int(round(int(x) * 5))
+        except Exception:
+            return 50
+    chars = {
+        "STR": to_coc(ab.get("STR", 10)),
+        "DEX": to_coc(ab.get("DEX", 10)),
+        "CON": to_coc(ab.get("CON", 10)),
+        "INT": to_coc(ab.get("INT", 10)),
+        "POW": 50,
+        "APP": 50,
+        "EDU": 60,
+        "SIZ": 50,
+        "LUCK": 50,
+    }
+    return set_coc_character(name=name, characteristics=chars)
 
 
 def get_character(name: str):
@@ -1252,33 +1407,41 @@ def roll_dice(expr: str = "1d20"):
     )
 
 
-def skill_check(target: int, modifier: int = 0, advantage: str = "none"):
-    """Perform a d20 skill check.
+def skill_check_coc(name: str, skill: str, *, value: Optional[int] = None, difficulty: str = "regular") -> ToolResponse:
+    """CoC 7e percentile skill check.
 
-    Args:
-        target: DC/目标值（越高越难）
-        modifier: 调整值，如敏捷/感知等加成
-        advantage: 'none'|'advantage'|'disadvantage'
+    - If `value` omitted, read from character's coc.skills; otherwise derive default by name.
+    - difficulty affects only the text/threshold (regular/hard/extreme), we still roll once and report level.
     """
-    def d20():
-        return random.randint(1, 20)
-    r1 = d20(); r2 = d20()
-    if advantage == "advantage":
-        roll = max(r1, r2)
-        note = f"优势({r1},{r2}->取{roll})"
-    elif advantage == "disadvantage":
-        roll = min(r1, r2)
-        note = f"劣势({r1},{r2}->取{roll})"
+    nm = str(name)
+    st = WORLD.characters.get(nm, {})
+    target = int(value) if value is not None else _coc_skill_value(nm, skill)
+    roll = random.randint(1, 100)
+    t = max(1, int(target))
+    hard = max(1, t // 2)
+    extreme = max(1, t // 5)
+    if roll <= extreme:
+        level = "extreme"
+        success = True
+    elif roll <= hard:
+        level = "hard"
+        success = True
+    elif roll <= t:
+        level = "regular"
+        success = True
     else:
-        roll = r1
-        note = f"单掷({roll})"
-    total = roll + int(modifier)
-    success = total >= int(target)
-    text = f"检定 d20+{int(modifier)}={total} vs DC {int(target)} -> {'成功' if success else '失败'}（{note}）"
-    return ToolResponse(
-        content=[TextBlock(type="text", text=text)],
-        metadata={"roll": roll, "modifier": int(modifier), "total": total, "target": int(target), "success": success, "note": note},
-    )
+        level = "fail"
+        success = False
+    txt = f"检定（CoC）：{nm} {skill} d100={roll} / {t} -> {('成功['+level+']') if success else '失败'}"
+    return ToolResponse(content=[TextBlock(type="text", text=txt)], metadata={
+        "name": nm,
+        "skill": str(skill),
+        "roll": roll,
+        "target": t,
+        "success": success,
+        "success_level": level,
+        "difficulty": str(difficulty),
+    })
 
 
 def resolve_melee_attack(attacker: str, defender: str, atk_mod: int = 0, dc: int = 12, dmg_expr: str = "1d4", advantage: str = "none"):
@@ -1331,300 +1494,33 @@ def resolve_melee_attack(attacker: str, defender: str, atk_mod: int = 0, dc: int
     return ToolResponse(content=parts, metadata=out_meta)
 
 
-# ================= D&D-like stat block support =================
-ABILITIES = ["STR", "DEX", "CON", "INT"]
-SKILL_TO_ABILITY = {
-    "acrobatics": "DEX",
-    "arcana": "INT",
-    "athletics": "STR",
-    "history": "INT",
-    "investigation": "INT",
-    "nature": "INT",
-    "religion": "INT",
-    "sleight of hand": "DEX",
-    "stealth": "DEX",
-}
-
-
-def _mod(score: int) -> int:
-    return (int(score) - 10) // 2
-
-
-def set_dnd_character(
-    name: str,
-    ac: int,
-    abilities: Dict[str, int],
-    max_hp: int,
-    move_speed_steps: Optional[int] = None,
-    reach_steps: Optional[int] = None,
-    *,
-    # Backward-compat: accept legacy alias `move_speed` (steps)
-    move_speed: Optional[int] = None,
-) -> ToolResponse:
-    """Create/update a D&D-style character sheet (simplified, steps-only distances).
-
-    Distances and speeds are stored and displayed in grid steps（步）。
-    abilities: dict with STR/DEX/CON/INT as keys.
-    """
-    sheet = WORLD.characters.setdefault(name, {})
-    sheet.update({
-        "ac": int(ac),
-        "abilities": {k.upper(): int(v) for k, v in abilities.items() if k and k.upper() in ABILITIES},
-        "hp": int(max_hp),
-        "max_hp": int(max_hp),
-    })
-    # If this character was in a dying state in a previous session, clear the flag
-    # because a fresh sheet starts at full HP.
-    sheet.pop("dying_turns_left", None)
-    # Movement (steps per turn). Prefer explicit steps; fall back to legacy alias `move_speed`.
-    ms = (
-        move_speed_steps
-        if move_speed_steps is not None
-        else (move_speed if move_speed is not None else sheet.get("move_speed_steps", DEFAULT_MOVE_SPEED_STEPS))
-    )
-    try:
-        move_steps = int(ms)
-    except Exception:
-        move_steps = int(DEFAULT_MOVE_SPEED_STEPS)
-    if move_steps <= 0:
-        move_steps = 1
-    sheet["move_speed_steps"] = move_steps
-    WORLD.speeds[name] = move_steps
-
-    # Reach (steps) — keep optional for backward-compat in tests only
-    rs = reach_steps if reach_steps is not None else sheet.get("reach_steps", DEFAULT_REACH_STEPS)
-    try:
-        rsteps = int(rs)
-    except Exception:
-        rsteps = int(DEFAULT_REACH_STEPS)
-    rsteps = max(1, rsteps)
-    sheet["reach_steps"] = rsteps
-
-    # Keep legacy keys for compatibility
-    WORLD.characters[name]["hp"] = sheet["hp"]
-    WORLD.characters[name]["max_hp"] = sheet["max_hp"]
-    return ToolResponse(
-        content=[TextBlock(type="text", text=f"设定 {name}（AC {sheet['ac']} HP {sheet['hp']}/{sheet['max_hp']}，移动 {format_distance_steps(move_steps)}，触及 {format_distance_steps(rsteps)}）")],
-        metadata={"name": name, **sheet},
-    )
-
-
-def set_dnd_character_from_config(name: str, dnd: Dict[str, Any]) -> ToolResponse:
-    """Normalize a DnD config dict and delegate to set_dnd_character.
-
-    Supported keys inside `dnd` (all optional):
-    - ac, max_hp
-    - abilities: {STR/DEX/CON/INT}
-    - move_speed_steps | move_speed  (steps per turn)
-    - reach_steps | attack_range_steps | reach | attack_range  (steps)
-    """
-    def _as_int(x: Any, default: int) -> int:
-        try:
-            return int(float(x))
-        except Exception:
-            return int(default)
-
-    d = dict(dnd or {})
-    ac = _as_int(d.get("ac", 10), 10)
-    max_hp = _as_int(d.get("max_hp", 8), 8)
-
-    abilities_raw = d.get("abilities") or {}
-    if not isinstance(abilities_raw, dict) or not abilities_raw:
-        abilities = {"STR": 10, "DEX": 10, "CON": 10, "INT": 10}
-    else:
-        abilities = {str(k).upper(): _as_int(v, 10) for k, v in abilities_raw.items() if str(k).upper() in ABILITIES}
-
-    # Proficiency lists removed from config; all checks/saves use ability mod only.
-
-    # Movement speed in steps
-    ms_steps = d.get("move_speed_steps")
-    if ms_steps is None:
-        ms_steps = d.get("move_speed")
-    ms_steps = _as_int(ms_steps, DEFAULT_MOVE_SPEED_STEPS) if ms_steps is not None else DEFAULT_MOVE_SPEED_STEPS
-    if ms_steps <= 0:
-        ms_steps = 1
-
-    # Reach in steps (only reach_steps retained; legacy synonyms removed)
-    reach_steps = _as_int(d.get("reach_steps", DEFAULT_REACH_STEPS), DEFAULT_REACH_STEPS)
-    reach_steps = max(1, int(reach_steps))
-
-    return set_dnd_character(
-        name=name,
-        ac=ac,
-        abilities=abilities,
-        max_hp=max_hp,
-        move_speed_steps=ms_steps,
-        reach_steps=reach_steps,
-    )
-
-
 def get_stat_block(name: str) -> ToolResponse:
     st = WORLD.characters.get(name, {})
     if not st:
         return ToolResponse(content=[TextBlock(type="text", text=f"未找到 {name}")], metadata={"found": False})
-    ab = st.get("abilities", {})
-    ab_line = ", ".join(
-        f"{k} {v} ({_signed(_mod(v))})" for k, v in ab.items() if k in ABILITIES
-    )
-    txt = (
-        f"{name} AC {st.get('ac','?')} "
-        f"HP {st.get('hp','?')}/{st.get('max_hp','?')}\n"
-        f"属性：{ab_line}"
-    )
+    # CoC view
+    if str(st.get("system")).lower() == "coc":
+        coc = dict(st.get("coc") or {})
+        chars = {k.upper(): v for k, v in (coc.get("characteristics") or {}).items()}
+        der = dict(coc.get("derived") or {})
+        line_chars = ", ".join(f"{k} {int(v)}" for k, v in chars.items() if k in ("STR", "DEX", "CON", "INT", "POW", "APP", "EDU", "SIZ", "LUCK"))
+        extras = []
+        if "san" in der:
+            extras.append(f"SAN {int(der['san'])}")
+        if "mp" in der:
+            extras.append(f"MP {int(der['mp'])}")
+        extra_line = ("，" + ", ".join(extras)) if extras else ""
+        txt = (
+            f"{name} HP {st.get('hp','?')}/{st.get('max_hp','?')}{extra_line}\n"
+            f"特征：{line_chars}"
+        )
+        return ToolResponse(content=[TextBlock(type="text", text=txt)], metadata=st)
+
+    # Default fallback view
+    txt = f"{name} HP {st.get('hp','?')}/{st.get('max_hp','?')}"
     return ToolResponse(content=[TextBlock(type="text", text=txt)], metadata=st)
 
 
-def skill_check_dnd(name: str, skill: str, dc: int, advantage: str = "none") -> ToolResponse:
-    st = WORLD.characters.get(name, {})
-    ab_name = SKILL_TO_ABILITY.get(skill.lower())
-    if not ab_name:
-        return ToolResponse(content=[TextBlock(type="text", text=f"未知技能 {skill}")], metadata={"success": False})
-    ab = int(st.get("abilities", {}).get(ab_name, 10))
-    mod = _mod(ab)
-    base = mod
-    base_note = f"{ab_name}修正{_signed(mod)}"
-    roll_res = skill_check(target=int(dc), modifier=base, advantage=advantage)
-    # rewrite first line to include actor name
-    out = []
-    if roll_res.content:
-        for i, blk in enumerate(roll_res.content):
-            if i == 0 and blk.get("type") == "text":
-                out.append(TextBlock(type="text", text=f"{name} 技能检定（{skill}）：{blk.get('text')}（{base_note}）"))
-            else:
-                out.append(blk)
-    return ToolResponse(content=out, metadata={"actor": name, "skill": skill, **(roll_res.metadata or {})})
-
-
-def saving_throw_dnd(name: str, ability: str, dc: int, advantage: str = "none") -> ToolResponse:
-    st = WORLD.characters.get(name, {})
-    ab_name = ability.upper()
-    ab = int(st.get("abilities", {}).get(ab_name, 10))
-    mod = _mod(ab)
-    base = mod
-    base_note = f"{ab_name}修正{_signed(mod)}"
-    roll_res = skill_check(target=int(dc), modifier=base, advantage=advantage)
-    out = []
-    if roll_res.content:
-        for i, blk in enumerate(roll_res.content):
-            if i == 0 and blk.get("type") == "text":
-                out.append(TextBlock(type="text", text=f"{name} 豁免检定（{ab_name}）：{blk.get('text')}（{base_note}）"))
-            else:
-                out.append(blk)
-    return ToolResponse(content=out, metadata={"actor": name, "save": ab_name, **(roll_res.metadata or {})})
-
-
-def attack_roll_dnd(
-    attacker: str,
-    defender: str,
-    ability: str = "STR",
-    target_ac: Optional[int] = None,
-    damage_expr: str = "1d4+STR",
-    advantage: str = "none",
-) -> ToolResponse:
-    """D&D-like attack roll: d20 + ability mod vs AC, on hit apply damage.
-    damage_expr 支持 +STR/+DEX/+CON 等修正占位符。
-    """
-    # Voluntary attack is blocked if attacker is down/dying/dead (hp<=0 or dying bookkeeping exists)
-    atk_sheet = WORLD.characters.get(attacker, {})
-    try:
-        if int(atk_sheet.get("hp", 0)) <= 0 or atk_sheet.get("dying_turns_left") is not None:
-            msg = TextBlock(type="text", text=f"{attacker} 处于濒死/倒地，无法发动攻击。")
-            return ToolResponse(content=[msg], metadata={"attacker": attacker, "defender": defender, "hit": False, "ok": False, "error_type": "attacker_unable"})
-    except Exception:
-        pass
-    atk = WORLD.characters.get(attacker, {})
-    dfd = WORLD.characters.get(defender, {})
-    ac = int(target_ac if target_ac is not None else dfd.get("ac", 10))
-    mod = _mod(int(atk.get("abilities", {}).get(ability.upper(), 10)))
-    base = mod
-
-    def _fmt_distance(steps: Optional[int]) -> str:
-        if steps is None:
-            return "未知"
-        return format_distance_steps(int(steps))
-
-    # Note: legacy path relies on character reach (deprecated). New flow should
-    # use attack_with_weapon() which sources reach from weapon defs.
-    reach_steps = get_reach_steps(attacker)
-    # Pre-logs reserved for guard messages only; preview now handled by main layer
-    pre_logs: List[TextBlock] = []
-    # Use Manhattan distance for reach checks
-    distance_before = get_distance_steps_between(attacker, defender)
-    distance_after = distance_before
-
-    # Distance gate: attack never auto-moves. If out of reach, fail early.
-    if distance_before is not None and distance_before > reach_steps:
-        pre_logs.append(
-            TextBlock(
-                type="text",
-                text=f"距离不足：{attacker} 与 {defender} 相距 {_fmt_distance(distance_before)}，触及范围 {_fmt_distance(reach_steps)}。",
-            )
-        )
-        return ToolResponse(
-            content=pre_logs,
-            metadata={
-                "attacker": attacker,
-                "defender": defender,
-                "hit": False,
-                "reach_ok": False,
-                "distance_before": distance_before,
-                "distance_after": distance_before,
-                "reach_steps": reach_steps,
-            },
-        )
-
-    if distance_after is not None and distance_after > reach_steps:
-        pre_logs.append(
-            TextBlock(
-                type="text",
-                text=f"{attacker} 与 {defender} 仍未进入触及范围（当前距离 {_fmt_distance(distance_after)}，触及 {_fmt_distance(reach_steps)}）。",
-            )
-        )
-        return ToolResponse(
-            content=pre_logs,
-            metadata={
-                "attacker": attacker,
-                "defender": defender,
-                "hit": False,
-                "reach_ok": False,
-                "distance_before": distance_before,
-                "distance_after": distance_after,
-                "reach_steps": reach_steps,
-            },
-        )
-
-    # Attack roll
-    atk_res = skill_check(target=int(ac), modifier=base, advantage=advantage)
-    success = bool(atk_res.metadata.get("success")) if atk_res.metadata else False
-    parts: List[TextBlock] = list(pre_logs)
-    parts.append(TextBlock(type="text", text=f"攻击：{attacker} -> {defender} d20{_signed(base)} vs AC {ac} -> {'命中' if success else '未中'}"))
-    hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
-    dmg_total = 0
-    if success:
-        # Replace ability placeholders in damage expr
-        dmg_expr2 = _replace_ability_tokens(damage_expr, mod)
-        dmg_res = roll_dice(dmg_expr2)
-        total = int(dmg_res.metadata.get("total", 0)) if dmg_res.metadata else 0
-        dmg_total = total
-        dmg_apply = damage(defender, total)
-        parts.append(TextBlock(type="text", text=f"伤害：{dmg_expr2} -> {total}"))
-        for blk in dmg_apply.content or []:
-            if blk.get("type") == "text":
-                parts.append(blk)
-    hp_after = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
-    return ToolResponse(content=parts, metadata={
-        "attacker": attacker,
-        "defender": defender,
-        "hit": success,
-        "base": base,
-        "damage_total": int(dmg_total),
-        "hp_before": int(hp_before),
-        "hp_after": int(hp_after),
-        "reach_ok": True,
-        "distance_before": distance_before,
-        "distance_after": distance_after,
-        "reach_steps": reach_steps,
-    })
 
 
 # ---- Weapons (reach sourced from weapon defs; no auto-move) ----
@@ -1680,9 +1576,8 @@ def attack_with_weapon(
         reach_steps = int(DEFAULT_REACH_STEPS)
     ability = str(w.get("ability", "STR")).upper()
     damage_expr = str(w.get("damage_expr", "1d4+STR"))
-    # Build attack base: ability modifier only (no proficiency bonus)
-    mod = _mod(int(atk.get("abilities", {}).get(ability, 10)))
-    base = mod
+    # CoC: derive a small damage modifier from characteristic (via 3–18 proxy)
+    base_mod = _coc_ability_mod_for(attacker, ability)
 
     # Distance string helper
     def _fmt_distance(steps: Optional[int]) -> str:
@@ -1719,7 +1614,6 @@ def attack_with_weapon(
 
     # Post-interception snapshot for defender stat and distance gate
     dfd = WORLD.characters.get(defender, {})
-    ac = int(dfd.get("ac", 10))
     distance_before = get_distance_steps_between(attacker, defender)
     if distance_before is not None and distance_before > reach_steps:
         msg = TextBlock(type="text", text=f"距离不足：{attacker} 使用 {weapon} 攻击 {defender} 失败（距离 {_fmt_distance(distance_before)}，触及 {_fmt_distance(reach_steps)}）")
@@ -1738,15 +1632,22 @@ def attack_with_weapon(
             },
         )
 
-    # Attack roll
-    atk_res = skill_check(target=int(ac), modifier=base, advantage=advantage)
-    success = bool((atk_res.metadata or {}).get("success"))
+    # Attack resolution: Opposed check vs defender Dodge (no reaction gating, no penalties per user)
+    skill_name = str(w.get("skill")) if w.get("skill") else _weapon_skill_for(weapon, reach_steps, ability)
+    # Perform opposed check
+    oppose = contest(attacker, skill_name, defender, "Dodge")
     parts: List[TextBlock] = list(pre_logs)
-    parts.append(TextBlock(type="text", text=f"攻击：{attacker} 使用 {weapon} -> {defender} d20{_signed(base)} vs AC {ac} -> {'命中' if success else '未中'}"))
+    # Append opposed check logs
+    if oppose.content:
+        for blk in oppose.content:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                parts.append(blk)
+    winner = (oppose.metadata or {}).get("winner")
+    success = (winner == attacker)
     hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
     dmg_total = 0
     if success:
-        dmg_expr2 = _replace_ability_tokens(damage_expr, mod)
+        dmg_expr2 = _replace_ability_tokens(damage_expr, base_mod)
         dmg_res = roll_dice(dmg_expr2)
         total = int((dmg_res.metadata or {}).get("total", 0))
         dmg_total = total
@@ -1764,7 +1665,7 @@ def attack_with_weapon(
             "defender": defender,
             "weapon_id": weapon,
             "hit": success,
-            "base": base,
+            "base_mod": int(base_mod),
             "damage_total": int(dmg_total),
             "hp_before": int(hp_before),
             "hp_after": int(hp_after),
@@ -1773,18 +1674,77 @@ def attack_with_weapon(
             "distance_after": distance_after,
             "reach_steps": reach_steps,
             **({"guard": guard_meta} if guard_meta else {}),
+            **({"opposed": True, "opposed_meta": oppose.metadata} if oppose and oppose.metadata else {"opposed": True}),
         },
     )
 
 
 def _replace_ability_tokens(expr: str, ability_mod: int) -> str:
-    # Very simple: replace any of +STR/+DEX/+CON... with the provided mod
+    # Very simple: replace any of +STR/+DEX/+CON/+INT/+POW/+SIZ/+APP/+EDU with the provided mod
     s = expr
-    for ab in ABILITIES:
-        token = ab
+    for token in ("STR", "DEX", "CON", "INT", "POW", "SIZ", "APP", "EDU"):
         if token in s:
-            s = s.replace(token, str(ability_mod))
+            s = s.replace(token, str(int(ability_mod)))
     return s
+
+def _coc_to_dnd_score(x: int) -> int:
+    try:
+        return max(1, int(round(int(x) / 5.0)))
+    except Exception:
+        return 10
+
+def _coc_ability_mod_for(name: str, ab_name: str) -> int:
+    st = WORLD.characters.get(str(name), {})
+    coc = dict(st.get("coc") or {})
+    ch = {k.upper(): int(v) for k, v in (coc.get("characteristics") or {}).items()}
+    val = int(ch.get(str(ab_name).upper(), 50))
+    score = _coc_to_dnd_score(val)
+    return (score - 10) // 2
+
+def _weapon_skill_for(weapon_id: str, reach_steps: int, ability: str) -> str:
+    # Heuristic: reach<=2 and STR/DEX-based -> MeleeWeapons; otherwise RangedWeapons
+    if reach_steps <= 2 and ability.upper() in ("STR", "DEX"):
+        return "MeleeWeapons"
+    return "RangedWeapons"
+
+def _coc_skill_value(name: str, skill: str) -> int:
+    nm = str(name)
+    st = WORLD.characters.get(nm, {})
+    coc = dict(st.get("coc") or {})
+    skills = coc.get("skills") or {}
+    if isinstance(skills, dict):
+        v = skills.get(skill) or skills.get(str(skill).title()) or skills.get(str(skill).lower())
+        if isinstance(v, (int, float)):
+            return max(0, int(v))
+    # Defaults
+    ch = {k.upper(): int(v) for k, v in (coc.get("characteristics") or {}).items()}
+    defaults = {
+        # Core skills
+        "Stealth": 20,
+        "Perception": 25,  # Spot Hidden analogue
+        "Dodge": max(1, int(ch.get("DEX", 50) // 2)),
+        "FirstAid": 30,
+        "Medicine": 5,
+        # Coarse combat fallbacks
+        "MeleeWeapons": 25,
+        "RangedWeapons": 25,
+        # Standard set (Terra-flavored)
+        "Fighting_Brawl": 25,
+        "Fighting_Blade": 30,
+        "Fighting_DualBlade": 25,
+        "Fighting_Polearm": 30,
+        "Fighting_Blunt": 25,
+        "Fighting_Shield": 20,
+        "Firearms_Handgun": 25,
+        "Firearms_Rifle_Crossbow": 30,
+        "Firearms_Shotgun": 25,
+        "Heavy_Weapons": 20,
+        "Throwables_Explosives": 30,
+        # Arts (mutable, choose table-rules as needed)
+        "Arts_Offense": 40,
+        "Arts_Control": 40,
+    }
+    return int(defaults.get(skill, 25))
 
 
 def _signed(x: int) -> str:

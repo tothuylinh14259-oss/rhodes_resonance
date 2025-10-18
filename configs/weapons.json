@@ -3,78 +3,91 @@
     "label": "战术小刀",
     "reach_steps": 1,
     "ability": "STR",
-    "damage_expr": "1d4+STR"
+    "damage_expr": "1d4+STR",
+    "skill": "Fighting_Blade"
   },
   "doctor_baton": {
     "label": "战术警棍",
     "reach_steps": 1,
     "ability": "STR",
-    "damage_expr": "1d4+STR"
+    "damage_expr": "1d4+STR",
+    "skill": "Fighting_Blunt"
   },
   "amiya_focus": {
     "label": "源石技艺聚焦器",
     "reach_steps": 6,
     "ability": "INT",
-    "damage_expr": "1d6+INT"
+    "damage_expr": "1d6+INT",
+    "skill": "Arts_Offense"
   },
   "mephisto_cane": {
     "label": "指挥手杖",
     "reach_steps": 4,
     "ability": "INT",
-    "damage_expr": "1d6+INT"
+    "damage_expr": "1d6+INT",
+    "skill": "Arts_Control"
   },
   "faust_crossbow": {
     "label": "重型弩",
     "reach_steps": 12,
     "ability": "DEX",
-    "damage_expr": "1d8+DEX"
+    "damage_expr": "1d8+DEX",
+    "skill": "Firearms_Rifle_Crossbow"
   },
   "spear": {
     "label": "长矛",
     "reach_steps": 2,
     "ability": "STR",
-    "damage_expr": "1d6+STR"
+    "damage_expr": "1d6+STR",
+    "skill": "Fighting_Polearm"
   },
   "longsword": {
     "label": "长剑",
     "reach_steps": 1,
     "ability": "STR",
-    "damage_expr": "1d8+STR"
+    "damage_expr": "1d8+STR",
+    "skill": "Fighting_Blade"
   },
   "texas_blades": {
     "label": "双短刀",
     "reach_steps": 1,
     "ability": "DEX",
-    "damage_expr": "1d6+DEX"
+    "damage_expr": "1d6+DEX",
+    "skill": "Fighting_DualBlade"
   },
   "exusiai_pistols": {
     "label": "圣堂双枪",
     "reach_steps": 8,
     "ability": "DEX",
-    "damage_expr": "1d6+DEX"
+    "damage_expr": "1d6+DEX",
+    "skill": "Firearms_Handgun"
   },
   "w_explosives": {
     "label": "爆破装置",
     "reach_steps": 6,
     "ability": "DEX",
-    "damage_expr": "1d8+DEX"
+    "damage_expr": "1d8+DEX",
+    "skill": "Throwables_Explosives"
   },
   "dual_daggers": {
     "label": "双短刃",
     "reach_steps": 1,
     "ability": "DEX",
-    "damage_expr": "1d6+DEX"
+    "damage_expr": "1d6+DEX",
+    "skill": "Fighting_DualBlade"
   },
   "chen_blade": {
     "label": "长刀·赤霄",
     "reach_steps": 1,
     "ability": "DEX",
-    "damage_expr": "1d8+DEX"
+    "damage_expr": "1d8+DEX",
+    "skill": "Fighting_Blade"
   },
   "hoshiguma_ogre_club": {
     "label": "鬼角金棒",
     "reach_steps": 1,
     "ability": "STR",
-    "damage_expr": "1d8+STR"
+    "damage_expr": "1d8+STR",
+    "skill": "Fighting_Blunt"
   }
 }

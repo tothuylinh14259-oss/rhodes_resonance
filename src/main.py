@@ -419,7 +419,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
 
     The `world` object is expected to provide functions:
       - attack_with_weapon(...)
-      - skill_check_dnd(...)
+      - skill_check_coc(...)
       - move_towards(...)
       - set_relation(...)
       - grant_item(...)
@@ -470,12 +470,14 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         )
         return resp
 
-    def perform_skill_check(name, skill, dc, advantage: str = "none", reason: str = ""):
-        resp = world.skill_check_dnd(name=name, skill=skill, dc=dc, advantage=advantage)
+    def perform_skill_check(name, skill, dc=None, advantage: str = "none", reason: str = ""):
+        # CoC percentile skill check; dc ignored for compatibility
+        resp = world.skill_check_coc(name=name, skill=skill)
         meta = resp.metadata or {}
         success = meta.get("success")
-        total = meta.get("total")
         roll = meta.get("roll")
+        target = meta.get("target")
+        level = meta.get("success_level")
         reason_text = (str(reason).strip() or "未提供")
         try:
             resp.content = list(getattr(resp, "content", []) or [])
@@ -484,9 +486,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
             resp.metadata = meta
         except Exception:
             pass
-        _log_action(
-            f"skill_check {name} skill={skill} dc={dc} -> success={success} total={total} roll={roll} reason={reason_text}"
-        )
+        _log_action(f"skill_check {name} skill={skill} -> success={success} level={level} roll={roll}/{target} reason={reason_text}")
         return resp
 
     def advance_position(name, target, steps, reason: str = ""):
@@ -884,21 +884,25 @@ class _WorldPort:
     """Light adapter around world.tools to avoid component coupling in engine."""
 
     # bind frequently used world functions as simple static methods
-    set_dnd_character = staticmethod(world_impl.set_dnd_character)
     set_position = staticmethod(world_impl.set_position)
     set_scene = staticmethod(world_impl.set_scene)
     set_relation = staticmethod(world_impl.set_relation)
     get_turn = staticmethod(world_impl.get_turn)
     reset_actor_turn = staticmethod(world_impl.reset_actor_turn)
     end_combat = staticmethod(world_impl.end_combat)
-    set_dnd_character_from_config = staticmethod(world_impl.set_dnd_character_from_config)
+    # CoC 7e support
+    set_coc_character = staticmethod(world_impl.set_coc_character)
+    set_coc_character_from_config = staticmethod(world_impl.set_coc_character_from_config)
+    set_coc_character_from_dnd = staticmethod(world_impl.set_coc_character_from_dnd)
+    recompute_coc_derived = staticmethod(world_impl.recompute_coc_derived)
+    skill_check_coc = staticmethod(world_impl.skill_check_coc)
     set_weapon_defs = staticmethod(world_impl.set_weapon_defs)
     attack_with_weapon = staticmethod(world_impl.attack_with_weapon)
     # dying helpers
     tick_dying_for = staticmethod(world_impl.tick_dying_for)
     # tools that actions need directly
     move_towards = staticmethod(world_impl.move_towards)
-    skill_check_dnd = staticmethod(world_impl.skill_check_dnd)
+    # DnD functions removed; CoC only
     grant_item = staticmethod(world_impl.grant_item)
     set_guard = staticmethod(world_impl.set_guard)
     clear_guard = staticmethod(world_impl.clear_guard)
@@ -1282,21 +1286,22 @@ async def run_demo(
     if allowed_names_world:
         for name in allowed_names_world:
             entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
-            # Stat block
-            dnd = entry.get("dnd") or {}
+            # Stat block: switch everything to CoC. If only D&D is provided, convert to CoC.
             try:
-                if dnd:
-                    # Use world normalizer for DnD config
-                    world.set_dnd_character_from_config(name=name, dnd=dnd)
+                system = str(entry.get("system", "")).lower()
+                if system == "coc" and isinstance(entry.get("coc"), dict):
+                    world.set_coc_character_from_config(name=name, coc=entry.get("coc") or {})
                 else:
-                    # Ensure the character exists even without dnd config
-                    world.set_dnd_character(
-                        name=name,
-                        ac=10,
-                        abilities={"STR": 10, "DEX": 10, "CON": 10, "INT": 10},
-                        max_hp=10,
-                        move_speed_steps=6,
-                    )
+                    dnd = entry.get("dnd") or {}
+                    if dnd:
+                        # Convert legacy D&D block to CoC on the fly
+                        world.set_coc_character_from_dnd(name=name, dnd=dnd)
+                    else:
+                        # Create a minimal CoC sheet with mid-line defaults
+                        world.set_coc_character(
+                            name=name,
+                            characteristics={"STR": 50, "DEX": 50, "CON": 50, "INT": 50, "POW": 50, "APP": 50, "EDU": 60, "SIZ": 50, "LUCK": 50},
+                        )
             except Exception:
                 pass
             _apply_story_position(name)
@@ -1375,12 +1380,18 @@ async def run_demo(
         for name, entry in actor_entries.items():
             if name in allowed_names_world:
                 continue
-            dnd = entry.get("dnd") or {}
-            if dnd:
-                try:
-                    world.set_dnd_character_from_config(name=name, dnd=dnd)
-                except Exception:
-                    pass
+            try:
+                system = str(entry.get("system", "")).lower()
+                if system == "coc" and isinstance(entry.get("coc"), dict):
+                    world.set_coc_character_from_config(name=name, coc=entry.get("coc") or {})
+                else:
+                    dnd = entry.get("dnd") or {}
+                    if dnd:
+                        world.set_coc_character_from_dnd(name=name, dnd=dnd)
+                    else:
+                        world.set_coc_character(name=name, characteristics={"STR": 50, "DEX": 50, "CON": 50, "INT": 50, "POW": 50, "APP": 50, "EDU": 60, "SIZ": 50, "LUCK": 50})
+            except Exception:
+                pass
             _apply_story_position(name)
     # No fallback to default protagonists; if story provides no positions, run without participants.
 

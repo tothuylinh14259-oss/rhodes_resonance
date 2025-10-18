@@ -4,27 +4,25 @@
 环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
 环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
 目标：冲突终结(pending)
-坐标：Amiya(0, -1); Doctor(0, 0); Faust(12, 2); Mephisto(0, -1)
-角色：Doctor(HP 12/12); Amiya(HP 5/10); Mephisto(HP 11/11); Faust(HP 12/12)
+坐标：Amiya(6, 1); Doctor(0, 0); Faust(12, 2); Mephisto(7, -1)
+角色：Doctor(HP 11/11); Amiya(HP 10/10); Mephisto(HP 6/11); Faust(HP 12/12)
 [Recent Messages]
-- Faust: “……风向正好。”  
-我半蹲梁上，折叠弩炮咔哒锁定，绿瞳在尘光里一掠——先清掉最近的威胁。  
-
-目标确认——浮士德狙击开始。  
-)
-- Faust[tool]: 攻击：Faust 使用 faust_crossbow -> Amiya d20+4 vs AC 12 -> 命中
-伤害：1d8+4 -> 5
-Amiya 受到 5 伤害，HP 5/10
-- Mephisto: Mephisto轻抚手杖，嘴角扬起一抹病态的笑意：“啊……这仓棚的回声，真适合为叛徒与伪善者奏响挽歌。”  
-他抬眼望向Doctor与Amiya，绿瞳中冷光闪烁：“浮士德，听好——这一曲，让他们全部跪下。”
+- Faust: 浮士德微微抬弩，目光穿过尘埃锁定远处那抹粉发。  
+“……阿米娅，别动。目标确认——浮士德狙击开始。”
 
 )
-- Mephisto[tool]: Mephisto 向 (0, 0) 移动 7步，现位于 (0, -1)。 距目标还差 1步。
-- Amiya: 阿米娅抬手按住肩口的血痕，指间微光闪烁，眼神却冷静如初：“……浮士德在梁上，必须先压制他。”  
-她低声自语，目光扫过前方：“但Mephisto更近，不能让他靠近博士。”
+- Faust[tool]: 对抗：Faust(Firearms_Rifle_Crossbow)[fail] vs Amiya(Dodge)[regular] -> Amiya 胜
+- Mephisto: “……家，又一处要被歌声烧成灰的家。”  
+少年抬起手杖，指尖轻敲扩音装置，绿瞳映出那抹粉发。  
 
 )
-- Amiya[tool]: Amiya 向 (0, -1) 移动 3步，现位于 (0, -1)。 已抵达目标。
+- Mephisto[tool]: 对抗：Mephisto(Arts_Control)[fail] vs Amiya(Dodge)[fail] -> Amiya 胜
+- Amiya: 阿米娅指尖的源石光点骤然凝实，她低声道：“……Mephisto，你的歌声到此为止。”
+
+)
+- Amiya[tool]: 对抗：Amiya(Arts_Offense)[hard] vs Mephisto(Dodge)[fail] -> Amiya 胜
+伤害：1d6+3 -> 5
+Mephisto 受到 5 伤害，HP 6/11
 
 === Round 2 | Actor: Doctor ===
 [Relation] Amiya:+85（挚友）；Mephisto:-85（死敌）；Faust:-80（死敌）
@@ -32,24 +30,26 @@ Amiya 受到 5 伤害，HP 5/10
 环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
 环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
 目标：冲突终结(pending)
-坐标：Amiya(0, -1); Doctor(0, 0); Faust(6, 2); Mephisto(0, -1)
-角色：Doctor(HP 12/12); Amiya(HP 2/10); Mephisto(HP 11/11); Faust(HP 12/12)
+坐标：Amiya(6, 1); Doctor(6, 0); Faust(12, 2); Mephisto(7, -1)
+角色：Doctor(HP 11/11); Amiya(HP 0/10)（濒死2）; Mephisto(HP 6/11); Faust(HP 12/12)
 [Recent Messages]
-- Faust: 浮士德蹲在梁上，指节轻扣弩机，目光掠过下方混乱。  
-他低声呢喃：“……目标确认，优先清除威胁。”
+- Doctor[tool]: Doctor 向 (6, 1) 移动 6步，现位于 (6, 0)。 距目标还差 1步。
+- Faust: “……目标确认。”  
+我抬弩，指节收紧，绿瞳穿过梁间尘光——先锁死阿米娅。  
 
 )
-- Faust[tool]: Faust 向 (0, 0) 移动 6步，现位于 (6, 2)。 距目标还差 8步。
-- Mephisto: “……哎呀，博士的刀锋擦过我的衣角，真是失礼。”  
-我轻笑，指尖抚过手杖的银饰，低低哼起不成调的咏叹——然后，杖尖直指阿米娅的心脏。  
-)
-- Mephisto[tool]: 攻击：Mephisto 使用 mephisto_cane -> Amiya d20+2 vs AC 12 -> 命中
-伤害：1d6+2 -> 3
-Amiya 受到 3 伤害，HP 2/10
-- Amiya: 阿米娅胸口一阵钝痛，唇色发白，却仍抬眸望向Doctor，声音轻却坚定：“……博士，别停。我还能撑住。”
+- Faust[tool]: 对抗：Faust(Firearms_Rifle_Crossbow)[extreme] vs Amiya(Dodge)[fail] -> Faust 胜
+伤害：1d8+4 -> 10
+Amiya 受到 10 伤害，HP 0/10（倒地）
+Amiya 进入濒死（3回合后死亡；再次受伤即死）
+- Mephisto: “……家？早就没有了。”  
+我拄杖而立，指节因残血而泛白，却扬起嘴角，像谢幕的指挥。  
+“只剩最后一节——为她，也为你。”
 
 )
-- Amiya[tool]: 攻击：Amiya 使用 amiya_focus -> Mephisto d20+3 vs AC 12 -> 未中
+- Mephisto[tool]: 对抗：Mephisto(Arts_Control)[regular] vs Doctor(Dodge)[regular] -> Doctor 胜
+- Amiya: 阿米娅唇色苍白，指尖微颤，却仍竭力抬声：“博士……别管我，先……解决浮士德……”
+她眼角余光扫向远处梁影，声音低得几不可闻：“我……还撑得住……”
 
 === Round 3 | Actor: Doctor ===
 [Relation] Amiya:+85（挚友）；Mephisto:-85（死敌）；Faust:-80（死敌）
@@ -57,21 +57,47 @@ Amiya 受到 3 伤害，HP 2/10
 环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
 环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
 目标：冲突终结(pending)
-坐标：Amiya(0, -1); Doctor(0, 0); Faust(6, 2); Mephisto(0, -1)
-角色：Doctor(HP 12/12); Amiya(HP 2/10); Mephisto(HP 9/11); Faust(HP 12/12)
+坐标：Amiya(6, 1); Doctor(12, 0); Faust(12, 2); Mephisto(7, -1)
+角色：Doctor(HP 11/11); Amiya(HP 0/10)（濒死1）; Mephisto(HP 6/11); Faust(HP 12/12)
 [Recent Messages]
-- Faust: 我抬弩，目光越过锈梁，锁定那兜帽下的灰瞳。  
-“……目标确认——浮士德狙击开始。”  
+- Doctor[tool]: Doctor 向 (12, 2) 移动 6步，现位于 (12, 0)。 距目标还差 2步。
+- Faust: “……收到。”  
+我抬弩，金属弦在指间绷紧，目光锁定那道灰色兜帽。  
 )
-- Faust[tool]: 攻击：Faust 使用 faust_crossbow -> Doctor d20+4 vs AC 14 -> 未中
-- Mephisto: “……呵，连脏话都丢出来了，博士，你的乐章真是越来越粗俗。”  
-我抬手，指尖掠过唇边血迹，绿瞳在昏光里微微发亮，像听见最动听的序曲。  
-“那就让我用这柄手杖，为你奏响终章。”  
+- Faust[tool]: 对抗：Faust(Firearms_Rifle_Crossbow)[regular] vs Doctor(Dodge)[regular] -> Doctor 胜
+- Mephisto: 梅菲斯特轻抚手杖，唇角勾起病态的笑意：“……优先清除？呵，你们连哀嚎的节拍都踩不准。”  
+他绿瞳微眯，望向濒死的阿米娅，低语如挽歌：“先让兔子安静吧——她的绝唱，我不许任何人打扰。”  
 
 )
-- Mephisto[tool]: 攻击：Mephisto 使用 mephisto_cane -> Doctor d20+2 vs AC 14 -> 未中
-- Amiya: 阿米娅指尖微颤，却将法杖横在胸前，目光掠过博士肩头的血痕。
-“……博士，您不能独自承担。”
+- Mephisto[tool]: 对抗：Mephisto(Arts_Control)[fail] vs Amiya(Dodge)[regular] -> Amiya 胜
+- Amiya: 阿米娅跪坐在血泊里，指尖颤抖却仍想抬起：“……博士，别……别管我，先活下去……”
+她咬唇，耳羽无力地垂下，声音轻得几乎被铁梁回声吞没。
+
+=== Round 4 | Actor: Doctor ===
+[Relation] Amiya:+85（挚友）；Mephisto:-85（死敌）；Faust:-80（死敌）
+[World]
+环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
+目标：冲突终结(pending)
+坐标：Amiya(6, 1); Doctor(6, 0); Faust(12, 2); Mephisto(7, -1)
+角色：Doctor(HP 1/11); Amiya(HP 0/10)（死亡）; Mephisto(HP 6/11); Faust(HP 12/12)
+[Recent Messages]
+- Doctor[tool]: Doctor 向 (6, 1) 移动 6步，现位于 (6, 0)。 距目标还差 1步。
+- Faust: 我微抬弩身，绿瞳锁定那道灰影。  
+“……想救她？先问过我。”
+
 )
-- Amiya[tool]: 攻击：Amiya 使用 amiya_focus -> Mephisto d20+3 vs AC 12 -> 未中
+- Faust[tool]: 对抗：Faust(Firearms_Rifle_Crossbow)[hard] vs Doctor(Dodge)[regular] -> Faust 胜
+伤害：1d8+4 -> 10
+Doctor 受到 10 伤害，HP 1/11
+- Mephisto: 梅菲斯特轻抚手杖，嘴角扬起病态的笑意：“啊……多么动人的诀别，博士，你终于学会把‘拯救’挂在嘴边了。”  
+他微微侧首，绿瞳映着尘埃间漏下的冷光，像在欣赏一场即将落幕的歌剧。
+
+)
+- Mephisto[tool]: 对抗：Mephisto(Arts_Control)[regular] vs Doctor(Dodge)[regular] -> Doctor 胜
+- Amiya: 阿米娅的呼吸微弱，唇角勉强扯出一点弧度，轻轻抬手，指向博士的胸口。
+
+“博士……别管我……先……保护自己……”
+
+)
 
