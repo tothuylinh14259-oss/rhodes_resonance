@@ -7,17 +7,10 @@ import random
 try:
     from agentscope.tool import ToolResponse  # type: ignore
     from agentscope.message import TextBlock  # type: ignore
-except Exception:  # Fallback minimal stubs when Agentscope is unavailable
-    class ToolResponse:  # type: ignore
-        def __init__(self, content=None, metadata=None):
-            self.content = list(content or [])
-            self.metadata = dict(metadata or {})
-
-    class TextBlock(dict):  # type: ignore
-        def __init__(self, type: str = "text", text: str = ""):
-            super().__init__()
-            self["type"] = type
-            self["text"] = text
+except Exception as e:
+    raise ImportError(
+        "agentscope is required at runtime; fallback stubs were removed"
+    ) from e
 
 
 # --- Core grid configuration ---
@@ -1865,15 +1858,16 @@ def process_events():
                 elif kind == "block_objective":
                     block_objective(str(eff.get("name")), str(eff.get("reason", "")))
                 elif kind == "relation":
-                    # Support absolute target (value/target) with delta fallback for compatibility
+                    # require absolute target (value or target); delta fallback removed
                     a, b = eff.get("a"), eff.get("b")
                     if a and b:
-                        if ("value" in eff) or ("target" in eff):
-                            v = eff.get("value", eff.get("target", 0))
-                            set_relation(str(a), str(b), int(v), reason=str(eff.get("reason", "")))
+                        if "value" in eff:
+                            v = eff.get("value")
+                        elif "target" in eff:
+                            v = eff.get("target")
                         else:
-                            d = int(eff.get("delta", 0))
-                            change_relation(str(a), str(b), d, reason=str(eff.get("reason", "")))
+                            raise ValueError("relation effect requires 'value' or 'target'")
+                        set_relation(str(a), str(b), int(v), reason=str(eff.get("reason", "")))
                 elif kind == "grant":
                     grant_item(str(eff.get("target")), str(eff.get("item")), int(eff.get("n", 1)))
                 elif kind == "damage":

@@ -27,22 +27,14 @@ At runtime (when actually building/running agents), the real library must
 be available; otherwise a clear error is raised when used.
 """
 
-try:  # soft-import to avoid hard dependency during import-only test runs
+try:  # require agentscope at runtime; fallback stubs removed
     from agentscope.agent import AgentBase, ReActAgent  # type: ignore
     from agentscope.message import Msg  # type: ignore
     from agentscope.pipeline import MsgHub  # type: ignore
-except Exception:  # pragma: no cover - only used when agentscope missing
-    AgentBase = object  # type: ignore
-    ReActAgent = object  # type: ignore
-    class Msg:  # type: ignore
-        def __init__(self, name: str, content: str, role: str = "assistant") -> None:
-            self.name = name
-            self.content = content
-            self.role = role
-        def get_text_content(self):  # minimal shim used by _safe_text
-            return getattr(self, "content", None)
-    class MsgHub:  # type: ignore
-        pass
+except Exception as e:  # pragma: no cover
+    raise ImportError(
+        "agentscope is required at runtime; fallback stubs were removed"
+    ) from e
 from dataclasses import asdict, is_dataclass, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -221,14 +213,12 @@ def _configs_dir() -> Path:
 
 
 def _load_json(path: Path) -> dict:
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data or {}
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
+    # no fallback: read and propagate errors if any
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"expected object at {path}, got {type(data).__name__}")
+    return data
 
 
 @dataclass
@@ -260,8 +250,8 @@ def load_story_config(selected_id: Optional[str] = None) -> dict:
     """
     data = _load_json(_configs_dir() / "story.json")
     if not data:
-        # fallback for legacy demo asset
-        return _load_json(project_root() / "docs" / "plot.story.json")
+        # no fallback: require explicit story config
+        raise FileNotFoundError("configs/story.json is missing or empty; fallback removed")
 
     try:
         # container shape (ignore any legacy active_id; prefer explicit selection)
@@ -296,18 +286,15 @@ def load_weapons() -> dict:
 # Agent Factory (inline)
 # ============================================================
 
-try:  # keep these optional at import time too
+try:  # require agentscope modules; fallback stubs removed
     from agentscope.formatter import OpenAIChatFormatter  # type: ignore
     from agentscope.memory import InMemoryMemory  # type: ignore
     from agentscope.model import OpenAIChatModel  # type: ignore
     from agentscope.tool import Toolkit  # type: ignore
-except Exception:  # pragma: no cover - tests that don't touch agents skip this
-    OpenAIChatFormatter = object  # type: ignore
-    InMemoryMemory = object  # type: ignore
-    OpenAIChatModel = object  # type: ignore
-    class Toolkit:  # type: ignore
-        def register_tool_function(self, *_args, **_kwargs):
-            return None
+except Exception as e:  # pragma: no cover
+    raise ImportError(
+        "agentscope is required at runtime; fallback stubs were removed"
+    ) from e
 
 
 def _join_lines(tpl):
@@ -380,11 +367,9 @@ def make_kimi_npc(
                 prompt_template=(tpl if tpl else None),
                 tools_text=tools_text,
             )
-        except Exception:
-            # Minimal fallback (should not happen in practice)
-            sys_prompt = (
-                f"你是游戏中的NPC：{name}. 人设：{persona}. 参与者：{allowed_names or 'Doctor, Amiya'}. 可用工具：{tools_text}"
-            )
+        except Exception as e:
+            # no fallback: make the failure explicit
+            raise
 
     # Construct model (requires agentscope installed at runtime)
     model = OpenAIChatModel(
@@ -988,9 +973,9 @@ def build_sys_prompt(*, name: str, persona: str, appearance: str | None, quotes:
 
     try:
         return str(tpl.format(**args))
-    except Exception:
-        # Minimal fallback
-        return f"你是游戏中的NPC：{name}. 人设：{persona}. 参与者：{args['allowed_names']}. 可用工具：{tools_txt}"
+    except Exception as e:
+        # no fallback: propagate
+        raise
 
 # Tool name to actor parameter keys mapping (for validation)
 TOOL_ACTOR_PARAMS = {
@@ -1199,7 +1184,7 @@ async def run_demo(
             allowed_names=allowed_names, prompt_template=None, tools_text=None
         )
 
-    # Build actors from configs or fallback
+    # Build actors from configs
     char_cfg = dict(characters or {})
     npcs_list: List[ReActAgent] = []  # legacy name; no longer used for turn order
     participants_order: List[AgentBase] = []
@@ -2577,10 +2562,8 @@ def main() -> None:
                 try:
                     _p.unlink()  # remove; writer will recreate with append
                 except Exception:
-                    try:
-                        _p.open("w", encoding="utf-8").close()  # fallback: truncate
-                    except Exception:
-                        pass
+                    # no fallback truncate
+                    pass
     except Exception:
         pass
 
@@ -2950,10 +2933,8 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
                         try:
                             _p.unlink()  # remove; writer will recreate with append
                         except Exception:
-                            try:
-                                _p.open("w", encoding="utf-8").close()  # fallback: truncate
-                            except Exception:
-                                pass
+                            # no fallback truncate
+                            pass
             except Exception:
                 pass
 
@@ -3092,13 +3073,9 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         return m[name]
 
     def _json_load_text(p: Path) -> dict:
-        try:
-            with p.open("r", encoding="utf-8") as f:
-                return json.load(f) or {}
-        except FileNotFoundError:
-            return {}
-        except Exception:
-            return {}
+        # no fallback: read and propagate errors
+        with p.open("r", encoding="utf-8") as f:
+            return json.load(f)
 
     def _validate_story(obj: dict) -> tuple[bool, str]:
         """Validate story config.
@@ -3275,14 +3252,8 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             elif d:
                 ids = ["default"]
         except Exception:
-            try:
-                # fallback to demo asset
-                p = project_root() / "docs" / "plot.story.json"
-                d = _json_load_text(p)
-                if d:
-                    ids = ["default"]
-            except Exception:
-                ids = []
+            # no fallback to demo asset
+            ids = []
         return ids
 
     @app.get("/api/stories")
