@@ -743,6 +743,16 @@ def _is_alive(name: Optional[str]) -> bool:
         return True
 
 
+def _is_dying(name: Optional[str]) -> bool:
+    """Return True if character is in dying state (dying_turns_left present)."""
+    if not name:
+        return False
+    try:
+        st = WORLD.characters.get(str(name), {})
+        return st.get("dying_turns_left") is not None
+    except Exception:
+        return False
+
 def _reset_turn_tokens_for(name: Optional[str]):
     if not name:
         return
@@ -1021,7 +1031,20 @@ def act_search(name: str, skill: str = "Perception", dc: int = 50):
 
 
 def contest(a: str, a_skill: str, b: str, b_skill: str) -> ToolResponse:
-    # CoC opposed check: compare success levels; if equal, lower roll wins
+    """CoC opposed check with dying short-circuit.
+
+    - If either side is dying, skip rolls: non-dying side wins automatically.
+    - Else compare success levels; tie breaks by lower roll wins; if still tied, defender wins.
+    """
+    # Dying short-circuit
+    if _is_dying(a) and not _is_dying(b):
+        return ToolResponse(content=[TextBlock(type="text", text=f"对抗跳过：{a} 濒死，{b} 自动胜")], metadata={"winner": b, "skip_reason": "attacker_dying"})
+    if _is_dying(b) and not _is_dying(a):
+        return ToolResponse(content=[TextBlock(type="text", text=f"对抗跳过：{b} 濒死，{a} 自动胜")], metadata={"winner": a, "skip_reason": "defender_dying"})
+    if _is_dying(a) and _is_dying(b):
+        return ToolResponse(content=[TextBlock(type="text", text=f"对抗跳过：双方均濒死，判 {b} 胜")], metadata={"winner": b, "skip_reason": "both_dying"})
+
+    # Regular opposed check
     ar = skill_check_coc(a, a_skill)
     br = skill_check_coc(b, b_skill)
     a_meta = ar.metadata or {}
@@ -1034,7 +1057,10 @@ def contest(a: str, a_skill: str, b: str, b_skill: str) -> ToolResponse:
     else:
         ra = int(a_meta.get("roll", 101) or 101)
         rb = int(b_meta.get("roll", 101) or 101)
-        winner = a if ra < rb else b
+        if ra != rb:
+            winner = a if ra < rb else b
+        else:
+            winner = b  # exact tie favors defender
     text = f"对抗：{a}({a_skill})[{a_meta.get('success_level','fail')}] vs {b}({b_skill})[{b_meta.get('success_level','fail')}] -> {winner} 胜"
     return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"a": a_meta, "b": b_meta, "winner": winner})
 
@@ -1309,6 +1335,12 @@ def damage(name: str, amount: int):
     amt = max(0, int(amount))
     nm = str(name)
     st = WORLD.characters.setdefault(nm, {"hp": 0, "max_hp": 0})
+    # Mark a new injury instance for First Aid gating
+    if amt > 0:
+        try:
+            st["injury_id"] = int(st.get("injury_id", 0)) + 1
+        except Exception:
+            st["injury_id"] = 1
     hp_before = int(st.get("hp", 0))
     # If already dying, any damage kills immediately
     if st.get("dying_turns_left") is not None:
@@ -1331,6 +1363,69 @@ def damage(name: str, amount: int):
         content=parts,
         metadata={"name": nm, "hp": st["hp"], "max_hp": st.get("max_hp"), "dead": False},
     )
+
+
+def first_aid(name: str, target: str) -> ToolResponse:
+    """Attempt First Aid on target.
+
+    - Roll CoC FirstAid skill for the rescuer.
+    - On success:
+      * If target is dying: stabilize (clear dying flag) and set HP to at least 1.
+      * Else if target is wounded (0<HP<Max): restore 1 HP, at most once per injury instance.
+    - On failure: no effect.
+    - We gate the per-injury 1 HP by `target.injury_id` and `target.first_aid_applied_on`.
+    """
+    rescuer = str(name)
+    tgt = str(target)
+    st = WORLD.characters.setdefault(tgt, {"hp": 0, "max_hp": 0})
+    logs: List[TextBlock] = []
+    # Skill check
+    chk = skill_check_coc(rescuer, "FirstAid")
+    if chk.content:
+        for blk in chk.content:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                logs.append(blk)
+    ok = bool((chk.metadata or {}).get("success"))
+    if not ok:
+        return ToolResponse(content=logs + [TextBlock(type="text", text=f"{rescuer} 急救失败，{tgt} 状态未变")], metadata={"ok": False, "rescuer": rescuer, "target": tgt})
+
+    # Success path
+    # If dying: stabilize and set hp to at least 1
+    if st.get("dying_turns_left") is not None:
+        st["dying_turns_left"] = None
+        try:
+            clear_condition(tgt, "dying")
+        except Exception:
+            pass
+        # Raise HP to at least 1
+        try:
+            st["hp"] = max(1, int(st.get("hp", 0)))
+        except Exception:
+            st["hp"] = 1
+        logs.append(TextBlock(type="text", text=f"{rescuer} 成功稳定 {tgt}（HP 至少 1，脱离濒死）"))
+        return ToolResponse(content=logs, metadata={"ok": True, "rescuer": rescuer, "target": tgt, "stabilized": True, "hp": st.get("hp")})
+
+    # Non-dying healing: +1 HP once per injury
+    try:
+        hp = int(st.get("hp", 0))
+        max_hp = int(st.get("max_hp", 0))
+    except Exception:
+        hp = st.get("hp", 0) or 0
+        max_hp = st.get("max_hp", 0) or 0
+    if max_hp and 0 < hp < max_hp:
+        injury_id = int(st.get("injury_id", 0))
+        applied_on = int(st.get("first_aid_applied_on", -1))
+        if applied_on == injury_id and injury_id > 0:
+            logs.append(TextBlock(type="text", text=f"{tgt} 该伤势已急救过（本次不再恢复 HP）"))
+            return ToolResponse(content=logs, metadata={"ok": True, "rescuer": rescuer, "target": tgt, "healed": 0, "already_applied": True})
+        st["hp"] = min(max_hp, hp + 1)
+        st["first_aid_applied_on"] = injury_id
+        logs.append(TextBlock(type="text", text=f"{rescuer} 急救成功，{tgt} 恢复 1 点 HP（{st['hp']}/{max_hp}）"))
+        return ToolResponse(content=logs, metadata={"ok": True, "rescuer": rescuer, "target": tgt, "healed": 1, "hp": st.get("hp")})
+
+    # Otherwise nothing to do
+    logs.append(TextBlock(type="text", text=f"{tgt} 当前无需急救（HP={hp}/{max_hp}）"))
+    return ToolResponse(content=logs, metadata={"ok": True, "rescuer": rescuer, "target": tgt, "healed": 0})
 
 
 def heal(name: str, amount: int):
@@ -1632,18 +1727,30 @@ def attack_with_weapon(
             },
         )
 
-    # Attack resolution: Opposed check vs defender Dodge (no reaction gating, no penalties per user)
+    # Attack resolution
     skill_name = str(w.get("skill")) if w.get("skill") else _weapon_skill_for(weapon, reach_steps, ability)
-    # Perform opposed check
-    oppose = contest(attacker, skill_name, defender, "Dodge")
     parts: List[TextBlock] = list(pre_logs)
-    # Append opposed check logs
-    if oppose.content:
-        for blk in oppose.content:
-            if isinstance(blk, dict) and blk.get("type") == "text":
-                parts.append(blk)
-    winner = (oppose.metadata or {}).get("winner")
-    success = (winner == attacker)
+    success = False
+    oppose = None
+    atk_res = None
+    if _is_dying(defender):
+        # Defender is dying: skip Dodge opposition; perform single-sided hit check
+        parts.append(TextBlock(type="text", text=f"对抗跳过：{defender} 濒死，本次仅进行命中检定"))
+        atk_res = skill_check_coc(attacker, skill_name)
+        if atk_res.content:
+            for blk in atk_res.content:
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    parts.append(blk)
+        success = bool((atk_res.metadata or {}).get("success"))
+    else:
+        # Perform opposed check vs defender Dodge
+        oppose = contest(attacker, skill_name, defender, "Dodge")
+        if oppose.content:
+            for blk in oppose.content:
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    parts.append(blk)
+        winner = (oppose.metadata or {}).get("winner")
+        success = (winner == attacker)
     hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
     dmg_total = 0
     if success:
@@ -1674,7 +1781,11 @@ def attack_with_weapon(
             "distance_after": distance_after,
             "reach_steps": reach_steps,
             **({"guard": guard_meta} if guard_meta else {}),
-            **({"opposed": True, "opposed_meta": oppose.metadata} if oppose and oppose.metadata else {"opposed": True}),
+            **(
+                {"opposed": False, "defender_dying": True, "attack_check": (atk_res.metadata if atk_res else None)}
+                if _is_dying(defender)
+                else ({"opposed": True, "opposed_meta": (oppose.metadata if oppose else None)})
+            ),
         },
     )
 

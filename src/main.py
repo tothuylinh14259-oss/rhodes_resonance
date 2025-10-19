@@ -82,7 +82,7 @@ DEFAULT_RECAP_ACTION_LIMIT = 6
 
 # System prompt building (tools list + templates)
 DEFAULT_TOOLS_TEXT = (
-    "perform_attack(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection()"
+    "perform_attack(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection(), first_aid()"
 )
 
 # --- Default system prompt templates ---
@@ -119,6 +119,7 @@ DEFAULT_PROMPT_TOOL_GUIDE = (
     "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
     "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
     "- clear_protection(guardian=\"\", protectee=\"\", reason)：清除守护关系；可按守护者/被保护者/全部清理。\n"
+    "- first_aid(name, target, reason)：对目标进行急救（First Aid）；成功可稳定濒死（HP至少1）或为新伤回复1点HP。\n"
 )
 
 DEFAULT_PROMPT_EXAMPLE = (
@@ -572,6 +573,20 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         _log_action(f"clear_protect guardian={g} protectee={p} reason={reason_text}")
         return resp
 
+    def first_aid(name: str, target: str, reason: str = ""):
+        resp = world.first_aid(name, target)
+        meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(f"first_aid rescuer={name} target={target} ok={meta.get('ok')} stabilized={meta.get('stabilized')} healed={meta.get('healed')} reason={reason_text}")
+        return resp
+
     tool_list: List[object] = [
         perform_attack,
         advance_position,
@@ -579,6 +594,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         transfer_item,
         set_protection,
         clear_protection,
+        first_aid,
     ]
     tool_dispatch: Dict[str, object] = {
         "perform_attack": perform_attack,
@@ -587,6 +603,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         "transfer_item": transfer_item,
         "set_protection": set_protection,
         "clear_protection": clear_protection,
+        "first_aid": first_aid,
     }
 
     return tool_list, tool_dispatch
@@ -898,6 +915,7 @@ class _WorldPort:
     skill_check_coc = staticmethod(world_impl.skill_check_coc)
     set_weapon_defs = staticmethod(world_impl.set_weapon_defs)
     attack_with_weapon = staticmethod(world_impl.attack_with_weapon)
+    first_aid = staticmethod(world_impl.first_aid)
     # dying helpers
     tick_dying_for = staticmethod(world_impl.tick_dying_for)
     # tools that actions need directly
