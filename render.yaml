@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: rhodes-resonance-backend
+    env: python
+    plan: free
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: python src/main.py --host 0.0.0.0 --port $PORT --cors https://taratraovo.github.io
+    healthCheckPath: /api/state
+    envVars:
+      - key: MOONSHOT_API_KEY
+        sync: false
+
