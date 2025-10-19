@@ -3536,6 +3536,84 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         st.selected_story_id = sid
         return {"ok": True, "selected": sid}
 
+    @app.get("/api/preview_state")
+    async def api_preview_state(id: Optional[str] = None, request: Request = None):  # type: ignore[no-redef]
+        """Return a preview world snapshot for the selected story without starting a session.
+
+        Query: ?id=<story_id> (optional). If omitted, use current session's selected_story_id;
+        if still empty, fallback to the first available id.
+        """
+        # Resolve story id
+        ids = _list_story_ids()
+        if not ids:
+            return JSONResponse({"ok": False, "message": "no stories available"}, status_code=404)
+        sid = None
+        try:
+            sid = str(id or "").strip() or None
+        except Exception:
+            sid = None
+        if not sid and request is not None:
+            st = _get_session(_parse_sid_from(request))
+            if st.selected_story_id in ids:
+                sid = st.selected_story_id
+        if not sid:
+            sid = ids[0]
+        if sid not in ids:
+            return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
+
+        # Build a fresh world snapshot mirroring server bootstrap logic, but without running the game loop
+        try:
+            model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(
+                for_server=True,
+                selected_story_id=sid,
+            )
+            # Make weapon defs available to snapshot consumers
+            try:
+                world.set_weapon_defs(weapons)
+            except Exception:
+                pass
+
+            # Ingest starting positions from story config (supports initial_positions/positions and initial.positions)
+            story_positions: Dict[str, Tuple[int, int]] = {}
+            try:
+                _parse_story_positions(story_cfg.get("initial_positions") or {}, story_positions)
+            except Exception:
+                pass
+            try:
+                _parse_story_positions(story_cfg.get("positions") or {}, story_positions)
+            except Exception:
+                pass
+            try:
+                initial_section = story_cfg.get("initial")
+                if isinstance(initial_section, dict):
+                    _parse_story_positions(initial_section.get("positions") or {}, story_positions)
+            except Exception:
+                pass
+            for nm, (x, y) in story_positions.items():
+                try:
+                    world.set_position(nm, x, y)
+                except Exception:
+                    pass
+            if story_positions:
+                try:
+                    world.set_participants(list(story_positions.keys()))
+                except Exception:
+                    pass
+
+            # Apply scene fields (name/objectives/details/weather/time)
+            try:
+                scene_cfg = story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
+                scene_name, scene_objectives, scene_details, scene_weather, scene_time_min = normalize_scene_cfg(scene_cfg)
+                if any([scene_name, scene_objectives, scene_details, scene_weather, scene_time_min is not None]):
+                    apply_scene_to_world(world, scene_name, scene_objectives, scene_details, scene_weather, scene_time_min)
+            except Exception:
+                pass
+
+            snap = world.snapshot()
+            return {"ok": True, "selected": sid, "state": snap}
+        except Exception as exc:
+            return JSONResponse({"ok": False, "message": f"preview failed: {exc}"}, status_code=500)
+
     @app.post("/api/start")
     async def api_start(payload: dict | None = None, request: Request = None):  # type: ignore[no-redef]
         # When already running and a soft-pause is in effect, this acts as Resume

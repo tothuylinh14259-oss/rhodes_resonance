@@ -518,6 +518,11 @@
     if (!state || typeof state !== 'object') return;
     const kv = [];
     try {
+      // 显示当前战局 ID（基于选择器的值）
+      try {
+        const sid = getSelectedStoryId && getSelectedStoryId();
+        if (sid) kv.push(`<span class="pill">战局: ${esc(sid)}</span>`);
+      } catch(e){ /* ignore */ }
       const inCombat = !!state.in_combat;
       const round = state.round ?? '';
       kv.push(`<span class="pill">战斗: ${inCombat ? '进行中' : '否'}</span>`);
@@ -582,12 +587,30 @@
       if (chosen && chosen !== serverSel) {
         try { await fetch('/api/select_story', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: chosen }) }); } catch(e){ throw e }
       }
+      // 初次选择后，若未运行则请求后台预览并渲染到信息栏/地图
+      try { if (!running) await fetchPreviewAndRender(); } catch(e) { /* ignore */ }
       storyPicker.onchange = async () => {
         const id = getSelectedStoryId();
         try { localStorage.setItem('storyPicker.selected', id); } catch(e){ throw e }
         try { await fetch('/api/select_story', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }); } catch(e){ throw e }
+        // 切换战局后，若未运行则刷新预览
+        try { if (!running) await fetchPreviewAndRender(); } catch(e) { /* ignore */ }
       };
     } catch(e){ throw e }
+  }
+
+  // 拉取后端预览态（不启动）并渲染
+  async function fetchPreviewAndRender() {
+    const sid = getSelectedStoryId();
+    let url = '/api/preview_state';
+    if (sid) url += `?id=${encodeURIComponent(sid)}`;
+    const res = await fetch(url);
+    if (!res.ok) return;
+    const obj = await res.json();
+    if (obj && obj.state && !running) {
+      renderHUD(obj.state);
+      if (mapView) mapView.update(obj.state);
+    }
   }
 
   function handleEvent(ev) {
@@ -925,6 +948,10 @@
     updateButtons();
     if (st && st.state) { renderHUD(st.state); if (mapView) mapView.update(st.state); }
     if (running) setStatus(paused ? '已暂停' : '运行中');
+    // 若未运行且没有有效快照，补一次预览渲染
+    if (!running && (!st || !st.state || !Object.keys(st.state||{}).length)) {
+      fetchPreviewAndRender().catch(()=>{});
+    }
   }).catch(()=>{ updateButtons(); });
 
   // ==== Settings drawer logic ====
