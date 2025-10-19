@@ -2658,7 +2658,7 @@ from collections import deque
 
 # Optional server deps (only required in server mode)
 try:  # lazy import to keep --once usable without extra deps
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
     from fastapi.responses import JSONResponse
     from fastapi.staticfiles import StaticFiles
     from fastapi.middleware.cors import CORSMiddleware
@@ -2790,6 +2790,40 @@ class _ServerState:
 
 
 _STATE = _ServerState()
+
+# Multi-session (per-page) support. Each SID maps to an independent _ServerState.
+_SESSIONS: Dict[str, _ServerState] = {}
+_SESSIONS_LOCK = Lock()
+
+def _get_session(sid: Optional[str]) -> _ServerState:
+    if not sid:
+        return _STATE  # backward-compat: no SID -> legacy singleton
+    with _SESSIONS_LOCK:
+        st = _SESSIONS.get(sid)
+        if st is None:
+            st = _ServerState()
+            _SESSIONS[sid] = st
+        return st
+
+def _parse_sid_from(req: Any) -> Optional[str]:
+    sid = None
+    # Try HTTP header first (REST)
+    try:
+        hdrs = getattr(req, 'headers', None)
+        if hdrs:
+            sid = str(hdrs.get('X-Session-ID') or '').strip()
+    except Exception:
+        sid = None
+    # Fallback to query string (?sid=...); works for WebSocket
+    if not sid:
+        try:
+            scope = getattr(req, 'scope', None) or {}
+            raw_qs = scope.get('query_string', b'') or b''
+            qs = parse_qs(raw_qs.decode('utf-8')) if raw_qs else {}
+            sid = (qs.get('sid', [''])[0] or '').strip()
+        except Exception:
+            sid = None
+    return sid or None
 
 
 class PauseGate:
@@ -3075,6 +3109,203 @@ async def _stop_game_server_mode() -> Tuple[bool, str]:
     return True, "stopped"
 
 
+# Multi-session variants operating on a specific _ServerState
+async def _start_game_for(state: _ServerState, *, selected_story_id: Optional[str] = None) -> Tuple[bool, str]:
+    if state.is_running():
+        return True, "already running"
+
+    if selected_story_id:
+        try:
+            state.selected_story_id = str(selected_story_id)
+        except Exception:
+            pass
+
+    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(
+        for_server=True,
+        selected_story_id=state.selected_story_id or None,
+    )
+    state.log_ctx = log_ctx
+    try:
+        world.set_weapon_defs(weapons)
+    except Exception as exc:
+        try:
+            ev = Event(event_type=EventType.ERROR, data={
+                "message": "加载武器表失败", "error_type": "weapon_defs_load", "exception": str(exc)
+            })
+            log_ctx.bus.publish(ev)
+        except Exception:
+            pass
+
+    tool_list, tool_dispatch = make_npc_actions(world=world)
+
+    state.session_id = str(_uuid.uuid4())
+    gate = PauseGate()
+    state.pause_gate = gate
+
+    def emit(*, event_type: str, actor=None, phase=None, turn=None, data=None) -> None:
+        ev = Event(event_type=EventType(event_type), actor=actor, phase=phase, turn=turn, data=dict(data or {}))
+        ev.correlation_id = state.session_id
+        try:
+            published = log_ctx.bus.publish(ev)
+        except Exception:
+            published = None
+        try:
+            payload = published.to_dict() if published else ev.to_dict()
+            asyncio.create_task(state.bridge.on_event(payload))
+        except Exception:
+            pass
+        if event_type == "state_update":
+            try:
+                state.last_snapshot = dict((data or {}).get("state") or {})
+            except Exception:
+                pass
+
+    def build_agent(name, persona, model_cfg, **kwargs):
+        return make_kimi_npc(name, persona, model_cfg, **kwargs)
+
+    async def _runner() -> None:
+        try:
+            state.running = True
+            await state.bridge.clear()
+            try:
+                story_positions: Dict[str, Tuple[int, int]] = {}
+                def _ingest_positions(raw: Any) -> None:
+                    if not isinstance(raw, dict):
+                        return
+                    for actor_name, pos in raw.items():
+                        if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                            try:
+                                story_positions[str(actor_name)] = (int(pos[0]), int(pos[1]))
+                            except Exception:
+                                continue
+                if isinstance(story_cfg, dict):
+                    _ingest_positions(story_cfg.get("initial_positions") or {})
+                    _ingest_positions(story_cfg.get("positions") or {})
+                    initial_section = story_cfg.get("initial")
+                    if isinstance(initial_section, dict):
+                        _ingest_positions(initial_section.get("positions") or {})
+                for nm, (x, y) in story_positions.items():
+                    try:
+                        world.set_position(nm, x, y)
+                    except Exception:
+                        pass
+                if story_positions:
+                    try:
+                        world.set_participants(list(story_positions.keys()))
+                    except Exception:
+                        pass
+                try:
+                    state.last_snapshot = world.snapshot()
+                except Exception:
+                    state.last_snapshot = {}
+            except Exception:
+                try:
+                    state.last_snapshot = world.snapshot()
+                except Exception:
+                    state.last_snapshot = {}
+
+            try:
+                logs_dir = root / "logs"
+                if logs_dir.exists():
+                    for _p in logs_dir.glob("*_context_dev.log"):
+                        try:
+                            _p.unlink()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            async def _on_paused(payload: dict) -> None:
+                try:
+                    await state.bridge.send_control("paused", payload)
+                except Exception:
+                    pass
+
+            async def _on_resumed() -> None:
+                try:
+                    await state.bridge.send_control("resumed")
+                except Exception:
+                    pass
+
+            gate.on_paused = _on_paused
+            gate.on_resumed = _on_resumed
+
+            await run_demo(
+                emit=emit,
+                build_agent=build_agent,
+                tool_fns=tool_list,
+                tool_dispatch=tool_dispatch,
+                model_cfg=model_cfg,
+                story_cfg=story_cfg,
+                characters=characters,
+                world=world,
+                player_input_provider=lambda actor_name: state.get_player_queue(str(actor_name)).get(),
+                pause_gate=gate,
+            )
+        except Exception as exc:
+            try:
+                err = Event(event_type=EventType.ERROR, phase="final", data={"message": f"runtime error: {exc}"})
+                log_ctx.bus.publish(err)
+                asyncio.create_task(state.bridge.on_event(err.to_dict()))
+            except Exception:
+                pass
+        finally:
+            state.running = False
+            try:
+                end_seq = state.bridge.last_sequence + 1
+                asyncio.create_task(state.bridge.on_event({
+                    "event_id": f"END-{state.session_id}",
+                    "sequence": end_seq,
+                    "timestamp": "",
+                    "event_type": "system",
+                    "phase": "final",
+                    "data": {"message": "game finished"},
+                    "correlation_id": state.session_id,
+                }))
+            except Exception:
+                pass
+            try:
+                asyncio.create_task(state.bridge.send_end())
+            except Exception:
+                pass
+            try:
+                log_ctx.close()
+            except Exception:
+                pass
+            state.log_ctx = None
+
+    state.task = asyncio.create_task(_runner())
+    await asyncio.sleep(0)
+    return True, "started"
+
+
+async def _stop_game_for(state: _ServerState) -> Tuple[bool, str]:
+    if not state.is_running():
+        try:
+            await state.bridge.send_end()
+        except Exception:
+            pass
+        return True, "not running"
+    try:
+        state.task.cancel()
+    except Exception:
+        pass
+    if state.task is not None:
+        try:
+            await state.task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        finally:
+            state.task = None
+    try:
+        await state.bridge.send_end()
+    except Exception:
+        pass
+    return True, "stopped"
+
+
 
 def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] = None):
     if FastAPI is None or uvicorn is None:
@@ -3295,13 +3526,14 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         return ids
 
     @app.get("/api/stories")
-    async def api_stories():  # type: ignore[no-redef]
+    async def api_stories(request: Request):  # type: ignore[no-redef]
         ids = _list_story_ids()
-        sel = _STATE.selected_story_id if _STATE.selected_story_id in ids else (ids[0] if ids else "")
+        st = _get_session(_parse_sid_from(request))
+        sel = st.selected_story_id if st.selected_story_id in ids else (ids[0] if ids else "")
         return {"ok": True, "ids": ids, "selected": sel}
 
     @app.post("/api/select_story")
-    async def api_select_story(payload: dict):  # type: ignore[no-redef]
+    async def api_select_story(payload: dict, request: Request):  # type: ignore[no-redef]
         try:
             sid = str(payload.get("id") or "").strip()
         except Exception:
@@ -3309,18 +3541,20 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         ids = _list_story_ids()
         if not sid or sid not in ids:
             return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
-        _STATE.selected_story_id = sid
+        st = _get_session(_parse_sid_from(request))
+        st.selected_story_id = sid
         return {"ok": True, "selected": sid}
 
     @app.post("/api/start")
-    async def api_start(payload: dict | None = None):  # type: ignore[no-redef]
+    async def api_start(payload: dict | None = None, request: Request = None):  # type: ignore[no-redef]
         # When already running and a soft-pause is in effect, this acts as Resume
-        if _STATE.is_running() and _STATE.pause_gate and _STATE.pause_gate.is_paused_or_requested():
+        st = _get_session(_parse_sid_from(request)) if request is not None else _STATE
+        if st.is_running() and st.pause_gate and st.pause_gate.is_paused_or_requested():
             try:
-                await _STATE.pause_gate.resume()
+                await st.pause_gate.resume()
             except Exception:
                 return JSONResponse({"ok": False, "message": "resume failed"}, status_code=500)
-            return JSONResponse({"ok": True, "message": "resumed", "session_id": _STATE.session_id})
+            return JSONResponse({"ok": True, "message": "resumed", "session_id": st.session_id})
         # Otherwise, normal start semantics
         sid = None
         try:
@@ -3331,34 +3565,36 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             ids = _list_story_ids()
             if sid not in ids:
                 return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
-            _STATE.selected_story_id = sid
-        ok, msg = await _start_game_server_mode(selected_story_id=_STATE.selected_story_id or None)
+            st.selected_story_id = sid
+        ok, msg = await _start_game_for(st, selected_story_id=st.selected_story_id or None)
         code = 200 if ok else 409
-        return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
+        return JSONResponse({"ok": ok, "message": msg, "session_id": st.session_id}, status_code=code)
 
     @app.post("/api/stop")
-    async def api_stop():  # type: ignore[no-redef]
+    async def api_stop(request: Request):  # type: ignore[no-redef]
         # Soft pause request (do not cancel the running task).
-        if _STATE.is_running():
-            if _STATE.pause_gate is None:
-                _STATE.pause_gate = PauseGate()
+        st = _get_session(_parse_sid_from(request))
+        if st.is_running():
+            if st.pause_gate is None:
+                st.pause_gate = PauseGate()
             try:
-                _STATE.pause_gate.request()
+                st.pause_gate.request()
             except Exception:
                 pass
-            return JSONResponse({"ok": True, "message": "pausing", "session_id": _STATE.session_id})
+            return JSONResponse({"ok": True, "message": "pausing", "session_id": st.session_id})
         # Not running -> keep idempotent success
-        return JSONResponse({"ok": True, "message": "not running", "session_id": _STATE.session_id})
+        return JSONResponse({"ok": True, "message": "not running", "session_id": st.session_id})
 
     @app.post("/api/restart")
-    async def api_restart(payload: dict | None = None):  # type: ignore[no-redef]
+    async def api_restart(payload: dict | None = None, request: Request = None):  # type: ignore[no-redef]
         # 当运行中：先停止再重启；当未运行：直接启动一局
-        if _STATE.is_running():
-            await _stop_game_server_mode()
+        st = _get_session(_parse_sid_from(request)) if request is not None else _STATE
+        if st.is_running():
+            await _stop_game_for(st)
             # Await the cancelled task to let its cleanup run; suppress CancelledError
-            if _STATE.task is not None:
+            if st.task is not None:
                 try:
-                    await _STATE.task
+                    await st.task
                 except asyncio.CancelledError:
                     # Expected when the background runner is cancelled while awaiting input
                     pass
@@ -3367,7 +3603,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                     pass
                 finally:
                     # Drop stale reference to avoid confusion across sessions
-                    _STATE.task = None
+                    st.task = None
         sid = None
         try:
             sid = str((payload or {}).get("story_id") or "").strip()
@@ -3377,28 +3613,30 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             ids = _list_story_ids()
             if sid not in ids:
                 return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
-            _STATE.selected_story_id = sid
-        ok, msg = await _start_game_server_mode(selected_story_id=_STATE.selected_story_id or None)
+            st.selected_story_id = sid
+        ok, msg = await _start_game_for(st, selected_story_id=st.selected_story_id or None)
         code = 200 if ok else 400
-        return JSONResponse({"ok": ok, "message": msg, "session_id": _STATE.session_id}, status_code=code)
+        return JSONResponse({"ok": ok, "message": msg, "session_id": st.session_id}, status_code=code)
 
     @app.get("/api/state")
-    async def api_state():  # type: ignore[no-redef]
+    async def api_state(request: Request):  # type: ignore[no-redef]
+        st = _get_session(_parse_sid_from(request))
         return {
-            "running": _STATE.is_running(),
-            "paused": bool(_STATE.pause_gate.paused) if _STATE.pause_gate else False,
-            "last_sequence": _STATE.bridge.last_sequence,
-            "state": _STATE.last_snapshot,
-            "session_id": _STATE.session_id,
+            "running": st.is_running(),
+            "paused": bool(st.pause_gate.paused) if st.pause_gate else False,
+            "last_sequence": st.bridge.last_sequence,
+            "state": st.last_snapshot,
+            "session_id": st.session_id,
         }
 
     @app.post("/api/player_say")
-    async def api_player_say(payload: dict):  # type: ignore[no-redef]
+    async def api_player_say(payload: dict, request: Request):  # type: ignore[no-redef]
         """Submit a player's utterance for the current session.
 
         Body: {"name": "Doctor", "text": "......"}
         """
-        if not _STATE.is_running():
+        st = _get_session(_parse_sid_from(request))
+        if not st.is_running():
             return JSONResponse({"ok": False, "message": "game not running"}, status_code=400)
         try:
             name = str(payload.get("name") or "").strip()
@@ -3408,14 +3646,15 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         if not name or not text:
             return JSONResponse({"ok": False, "message": "name/text required"}, status_code=400)
         try:
-            await _STATE.get_player_queue(name).put(text)
+            await st.get_player_queue(name).put(text)
         except Exception as exc:
             return JSONResponse({"ok": False, "message": f"queue error: {exc}"}, status_code=500)
         return JSONResponse({"ok": True})
 
     @app.websocket("/ws/events")
     async def ws_events(ws: WebSocket):  # type: ignore[no-redef]
-        await _STATE.bridge.register(ws)
+        st = _get_session(_parse_sid_from(ws))
+        await st.bridge.register(ws)
         try:
             raw_qs = ws.scope.get("query_string", b"") or b""
             qs = parse_qs(raw_qs.decode("utf-8")) if raw_qs else {}
@@ -3427,12 +3666,12 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             # hello + replay
             await ws.send_json({
                 "type": "hello",
-                "last_sequence": _STATE.bridge.last_sequence,
-                "state": _STATE.last_snapshot,
-                "session_id": _STATE.session_id,
-                "paused": bool(_STATE.pause_gate.paused) if _STATE.pause_gate else False,
+                "last_sequence": st.bridge.last_sequence,
+                "state": st.last_snapshot,
+                "session_id": st.session_id,
+                "paused": bool(st.pause_gate.paused) if st.pause_gate else False,
             })
-            for ev in _STATE.bridge.replay_since(since):
+            for ev in st.bridge.replay_since(since):
                 try:
                     await ws.send_json({"type": "event", "event": ev})
                 except Exception:
@@ -3444,7 +3683,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             pass
         finally:
             try:
-                await _STATE.bridge.unregister(ws)
+                await st.bridge.unregister(ws)
             except Exception:
                 pass
 
