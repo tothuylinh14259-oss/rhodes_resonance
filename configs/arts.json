@@ -1,0 +1,13 @@
+{
+  "amiya_binding": {
+    "label": "心灵束缚",
+    "cast_skill": "Arts_Control",
+    "resist": "POW",
+    "range_steps": 6,
+    "damage_type": "arts",
+    "damage": "1d4+POWER",
+    "control": { "effect": "restrained", "duration": "1+POWER" },
+    "mp": { "cost": 2, "variable": true, "max": 6 },
+    "tags": ["no-guard-intercept", "line-of-sight"]
+  }
+}

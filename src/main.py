@@ -82,7 +82,7 @@ DEFAULT_RECAP_ACTION_LIMIT = 6
 
 # System prompt building (tools list + templates)
 DEFAULT_TOOLS_TEXT = (
-    "perform_attack(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection(), first_aid()"
+    "perform_attack(), cast_arts(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection(), first_aid()"
 )
 
 # --- Default system prompt templates ---
@@ -93,6 +93,7 @@ DEFAULT_PROMPT_HEADER = (
     "常用语气/台词：{quotes}\n"
     "当前立场提示（仅你视角）：{relation_brief}\n"
     "可用武器：{weapon_brief}\n"
+    "可用术式：{arts_brief}\n"
 )
 
 DEFAULT_PROMPT_RULES = (
@@ -112,8 +113,8 @@ DEFAULT_PROMPT_RULES = (
 
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具：\n"
-    "- 行动清单：先查看 Host 给出的“可及目标”和距离；若目标不在“可及目标”，必须先调用 advance_position 进入触及（步数≈距离−武器触及，取不小于0；target=对方坐标）；进入触及后再 perform_attack。\n"
     "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；仅能对“可及目标”使用。攻击不会自动靠近；若距离不足必须先调用 advance_position，否则视为违规。\n"
+    "- cast_arts(attacker, art, target, reason)：施放源石技艺；命中/效果基于术式的 cast_skill（如 Arts_Control/Arts_Offense）对目标的 Arts_Resist/POW 进行对抗；仅能对 reach_preview 中“可及术式+目标”使用；无需提供 MP 数值，系统按术式规则自动结算（可变术式按基础消耗施放）。带 line-of-sight 的术式需要视线。\n"
     "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
     "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
     "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
@@ -171,6 +172,7 @@ REACH_RULE_LINE = (
 )
 REACH_LABEL_ADJ = "相邻（≤1步）{tail}："
 REACH_LABEL_TARGETS = "可及武器+目标（{weapon}，触及 {steps}步）："
+REACH_LABEL_ARTS = "可及术式+目标（{art}，触及 {steps}步）："
 
 # Player/private tips
 PLAYER_CTRL_TITLE = "玩家控制提示（仅你可见）："
@@ -184,11 +186,11 @@ PRIV_DIST_TITLE = "距离提示（仅你可见）："
 PRIV_DIST_LINE = "- {who}：{dist}步"
 PRIV_DIST_UNKNOWN_LINE = "- {who}：未记录"
 PRIV_DIST_CANNOT_COMPUTE = "- 无法计算：未记录你的坐标"
-PRIV_VALID_ACTION_RULE_LINE = "有效行动要求：存在敌对关系时，每回合至少进行一次有效行动；对超出触及范围的 perform_attack 视为无效。"
+PRIV_VALID_ACTION_RULE_LINE = "有效行动要求：存在敌对关系时，每回合必须进行一次有效行动；对超出触及范围的 perform_attack 视为无效。"
 PRIV_DYING_TITLE = "状态提示（仅你可见）——你处于濒死状态（HP={hp})："
 PRIV_DYING_LINE_1 = "- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。"
 PRIV_DYING_LINE_2 = "- 你将在 {turns} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。"
-PRIV_DYING_LINE_3 = "- 请专注对白/呼救/传递信息/请求治疗或援助。"
+PRIV_DYING_LINE_3 = ""
 
 # === End of Policy ===
 
@@ -288,6 +290,16 @@ def load_weapons() -> dict:
     return _load_json(_configs_dir() / "weapons.json")
 
 
+def load_arts() -> dict:
+    path = _configs_dir() / "arts.json"
+    if not path.exists():
+        return {}
+    data = _load_json(path)
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
 # ============================================================
 # Agent Factory (inline)
 # ============================================================
@@ -330,6 +342,7 @@ def make_kimi_npc(
     quotes: Optional[List[str] | str] = None,
     relation_brief: Optional[str] = None,
     weapon_brief: Optional[str] = None,
+    arts_brief: Optional[str] = None,
     tools: Optional[List[object]] = None,
 ) -> ReActAgent:
     """Create an LLM-backed NPC using Kimi's OpenAI-compatible API."""
@@ -376,6 +389,7 @@ def make_kimi_npc(
                 quotes=quotes,
                 relation_brief=relation_brief,
                 weapon_brief=weapon_brief,
+                arts_brief=arts_brief,
                 allowed_names=(allowed_names or "Doctor, Amiya"),
                 prompt_template=(tpl if tpl else None),
                 tools_text=tools_text,
@@ -588,8 +602,28 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         _log_action(f"first_aid rescuer={name} target={target} ok={meta.get('ok')} stabilized={meta.get('stabilized')} healed={meta.get('healed')} reason={reason_text}")
         return resp
 
+    def cast_arts(attacker: str, art: str, target: str, reason: str = ""):
+        fn = _VALIDATED.get("cast_arts") or (lambda **p: world.cast_arts(**p))
+        # 不再接受/透传 mp_spent，由底层按术式规则自动结算
+        kwargs = {"attacker": attacker, "art": art, "target": target}
+        resp = fn(**kwargs)
+        meta = resp.metadata or {}
+        reason_text = (str(reason).strip() or "未提供")
+        try:
+            resp.content = list(getattr(resp, "content", []) or [])
+            resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
+            meta["call_reason"] = reason_text
+            resp.metadata = meta
+        except Exception:
+            pass
+        _log_action(
+            f"cast_arts {attacker} -> {target} art={art} success={meta.get('success')} reason={reason_text}"
+        )
+        return resp
+
     tool_list: List[object] = [
         perform_attack,
+        cast_arts,
         advance_position,
         adjust_relation,
         transfer_item,
@@ -599,6 +633,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
     ]
     tool_dispatch: Dict[str, object] = {
         "perform_attack": perform_attack,
+        "cast_arts": cast_arts,
         "advance_position": advance_position,
         "adjust_relation": adjust_relation,
         "transfer_item": transfer_item,
@@ -914,7 +949,10 @@ class _WorldPort:
     recompute_coc_derived = staticmethod(world_impl.recompute_coc_derived)
     skill_check_coc = staticmethod(world_impl.skill_check_coc)
     set_weapon_defs = staticmethod(world_impl.set_weapon_defs)
+    set_arts_defs = staticmethod(world_impl.set_arts_defs)
+    get_arts_defs = staticmethod(world_impl.get_arts_defs)
     attack_with_weapon = staticmethod(world_impl.attack_with_weapon)
+    cast_arts = staticmethod(world_impl.cast_arts)
     first_aid = staticmethod(world_impl.first_aid)
     # dying helpers
     tick_dying_for = staticmethod(world_impl.tick_dying_for)
@@ -965,7 +1003,7 @@ RELATION_ARCH_ENEMY = -60
 
 
 
-def build_sys_prompt(*, name: str, persona: str, appearance: str | None, quotes: list[str] | str | None, relation_brief: str | None, weapon_brief: str | None, allowed_names: str, prompt_template: str | list[str] | None = None, tools_text: str | None = None) -> str:
+def build_sys_prompt(*, name: str, persona: str, appearance: str | None, quotes: list[str] | str | None, relation_brief: str | None, weapon_brief: str | None, arts_brief: str | None = None, allowed_names: str, prompt_template: str | list[str] | None = None, tools_text: str | None = None) -> str:
     """Build system prompt for an NPC using either a custom template or the default.
 
     Keeps text normalization consistent across call sites.
@@ -989,6 +1027,7 @@ def build_sys_prompt(*, name: str, persona: str, appearance: str | None, quotes:
         'quotes': quotes_text,
         'relation_brief': relation_text,
         'weapon_brief': (weapon_brief or '无'),
+        'arts_brief': (arts_brief or '无'),
         'tools': tools_txt,
         'allowed_names': allowed_names or 'Doctor, Amiya',
     }
@@ -1229,7 +1268,7 @@ def weapon_brief_for(world: Any, nm: str) -> str:
         except Exception:
             reach = 1
         try:
-            dmg = str((wdefs[wid] or {}).get("damage_expr") or "")
+            dmg = str((wdefs[wid] or {}).get("damage") or "")
         except Exception:
             dmg = ""
         if dmg:
@@ -1237,6 +1276,41 @@ def weapon_brief_for(world: Any, nm: str) -> str:
         else:
             entries.append(f"{wid}(触及{reach}步)")
     return "；".join(entries) if entries else "无"
+
+
+def arts_brief_for(world: Any, nm: str) -> str:
+    """Return a compact brief of arts known by nm with range and MP info."""
+    try:
+        snap = world.snapshot()
+        ch = dict((snap.get("characters") or {}).get(str(nm), {}) or {})
+        coc = dict(ch.get("coc") or {})
+        known = list(coc.get("arts_known") or [])
+        cur_mp = ch.get("mp")
+        max_mp = ch.get("max_mp")
+    except Exception:
+        known = []
+        cur_mp = None
+        max_mp = None
+    try:
+        arts_defs = world.get_arts_defs() if hasattr(world, "get_arts_defs") else {}
+    except Exception:
+        arts_defs = {}
+    parts: List[str] = []
+    for aid in known:
+        a = (arts_defs or {}).get(str(aid)) or {}
+        # Display stable internal id instead of human label to avoid confusing renames
+        label = str(aid)
+        steps = a.get("range_steps", 6)
+        mp = a.get("mp") or {}
+        cost = (mp or {}).get("cost", 0)
+        # 不在提示中呈现“可变/固定”的 MP 模式，避免误导角色去输入 mp_spent
+        cskill = a.get("cast_skill") or ""
+        cpart = (f", 技能{cskill}" if cskill else "")
+        parts.append(f"{label}(触及{steps}步, 消耗{cost}{cpart})")
+    brief = "；".join(parts) if parts else "无"
+    if cur_mp is not None and max_mp is not None:
+        return f"MP {cur_mp}/{max_mp}；" + brief
+    return brief
 
 
 def apply_story_position(world: Any, story_positions: Dict[str, Tuple[int, int]], name: str) -> None:
@@ -1359,36 +1433,7 @@ def emit_world_state(ctx: TurnContext, turn_val: int) -> None:
     ctx.emit("state_update", phase="world", turn=turn_val, data={"state": snapshot})
 
 
-def write_dev_context_card(ctx: TurnContext, name: str) -> None:
-    try:
-        world_txt = _world_summary_text(ctx.world.snapshot())
-        start = int(ctx.last_seen.get(name, 0))
-        recent_msgs = [e for e in ctx.chat_log[start:] if e.get("actor") not in (None, "Host")]
-        if ctx.recap_msg_limit > 0:
-            recent_msgs = recent_msgs[-ctx.recap_msg_limit:]
-        rel_text = relation_brief_for(ctx.world, name)
-        lines: List[str] = []
-        lines.append(f"=== Round {ctx.current_round} | Actor: {name} ===")
-        if rel_text:
-            lines.append(f"[Relation] {rel_text}")
-        lines.append("[World]")
-        lines.append(world_txt)
-        if recent_msgs:
-            lines.append("[Recent Messages]")
-            for e in recent_msgs:
-                txt = _clip(str(e.get("text") or "").strip(), 160)
-                lines.append(f"- {e.get('actor')}: {txt}")
-        logs_dir = project_root() / "logs"
-        try:
-            logs_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-        safe = "".join(ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name))
-        path = logs_dir / f"{safe}_context_dev.log"
-        with path.open("a", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n\n")
-    except Exception:
-        pass
+# Removed: legacy dev-only context card writer. Prompt logs supersede it.
 
 
 def reach_preview_lines(world: Any, name: str) -> List[str]:
@@ -1475,6 +1520,33 @@ def reach_preview_lines(world: Any, name: str) -> List[str]:
             items.sort(key=lambda t: (t[1], t[0]))
             parts = [f"{nm}({_fmt_steps(d)})" for nm, d in items]
             lines.append(REACH_LABEL_TARGETS.format(weapon=wid, steps=int(rsteps)) + ", ".join(parts))
+        # Arts preview (known arts within range)
+        try:
+            ch = dict((snap.get("characters") or {}).get(str(name), {}) or {})
+            known = list((ch.get("coc") or {}).get("arts_known") or [])
+            arts_defs = world.get_arts_defs() if hasattr(world, "get_arts_defs") else {}
+            for aid in known:
+                a = (arts_defs or {}).get(str(aid)) or {}
+                rsteps = int(a.get("range_steps", 6) or 6)
+                items = []
+                for nm, p in scene_units:
+                    if nm == str(name):
+                        continue
+                    try:
+                        d = manhattan(me_xy, p)
+                    except Exception:
+                        continue
+                    if d <= rsteps:
+                        items.append((nm, int(d)))
+                if not items:
+                    continue
+                items.sort(key=lambda t: (t[1], t[0]))
+                parts = [f"{nm}({_fmt_steps(d)})" for nm, d in items]
+                # Use internal id for consistency with action/tool calls
+                art_name = str(aid)
+                lines.append(REACH_LABEL_ARTS.format(art=art_name, steps=rsteps) + ", ".join(parts))
+        except Exception:
+            pass
     except Exception:
         return []
     return lines
@@ -1488,6 +1560,8 @@ def make_ephemeral_agent(ctx: TurnContext, name: str, private_section: Optional[
         quotes_now = sheet_now.get("quotes")
     except Exception:
         persona_now = ""; appearance_now = None; quotes_now = None
+
+    # Build system prompt (outside the try/except so it always runs)
     sys_prompt_text = build_sys_prompt(
         name=name,
         persona=str(persona_now or ""),
@@ -1495,6 +1569,7 @@ def make_ephemeral_agent(ctx: TurnContext, name: str, private_section: Optional[
         quotes=quotes_now,
         relation_brief=relation_brief_for(ctx.world, name),
         weapon_brief=weapon_brief_for(ctx.world, name),
+        arts_brief=arts_brief_for(ctx.world, name),
         allowed_names=ctx.allowed_names_str,
     )
     if CTX_PRIVATE_SECTION_MODE == "system" and private_section:
@@ -1509,6 +1584,7 @@ def make_ephemeral_agent(ctx: TurnContext, name: str, private_section: Optional[
         quotes=quotes_now,
         relation_brief=relation_brief_for(ctx.world, name),
         weapon_brief=weapon_brief_for(ctx.world, name),
+        arts_brief=arts_brief_for(ctx.world, name),
         tools=ctx.tool_list,
     )
     try:
@@ -1705,9 +1781,16 @@ async def npc_ephemeral_say(ctx: TurnContext, name: str, private_section: Option
             dump_dir = root / "logs" / "prompts"
             dump_dir.mkdir(parents=True, exist_ok=True)
             safe = "".join(ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name))
-            rnd = ctx.current_round
-            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            path = dump_dir / f"{safe}_r{rnd}_{ts}.txt"
+            # Keep only the latest dump per actor; remove older files for this actor
+            try:
+                for _p in dump_dir.glob(f"{safe}_*.txt"):
+                    try:
+                        _p.unlink()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            path = dump_dir / f"{safe}_prompt.txt"
             sys_text = str(getattr(ephemeral, "_debug_sys_prompt", ""))
             lines: List[str] = []
             lines.append("=== SYSTEM PROMPT ===")
@@ -1894,8 +1977,8 @@ async def run_demo(
                         rs = int(wd.get("reach_steps", 1))
                     except Exception:
                         rs = 1
-                    dmg = wd.get("damage_expr", "1d4+STR")
-                    entries.append(f"{wid}(触及 {rs}步, 伤害 {dmg})")
+                    dmg = wd.get("damage", "")
+                    entries.append(f"{wid}(触及 {rs}步, 伤害 {dmg or '?'} )")
                 return "；".join(entries) if entries else "无"
             # Read meta from world (single source of truth)
             try:
@@ -2036,7 +2119,7 @@ async def run_demo(
         except Exception:
             return ""
 
-    # Dev context card moved to top-level helper
+    # Dev context card removed; superseded by prompt logs
 
     # Tool call handling moved to top-level helper
 
@@ -2048,6 +2131,22 @@ async def run_demo(
 
     # --- Ephemeral NPC helper to remove duplication ---
     # Ephemeral agent, reach preview, and NPC turn helpers moved to top-level helpers
+
+    # Fallback: 若上游未载入术式表，这里尝试一次惰性载入，避免术式提示/施放为“未知术式”
+    try:
+        if hasattr(world, "get_arts_defs") and callable(getattr(world, "get_arts_defs")):
+            arts_defs_now = world.get_arts_defs() or {}
+            if not arts_defs_now and hasattr(world, "set_arts_defs"):
+                try:
+                    arts = load_arts() or {}
+                except Exception:
+                    arts = {}
+                try:
+                    world.set_arts_defs(arts)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     # Human-readable header for participants and starting positions
     _start_pos_lines = []
@@ -2109,6 +2208,20 @@ async def run_demo(
     # 在进入 Hub 和任何 NPC 开口之前，先广播一次完整快照，确保前端尽快拿到带坐标的状态
     try:
         _emit("state_update", phase="initial", data={"state": world.snapshot()})
+    except Exception:
+        pass
+    # 无论入口是否走过 main()/server 的载表路径，这里追加一次术式表遥测，方便排查
+    try:
+        arts_defs = world.get_arts_defs() if hasattr(world, "get_arts_defs") else {}
+        _emit(
+            "system",
+            phase="init",
+            data={
+                "message": "术式表载入完成",
+                "arts_defs_count": len(arts_defs or {}),
+                "arts_defs_keys": sorted(list((arts_defs or {}).keys())),
+            },
+        )
     except Exception:
         pass
 
@@ -2272,8 +2385,7 @@ async def run_demo(
 
                 # Inject a recap message for all participants before the actor decides
                 try:
-                    # Dev-only context card to per-actor log file
-                    write_dev_context_card(ctx, name)
+                    # Dev-only context card removed; prompt logs replace it
                     # Also broadcast a fresh world summary right before decision,
                     # so each turn gets "世界概要 + 行动记忆 + 指导 prompt" together.
                     if CTX_BROADCAST_CONTEXT_TO_OBSERVERS:
@@ -2589,15 +2701,14 @@ def main() -> None:
     # Bootstrap shared runtime bits
     model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(for_server=False)
 
-    # Clean dev context logs at run start (mirror run_story/run_events overwrite)
+    # Clean prompt dumps at run start; keep only latest per actor during run
     try:
-        logs_dir = root / "logs"
-        if logs_dir.exists():
-            for _p in logs_dir.glob("*_context_dev.log"):
+        prompts_dir = root / "logs" / "prompts"
+        if prompts_dir.exists():
+            for _p in prompts_dir.glob("*.txt"):
                 try:
-                    _p.unlink()  # remove; writer will recreate with append
+                    _p.unlink()
                 except Exception:
-                    # no fallback truncate
                     pass
     except Exception:
         pass
@@ -2619,6 +2730,35 @@ def main() -> None:
             data={
                 "message": "加载武器表失败",
                 "error_type": "weapon_defs_load",
+                "exception": str(exc),
+            },
+        )
+    # Load arts table (optional)
+    try:
+        arts = load_arts() or {}
+        if hasattr(world, "set_arts_defs"):
+            world.set_arts_defs(arts)
+        # Structured telemetry: record how many arts were loaded and their ids
+        try:
+            emit(
+                event_type="system",
+                phase="init",
+                data={
+                    "message": "术式表载入完成",
+                    "arts_defs_count": len(arts or {}),
+                    "arts_defs_keys": sorted(list((arts or {}).keys())),
+                },
+            )
+        except Exception:
+            # logging should never block startup
+            pass
+    except Exception as exc:
+        emit(
+            event_type="error",
+            phase="init",
+            data={
+                "message": "加载术式表失败",
+                "error_type": "arts_defs_load",
                 "exception": str(exc),
             },
         )
@@ -2918,6 +3058,30 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
         except Exception:
             pass
 
+    # Load arts table (optional, server mode)
+    try:
+        arts = load_arts() or {}
+        if hasattr(world, "set_arts_defs"):
+            world.set_arts_defs(arts)
+        # Structured telemetry (server mode): record arts load result
+        try:
+            ev = Event(event_type=EventType.SYSTEM, data={
+                "message": "术式表载入完成",
+                "arts_defs_count": len(arts or {}),
+                "arts_defs_keys": sorted(list((arts or {}).keys())),
+            })
+            log_ctx.bus.publish(ev)
+        except Exception:
+            pass
+    except Exception as exc:
+        try:
+            ev = Event(event_type=EventType.ERROR, data={
+                "message": "加载术式表失败", "error_type": "arts_defs_load", "exception": str(exc)
+            })
+            log_ctx.bus.publish(ev)
+        except Exception:
+            pass
+
     tool_list, tool_dispatch = make_npc_actions(world=world)
 
     # New session id for correlation
@@ -2994,15 +3158,14 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
                     _STATE.last_snapshot = world.snapshot()
                 except Exception:
                     _STATE.last_snapshot = {}
-            # Clean dev context logs at session start (mirror run_story/run_events overwrite)
+            # Clean prompt dumps at session start; keep only latest per actor during run
             try:
-                logs_dir = root / "logs"
-                if logs_dir.exists():
-                    for _p in logs_dir.glob("*_context_dev.log"):
+                prompts_dir = root / "logs" / "prompts"
+                if prompts_dir.exists():
+                    for _p in prompts_dir.glob("*.txt"):
                         try:
-                            _p.unlink()  # remove; writer will recreate with append
+                            _p.unlink()
                         except Exception:
-                            # no fallback truncate
                             pass
             except Exception:
                 pass
@@ -3201,10 +3364,11 @@ async def _start_game_for(state: _ServerState, *, selected_story_id: Optional[st
                 except Exception:
                     state.last_snapshot = {}
 
+            # Clean prompt dumps at session start; keep only latest per actor during run
             try:
-                logs_dir = root / "logs"
-                if logs_dir.exists():
-                    for _p in logs_dir.glob("*_context_dev.log"):
+                prompts_dir = root / "logs" / "prompts"
+                if prompts_dir.exists():
+                    for _p in prompts_dir.glob("*.txt"):
                         try:
                             _p.unlink()
                         except Exception:
@@ -3400,23 +3564,26 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
     def _validate_weapons(obj: dict) -> tuple[bool, str]:
         if not isinstance(obj, dict):
             return False, "weapons must be an object"
-        allowed_abilities = {"STR", "DEX", "CON", "INT"}
+        allowed = {"label", "reach_steps", "skill", "defense_skill", "damage", "damage_type"}
         for wid, w in obj.items():
             if not isinstance(w, dict):
                 return False, f"weapon {wid} must be an object"
-            if "reach_steps" in w:
-                try:
-                    rs = int(w.get("reach_steps"))
-                    if rs <= 0:
-                        return False, f"weapon {wid}.reach_steps must be > 0"
-                except Exception:
-                    return False, f"weapon {wid}.reach_steps must be an integer"
-            if "ability" in w:
-                ab = str(w.get("ability")).upper()
-                if ab not in allowed_abilities:
-                    return False, f"weapon {wid}.ability must be one of {sorted(allowed_abilities)}"
-            if "damage_expr" in w and not isinstance(w.get("damage_expr"), str):
-                return False, f"weapon {wid}.damage_expr must be a string"
+            extra = set(w.keys()) - allowed
+            if extra:
+                return False, f"weapon {wid} has unknown keys: {sorted(extra)}"
+            for req in ("label", "reach_steps", "skill", "defense_skill", "damage", "damage_type"):
+                if req not in w:
+                    return False, f"weapon {wid} missing required field '{req}'"
+            try:
+                rs = int(w.get("reach_steps"))
+                if rs <= 0:
+                    return False, f"weapon {wid}.reach_steps must be > 0"
+            except Exception:
+                return False, f"weapon {wid}.reach_steps must be an integer"
+            dmg = str(w.get("damage") or "").lower()
+            import re as _re
+            if not _re.fullmatch(r"\d*d\d+(?:[+-]\d+)?", dmg):
+                return False, f"weapon {wid}.damage must be NdM[+/-K], got '{dmg}'"
         return True, "ok"
 
     def _validate_characters(obj: dict) -> tuple[bool, str]:
@@ -3570,6 +3737,12 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             # Make weapon defs available to snapshot consumers
             try:
                 world.set_weapon_defs(weapons)
+            except Exception:
+                pass
+            try:
+                arts = load_arts() or {}
+                if hasattr(world, "set_arts_defs"):
+                    world.set_arts_defs(arts)
             except Exception:
                 pass
 

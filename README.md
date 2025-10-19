@@ -86,6 +86,8 @@ repo/
 - `logs/run_events.jsonl`：结构化事件流（JSONL）。可通过 `npc-talk-logs --actor Amiya --turn 2 --pretty` 快速筛选。
 - `logs/run_story.log`：面向玩家的对话文本，直接镜像游戏内广播。
 - 初次运行会覆盖旧日志；如需长期存档可在 `logs/` 下按运行复制备份。
+- 说明：不再生成 `*_context_dev.log`（开发态 context 卡片），统一以上述 prompt 日志为准。
+ - `logs/prompts/<actor>_prompt.txt`：每个角色的“系统 Prompt + 注入内存”调试转储，仅保留最新；每次运行开始会清空历史（由 `DEBUG_DUMP_PROMPTS` 控制是否输出）。
 
 ## 必要环境变量
 

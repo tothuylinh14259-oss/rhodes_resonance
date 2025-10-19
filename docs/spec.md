@@ -62,4 +62,8 @@ configs/
 logs/
   run_events.jsonl
   run_story.log
+  prompts/
+    <actor>_prompt.txt  # 系统 Prompt + 注入内存的调试转储；仅保留最新，运行开始清空历史
+
+注：不再生成 `*_context_dev.log`（开发态 context 卡片）；统一以 `run_events.jsonl` 与 `run_story.log` 作为审计主源。若开启 `DEBUG_DUMP_PROMPTS`，则在 `logs/prompts/` 中仅保留每个角色最新一次的 Prompt 转储。
 ```

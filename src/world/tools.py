@@ -91,8 +91,9 @@ class World:
     conditions: Dict[str, Set[str]] = field(default_factory=dict)
     # lightweight triggers queue (ready/opportunity_attack, etc.)
     triggers: List[Dict[str, Any]] = field(default_factory=list)
-    # --- Weapons (simple dictionary, configured at startup) ---
+    # --- Weapons/Arts (simple dictionaries, configured at startup) ---
     weapon_defs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    arts_defs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # Participants order for the current scene (names only)
     participants: List[str] = field(default_factory=list)
     # Protection links: protectee -> ordered list of guardians
@@ -120,8 +121,10 @@ class World:
                     rs = int(DEFAULT_REACH_STEPS)
                 out[str(wid)] = {
                     "reach_steps": max(1, rs),
-                    "ability": str(d.get("ability", "STR")).upper(),
-                    "damage_expr": str(d.get("damage_expr", "1d4+STR")),
+                    "skill": str(d.get("skill", "")),
+                    "defense_skill": str(d.get("defense_skill", "")),
+                    "damage": str(d.get("damage", "")),
+                    "damage_type": str(d.get("damage_type", "physical")),
                 }
             return out
 
@@ -155,6 +158,8 @@ class World:
             # Weapon data
             "weapons": sorted(list(self.weapon_defs.keys())),
             "weapon_defs": _weapon_summary(),
+            # Arts data (for diagnostics; full details are available via get_arts_defs())
+            "arts": sorted(list(self.arts_defs.keys())),
         }
 
 
@@ -1176,15 +1181,14 @@ def set_coc_character(
     con = int(char.get("CON", 0))
     siz = int(char.get("SIZ", 0))
     hp_max = _coc7_hp_max(con, siz)
-    # Start at full HP
+    # Start at full HP/MP
     hp_now = int(hp_max)
-    # Optional deriveds
     pow_v = int(char.get("POW", 0))
-    derived = {
-        "hp": hp_max,
-        **({"san": pow_v} if pow_v > 0 else {}),
-        **({"mp": max(0, pow_v // 5)} if pow_v > 0 else {}),
-    }
+    mp_cap = max(0, pow_v // 5) if pow_v > 0 else 0
+    # Deriveds recorded inside CoC block for transparency
+    derived = {"hp": hp_max}
+    if pow_v > 0:
+        derived.update({"san": pow_v, "mp": mp_cap})
     sheet = WORLD.characters.setdefault(nm, {})
     sheet.update(
         {
@@ -1198,6 +1202,14 @@ def set_coc_character(
             },
         }
     )
+    # Top-level MP numeric resource (for quick access and combat math)
+    try:
+        sheet["max_mp"] = mp_cap
+        # Only set current mp to full if missing; avoid clobbering existing values
+        if "mp" not in sheet or sheet.get("mp") is None:
+            sheet["mp"] = mp_cap
+    except Exception:
+        pass
     # Clear any dying flag when creating a fresh sheet
     sheet.pop("dying_turns_left", None)
     WORLD._touch()
@@ -1245,6 +1257,14 @@ def recompute_coc_derived(name: str) -> ToolResponse:
     coc["derived"] = derived
     st["coc"] = coc
     WORLD.characters[nm] = st
+    # Sync top-level MP caps; keep current mp but clamp to new max
+    try:
+        mp_cap = max(0, int(pow_v // 5))
+        st["max_mp"] = mp_cap
+        cur_mp = int(st.get("mp", mp_cap))
+        st["mp"] = max(0, min(mp_cap, cur_mp))
+    except Exception:
+        pass
     WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=f"重算(CoC)：{nm} HP {new_hp}/{hp_max}")],
@@ -1253,20 +1273,43 @@ def recompute_coc_derived(name: str) -> ToolResponse:
 
 
 def set_coc_character_from_config(name: str, coc: Dict[str, Any]) -> ToolResponse:
-    """Normalize a `coc` dict from config and delegate to set_coc_character.
+    """Normalize a `coc` dict from config and persist all known fields.
 
-    Expected layout (minimal):
-    { "characteristics": { "CON": 70, "SIZ": 60, ... }, "skills": {...}, "terra": {...} }
-    If "characteristics" is missing, accept flat keys at top-level as a convenience.
+    Recognised blocks:
+      - characteristics: percentile stats (STR/DEX/...)
+      - skills: mapping of skill -> value
+      - terra: nested Terra attachments (infection/protection/...)
+    Any other top-level keys under the `coc` block (e.g., `arts_known`) are
+    preserved verbatim on the stored character sheet at `characters[name].coc`.
+    This keeps authoring flexible without requiring engine changes per field.
     """
     d = dict(coc or {})
+    # Extract primary blocks
     chars = d.get("characteristics")
     if not isinstance(chars, dict):
-        # Allow flat layout fallback
+        # Allow flat layout fallback for ability-like keys
         chars = {k: v for k, v in d.items() if isinstance(v, (int, float)) and str(k).isupper()}
     skills = d.get("skills") if isinstance(d.get("skills"), dict) else None
     terra = d.get("terra") if isinstance(d.get("terra"), dict) else None
-    return set_coc_character(name=name, characteristics={k: int(v) for k, v in (chars or {}).items()}, skills=skills, terra=terra)
+
+    # Create/update the base CoC sheet first
+    res = set_coc_character(
+        name=name,
+        characteristics={k: int(v) for k, v in (chars or {}).items()},
+        skills=skills,
+        terra=terra,
+    )
+
+    # Preserve additional fields (e.g., arts_known) under the coc block
+    extras = {k: v for k, v in d.items() if k not in ("characteristics", "skills", "terra")}
+    if extras:
+        st = WORLD.characters.setdefault(str(name), {})
+        coc_st = dict(st.get("coc") or {})
+        for k, v in extras.items():
+            coc_st[k] = v
+        st["coc"] = coc_st
+        WORLD._touch()
+    return res
 
 
 # DnD compatibility removed; use set_coc_character_from_config or set_coc_character directly.
@@ -1478,6 +1521,30 @@ def heal(name: str, amount: int):
     )
 
 
+# ---- MP tools ----
+def spend_mp(name: str, amount: int) -> ToolResponse:
+    nm = str(name)
+    amt = max(0, int(amount))
+    st = WORLD.characters.setdefault(nm, {})
+    cur = int(st.get("mp", 0))
+    if amt <= 0:
+        return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 未消耗 MP")], metadata={"ok": True, "mp": cur, "spent": 0})
+    if cur < amt:
+        return ToolResponse(content=[TextBlock(type="text", text=f"{nm} MP 不足（需要 {amt}，当前 {cur}）")], metadata={"ok": False, "error_type": "mp_insufficient", "need": amt, "mp": cur})
+    st["mp"] = cur - amt
+    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 消耗 MP {amt}（剩余 {st['mp']}）")], metadata={"ok": True, "mp": st["mp"], "spent": amt})
+
+
+def recover_mp(name: str, amount: int) -> ToolResponse:
+    nm = str(name)
+    amt = max(0, int(amount))
+    st = WORLD.characters.setdefault(nm, {})
+    cap = int(st.get("max_mp", 0))
+    cur = int(st.get("mp", 0))
+    st["mp"] = min(cap if cap > 0 else cur + amt, cur + amt)
+    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 恢复 MP {amt}（{st['mp']}/{cap or '?'}）")], metadata={"ok": True, "mp": st["mp"], "max_mp": cap})
+
+
 # ---- Dice tools ----
 def roll_dice(expr: str = "1d20"):
     """Roll dice expression like '1d20+3', '2d6+1', 'd20'."""
@@ -1646,28 +1713,59 @@ def get_stat_block(name: str) -> ToolResponse:
 
 # ---- Weapons (reach sourced from weapon defs; no auto-move) ----
 def set_weapon_defs(defs: Dict[str, Dict[str, Any]]):
-    """Replace the entire weapon definition table.
+    """Replace the entire weapon definition table (strict schema).
 
-    defs: { weapon_id: { reach_steps:int, ability:str?, damage_expr:str? } }
+    Required keys per weapon:
+      - label: str
+      - reach_steps: int (>0)
+      - skill: str (attacker skill)
+      - defense_skill: str (defender skill, typically 'Dodge')
+      - damage: str (dice expression NdM[+/-K])
+      - damage_type: str ('physical' or 'arts')
     """
+    allowed_keys = {"label", "reach_steps", "skill", "defense_skill", "damage", "damage_type"}
     try:
-        cleaned = {}
+        cleaned: Dict[str, Dict[str, Any]] = {}
         for k, v in (defs or {}).items():
-            d = dict(v or {})
-            # Drop legacy proficient flag if present
-            d.pop("proficient_default", None)
+            if not isinstance(v, dict):
+                raise ValueError(f"weapon {k} must be an object")
+            d = {str(kk): vv for kk, vv in v.items()}
+            extra = set(d.keys()) - allowed_keys
+            if extra:
+                raise ValueError(f"weapon {k} has unknown keys: {sorted(extra)}")
+            # Required fields
+            for req in ("label", "reach_steps", "skill", "defense_skill", "damage", "damage_type"):
+                if req not in d:
+                    raise ValueError(f"weapon {k} missing required field '{req}'")
+            # Types/values
+            rs = int(d.get("reach_steps"))
+            if rs <= 0:
+                raise ValueError(f"weapon {k}.reach_steps must be > 0")
+            dmg = str(d.get("damage") or "").strip()
+            if not dmg:
+                raise ValueError(f"weapon {k}.damage must be non-empty")
+            # Forbid any alpha tokens to ensure no attributes sneak in
+            import re as _re
+            if _re.search(r"[A-Za-z]", dmg):
+                # allow 'd' in NdM only
+                if not _re.fullmatch(r"\d*d\d+(?:[+-]\d+)?", dmg.lower()):
+                    raise ValueError(f"weapon {k}.damage must be NdM[+/-K], got '{dmg}'")
+            d["reach_steps"] = rs
+            d["damage"] = dmg.lower()
+            d["damage_type"] = str(d.get("damage_type") or "physical").lower()
             cleaned[str(k)] = d
         WORLD.weapon_defs = cleaned
     except Exception:
+        # Bubble up a clear error to callers, but keep world in a safe state
         WORLD.weapon_defs = {}
+        raise
     return ToolResponse(content=[TextBlock(type="text", text=f"武器表载入：{len(WORLD.weapon_defs)} 项")], metadata={"count": len(WORLD.weapon_defs)})
 
 
 def define_weapon(weapon_id: str, data: Dict[str, Any]):
+    # Reuse strict path by setting a one-item table
     wid = str(weapon_id)
-    d = dict(data or {})
-    d.pop("proficient_default", None)
-    WORLD.weapon_defs[wid] = d
+    res = set_weapon_defs({wid: dict(data or {})})
     return ToolResponse(content=[TextBlock(type="text", text=f"武器登记：{wid}")], metadata={"id": wid, **WORLD.weapon_defs[wid]})
 
 
@@ -1702,10 +1800,16 @@ def attack_with_weapon(
         reach_steps = max(1, int(w.get("reach_steps", DEFAULT_REACH_STEPS)))
     except Exception:
         reach_steps = int(DEFAULT_REACH_STEPS)
-    ability = str(w.get("ability", "STR")).upper()
-    damage_expr = str(w.get("damage_expr", "1d4+STR"))
-    # CoC: derive a small damage modifier from characteristic (via 3–18 proxy)
-    base_mod = _coc_ability_mod_for(attacker, ability)
+    # Strict weapon schema
+    try:
+        defense_skill_name = str(w["defense_skill"])  # required
+        damage_expr_base = str(w["damage"]).lower()   # required NdM(+/-K)
+        damage_type = str(w.get("damage_type", "physical")).lower()
+    except Exception as exc:
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"武器定义缺失字段：{exc}")],
+            metadata={"ok": False, "error_type": "weapon_def_invalid", "weapon_id": weapon},
+        )
 
     # Distance string helper
     def _fmt_distance(steps: Optional[int]) -> str:
@@ -1762,7 +1866,13 @@ def attack_with_weapon(
         )
 
     # Attack resolution
-    skill_name = str(w.get("skill")) if w.get("skill") else _weapon_skill_for(weapon, reach_steps, ability)
+    try:
+        skill_name = str(w["skill"])  # required
+    except Exception:
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"武器缺少进攻技能 skill: {weapon}")],
+            metadata={"ok": False, "error_type": "weapon_def_invalid", "weapon_id": weapon},
+        )
     parts: List[TextBlock] = list(pre_logs)
     success = False
     oppose = None
@@ -1777,8 +1887,8 @@ def attack_with_weapon(
                     parts.append(blk)
         success = bool((atk_res.metadata or {}).get("success"))
     else:
-        # Perform opposed check vs defender Dodge
-        oppose = contest(attacker, skill_name, defender, "Dodge")
+        # Perform opposed check vs configured defense skill (default Dodge)
+        oppose = contest(attacker, skill_name, defender, defense_skill_name)
         if oppose.content:
             for blk in oppose.content:
                 if isinstance(blk, dict) and blk.get("type") == "text":
@@ -1788,12 +1898,28 @@ def attack_with_weapon(
     hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
     dmg_total = 0
     if success:
-        dmg_expr2 = _replace_ability_tokens(damage_expr, base_mod)
-        dmg_res = roll_dice(dmg_expr2)
+        # Base damage only (no attribute bonus / DB / impale)
+        dmg_res = roll_dice(damage_expr_base)
         total = int((dmg_res.metadata or {}).get("total", 0))
-        dmg_total = total
-        dmg_apply = damage(defender, total)
-        parts.append(TextBlock(type="text", text=f"伤害：{dmg_expr2} -> {total}"))
+        # Fixed reduction by armor/barrier depending on damage_type
+        reduced = 0
+        final = total
+        try:
+            coc_d = dict(dfd.get("coc") or {})
+            terra = dict(coc_d.get("terra") or {})
+            prot = dict(terra.get("protection") or {})
+            if damage_type == "arts":
+                barrier = max(0, int(prot.get("arts_barrier", 0)))
+                reduced = barrier
+            else:
+                armor = max(0, int(prot.get("physical_armor", 0)))
+                reduced = armor
+        except Exception:
+            reduced = 0
+        final = max(0, total - int(reduced))
+        dmg_total = final
+        dmg_apply = damage(defender, final)
+        parts.append(TextBlock(type="text", text=f"伤害：{damage_expr_base} -> {total}{('（减伤 ' + str(reduced) + '）') if reduced else ''}"))
         for blk in (dmg_apply.content or []):
             if isinstance(blk, dict) and blk.get("type") == "text":
                 parts.append(blk)
@@ -1809,7 +1935,7 @@ def attack_with_weapon(
             "defender": defender,
             "weapon_id": weapon,
             "hit": success,
-            "base_mod": int(base_mod),
+            "base_mod": 0,
             "damage_total": int(dmg_total),
             "hp_before": int(hp_before),
             "hp_after": int(hp_after),
@@ -1856,9 +1982,23 @@ def _weapon_skill_for(weapon_id: str, reach_steps: int, ability: str) -> str:
     return "RangedWeapons"
 
 def _coc_skill_value(name: str, skill: str) -> int:
+    """Return a CoC percentile value for a skill or characteristic.
+
+    - If `skill` matches a known characteristic name (STR/DEX/CON/INT/POW/APP/EDU/SIZ/LUCK),
+      return the raw characteristic percentile from the sheet.
+    - Else, look up in coc.skills; fall back to sensible defaults.
+    """
     nm = str(name)
     st = WORLD.characters.get(nm, {})
     coc = dict(st.get("coc") or {})
+    # Characteristic passthrough
+    if str(skill).upper() in {"STR", "DEX", "CON", "INT", "POW", "APP", "EDU", "SIZ", "LUCK"}:
+        try:
+            ch = {k.upper(): int(v) for k, v in (coc.get("characteristics") or {}).items()}
+        except Exception:
+            ch = {}
+        return int(ch.get(str(skill).upper(), 50))
+    # Skills (explicit)
     skills = coc.get("skills") or {}
     if isinstance(skills, dict):
         v = skills.get(skill) or skills.get(str(skill).title()) or skills.get(str(skill).lower())
@@ -1871,6 +2011,7 @@ def _coc_skill_value(name: str, skill: str) -> int:
         "Stealth": 20,
         "Perception": 25,  # Spot Hidden analogue
         "Dodge": max(1, int(ch.get("DEX", 50) // 2)),
+        "Arts_Resist": 40,
         "FirstAid": 30,
         "Medicine": 5,
         # Coarse combat fallbacks
@@ -1893,6 +2034,328 @@ def _coc_skill_value(name: str, skill: str) -> int:
         "Arts_Control": 40,
     }
     return int(defaults.get(skill, 25))
+
+
+# ---- Arts helpers ----
+def set_arts_defs(defs: Dict[str, Dict[str, Any]]):
+    """Strictly set arts definitions to CoC schema.
+
+    Required per art:
+      - label: str
+      - cast_skill: str
+      - resist: str ("POW" or skill name)
+      - range_steps: int
+      - damage_type: str ('arts' or 'physical')
+    Optional:
+      - mp: {cost:int, variable:bool, max:int}
+      - damage: str (dice/int expr with POWER/MP/CoC tokens)
+      - heal: str
+      - control: {effect:str, duration:str}
+      - tags: list[str]
+    """
+    allowed = {"label","cast_skill","resist","range_steps","damage_type","mp","damage","heal","control","tags"}
+    try:
+        cleaned: Dict[str, Dict[str, Any]] = {}
+        for k, v in (defs or {}).items():
+            if not isinstance(v, dict):
+                raise ValueError(f"art {k} must be an object")
+            d = {str(kk): vv for kk, vv in v.items()}
+            extra = set(d.keys()) - allowed
+            if extra:
+                raise ValueError(f"art {k} has unknown keys: {sorted(extra)}")
+            for req in ("label","cast_skill","resist","range_steps","damage_type"):
+                if req not in d:
+                    raise ValueError(f"art {k} missing required field '{req}'")
+            d["label"] = str(d.get("label") or "")
+            d["cast_skill"] = str(d.get("cast_skill") or "")
+            d["resist"] = str(d.get("resist") or "")
+            d["range_steps"] = int(d.get("range_steps") or 0)
+            d["damage_type"] = str(d.get("damage_type") or "arts").lower()
+            if d["range_steps"] <= 0:
+                raise ValueError(f"art {k}.range_steps must be > 0")
+            # Normalize optional shapes
+            if "mp" in d and isinstance(d["mp"], dict):
+                mp = d["mp"]
+                d["mp"] = {"cost": int(mp.get("cost", 0) or 0), "variable": bool(mp.get("variable", False)), "max": int(mp.get("max", 0) or 0)}
+            if "control" in d and isinstance(d["control"], dict):
+                c = d["control"]
+                d["control"] = {"effect": str(c.get("effect", "")), "duration": str(c.get("duration", ""))}
+            if "tags" in d and isinstance(d["tags"], list):
+                d["tags"] = [str(x) for x in d["tags"]]
+            cleaned[str(k)] = d
+        WORLD.arts_defs = cleaned
+    except Exception:
+        WORLD.arts_defs = {}
+        raise
+    return ToolResponse(content=[TextBlock(type="text", text=f"术式表载入：{len(WORLD.arts_defs)} 项")], metadata={"count": len(WORLD.arts_defs)})
+
+
+def define_art(art_id: str, data: Dict[str, Any]):
+    aid = str(art_id)
+    res = set_arts_defs({aid: dict(data or {})})
+    return ToolResponse(content=[TextBlock(type="text", text=f"术式登记：{aid}")], metadata={"id": aid, **WORLD.arts_defs[aid]})
+
+
+def get_arts_defs() -> Dict[str, Dict[str, Any]]:
+    """Return a sanitized copy of arts definitions (strict CoC schema).
+
+    Exposed fields (for prompts/front-end): label, cast_skill, resist, range_steps,
+    damage_type, mp, damage, heal, control
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for aid, data in (WORLD.arts_defs or {}).items():
+        try:
+            d = dict(data or {})
+        except Exception:
+            d = {}
+        mp_cfg = dict(d.get("mp") or {}) if isinstance(d.get("mp"), dict) else {}
+        out[str(aid)] = {
+            "label": str(d.get("label", "")),
+            "cast_skill": str(d.get("cast_skill", "")),
+            "resist": str(d.get("resist", "")),
+            "range_steps": int(d.get("range_steps", 6) or 6),
+            "damage_type": str(d.get("damage_type", "arts")),
+            "mp": {
+                "cost": int(mp_cfg.get("cost", 0) or 0),
+                "variable": bool(mp_cfg.get("variable", False)),
+                "max": int(mp_cfg.get("max", 0) or 0),
+            },
+            **({"damage": str(d.get("damage"))} if d.get("damage") else {}),
+            **({"heal": str(d.get("heal"))} if d.get("heal") else {}),
+            **({"control": {"effect": str((d.get("control") or {}).get("effect", "")), "duration": str((d.get("control") or {}).get("duration", ""))}} if isinstance(d.get("control"), dict) else {}),
+        }
+    return out
+
+
+def _replace_art_tokens(attacker: str, expr: str, *, mp_spent: int = 0, base_cost: int = 0) -> str:
+    """Replace token placeholders in arts formulas using CoC values (no DnD mods).
+
+    Token semantics (word-boundary matched):
+    - POWER: max(0, mp_spent - mp_cost)
+    - MP: mp_spent
+    - Ability tokens (STR/DEX/CON/INT/POW/SIZ/APP/EDU): default to CoC "tens" value, e.g., floor(STR/10)
+    - Ability extended forms:
+        * TOKEN_RAW: CoC raw percentile score (0..100)
+        * TOKEN_10: floor(TOKEN/10)
+        * TOKEN_5: floor(TOKEN/5)
+
+    Rationale: keep expressions integer-only for the simple dice parser
+    while removing DnD-style modifiers entirely.
+    """
+    import re  # local import to avoid changing module top
+
+    def _coc_raw_for(name: str, ab_name: str) -> int:
+        st = WORLD.characters.get(str(name), {})
+        coc = dict(st.get("coc") or {})
+        ch = {k.upper(): int(v) for k, v in (coc.get("characteristics") or {}).items()}
+        return int(ch.get(str(ab_name).upper(), 50))
+
+    def _tens(v: int) -> int:
+        try:
+            return max(0, int(v) // 10)
+        except Exception:
+            return 0
+
+    def _div5(v: int) -> int:
+        try:
+            return max(0, int(v) // 5)
+        except Exception:
+            return 0
+
+    s = str(expr or "")
+
+    # Replace MP/POWER placeholders first
+    if "POWER" in s:
+        s = re.sub(r"\bPOWER\b", str(max(0, int(mp_spent) - int(base_cost))), s)
+    if "MP" in s:
+        s = re.sub(r"\bMP\b", str(int(mp_spent)), s)
+
+    # Extended CoC ability forms: *_RAW, *_10, *_5
+    for token in ("STR", "DEX", "CON", "INT", "POW", "SIZ", "APP", "EDU"):
+        raw = _coc_raw_for(attacker, token)
+        s = re.sub(rf"\b{token}_RAW\b", str(raw), s)
+        s = re.sub(rf"\b{token}_10\b", str(_tens(raw)), s)
+        s = re.sub(rf"\b{token}_5\b", str(_div5(raw)), s)
+
+    # Base ability tokens -> tens by default
+    for token in ("STR", "DEX", "CON", "INT", "POW", "SIZ", "APP", "EDU"):
+        raw = _coc_raw_for(attacker, token)
+        s = re.sub(rf"\b{token}\b", str(_tens(raw)), s)
+
+    return s
+
+
+def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Optional[Tuple[int, int]] = None, mp_spent: Optional[int] = None, reason: str = "") -> ToolResponse:
+    """Cast an Originium Art.
+
+    Minimal single-target implementation:
+    - contest: cast_skill vs defense_skill (default Arts_Resist; fallback to POW)
+    - MP: fixed or variable; mp_spent participates in formulas (POWER=mp_spent-mp_cost)
+    - reduction: arts -> arts_barrier; physical -> physical_armor
+    - tags: no-guard-intercept (skips guard), line-of-sight (cover==total blocks)
+    """
+    # participants gate
+    if WORLD.participants:
+        if str(attacker) not in WORLD.participants:
+            return ToolResponse(content=[TextBlock(type="text", text=f"参与者限制：{attacker} 非参与者")], metadata={"ok": False, "error_type": "not_participant", "attacker": attacker})
+        if target and str(target) not in WORLD.participants:
+            return ToolResponse(content=[TextBlock(type="text", text=f"参与者限制：{target} 非参与者")], metadata={"ok": False, "error_type": "not_participant", "target": target})
+
+    ad = dict((WORLD.arts_defs or {}).get(str(art), {}) or {})
+    if not ad:
+        return ToolResponse(content=[TextBlock(type="text", text=f"未知术式 {art}")], metadata={"ok": False, "error_type": "unknown_art"})
+
+    cast_skill = str(ad.get("cast_skill") or "")
+    resist = str(ad.get("resist") or "")
+    if not cast_skill or not resist:
+        return ToolResponse(content=[TextBlock(type="text", text=f"术式定义不完整（缺少 cast_skill 或 resist）：{art}")], metadata={"ok": False, "error_type": "art_def_invalid", "art": art})
+    rng = int(ad.get("range_steps", 6))
+    dtype = str(ad.get("damage_type", "arts")).lower()
+    dmg_expr = str(ad.get("damage") or "")
+    heal_expr = str(ad.get("heal") or "")
+    ctrl = dict(ad.get("control") or {}) if isinstance(ad.get("control"), dict) else {}
+    tags = set(ad.get("tags") or [])
+    mp_cfg = dict(ad.get("mp") or {}) if isinstance(ad.get("mp"), dict) else {}
+    mp_cost = int(mp_cfg.get("cost", 0))
+    mp_mode = "variable" if bool(mp_cfg.get("variable", False)) else "fixed"
+    mp_max = int(mp_cfg.get("max", 0) or 0)
+
+    # Target resolution (single target minimal)
+    tgt = str(target) if target else None
+    if not tgt:
+        return ToolResponse(content=[TextBlock(type="text", text="缺少目标 target")], metadata={"ok": False, "error_type": "missing_param", "param": "target"})
+
+    # Range check
+    dist = get_distance_steps_between(attacker, tgt)
+    if dist is None or dist > rng:
+        return ToolResponse(content=[TextBlock(type="text", text=f"距离不足：{attacker}->{tgt} {dist if dist is not None else '?'}步/触及{rng}步")], metadata={"ok": False, "error_type": "range"})
+
+    # Line-of-sight check (simplified via cover)
+    if "line-of-sight" in tags:
+        try:
+            if get_cover(tgt) == "total":
+                return ToolResponse(content=[TextBlock(type="text", text=f"{tgt} 视线受阻，本术式需要视线")], metadata={"ok": False, "error_type": "no_los", "target": tgt})
+        except Exception:
+            pass
+
+    # MP spending
+    if mp_mode == "fixed":
+        eff_spent = max(0, int(mp_cost))
+    else:
+        req = max(0, int(mp_cost))
+        want = int(mp_spent) if mp_spent is not None else req
+        cap = int(WORLD.characters.get(attacker, {}).get("mp", req))
+        hard_max = mp_max if mp_max > 0 else cap
+        eff_spent = max(req, min(hard_max, want, cap))
+    spent_res = spend_mp(attacker, eff_spent)
+    if not (spent_res.metadata or {}).get("ok", False):
+        return spent_res
+
+    # Contest / check
+    parts: List[TextBlock] = []
+    success = False
+    oppose = None
+    atk_res = None
+    if _is_dying(tgt):
+        parts.append(TextBlock(type="text", text=f"对抗跳过：{tgt} 濒死，本次仅进行命中检定"))
+        atk_res = skill_check_coc(attacker, cast_skill)
+        for blk in (atk_res.content or []):
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                parts.append(blk)
+        success = bool((atk_res.metadata or {}).get("success"))
+    else:
+        # CoC-style resistance: POW vs POW if resist == 'POW'; else cast_skill vs resist skill
+        if resist.upper() == "POW":
+            oppose = contest(attacker, "POW", tgt, "POW")
+        else:
+            oppose = contest(attacker, cast_skill, tgt, resist)
+        for blk in (oppose.content or []):
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                parts.append(blk)
+        winner = (oppose.metadata or {}).get("winner")
+        success = (winner == attacker)
+
+    # Success level only for narration; no multiplier in damage/heal
+    level = (atk_res.metadata or {}).get("success_level") if atk_res else ((oppose.metadata or {}).get("a", {}) if oppose else {}).get("success_level")
+    lvl = str(level or "fail")
+    mult = 1.0
+
+    effects: List[Dict[str, Any]] = []
+    hp_before = int(WORLD.characters.get(tgt, {}).get("hp", 0))
+    dmg_total = 0
+    healed = 0
+    if success and dmg_expr:
+        expr = _replace_art_tokens(attacker, dmg_expr, mp_spent=eff_spent, base_cost=mp_cost)
+        roll = roll_dice(expr)
+        val = int((roll.metadata or {}).get("total", 0))
+        # reduction
+        reduced = 0
+        try:
+            coc_d = dict((WORLD.characters.get(tgt, {}) or {}).get("coc") or {})
+            terra = dict(coc_d.get("terra") or {})
+            prot = dict(terra.get("protection") or {})
+            if dtype == "arts":
+                reduced = max(0, int(prot.get("arts_barrier", 0)))
+            else:
+                reduced = max(0, int(prot.get("physical_armor", 0)))
+        except Exception:
+            reduced = 0
+        final = max(0, val - reduced)
+        dmg_total = final
+        parts.append(TextBlock(type="text", text=f"术式伤害：{expr} -> {val}{('（减伤 ' + str(reduced) + '）') if reduced else ''}"))
+        dmg_apply = damage(tgt, final)
+        for blk in (dmg_apply.content or []):
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                parts.append(blk)
+        effects.append({"who": tgt, "damage": final, "reduced_by": reduced})
+
+    if success and heal_expr:
+        expr = _replace_art_tokens(attacker, heal_expr, mp_spent=eff_spent, base_cost=mp_cost)
+        roll = roll_dice(expr)
+        val = int((roll.metadata or {}).get("total", 0))
+        healed = max(0, val)
+        parts.append(TextBlock(type="text", text=f"术式治疗：{expr} -> {healed}"))
+        heal_res = heal(tgt, healed)
+        for blk in (heal_res.content or []):
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                parts.append(blk)
+        effects.append({"who": tgt, "heal": healed})
+
+    # Control effect
+    if success and ctrl.get("effect"):
+        eff = str(ctrl.get("effect"))
+        dur_expr = str(ctrl.get("duration") or "1")
+        dur_str = _replace_art_tokens(attacker, dur_expr, mp_spent=eff_spent, base_cost=mp_cost)
+        try:
+            dur_val = int(eval(dur_str, {"__builtins__": {}}, {}))  # simple integer expression
+        except Exception:
+            dur_val = 1
+        parts.append(TextBlock(type="text", text=f"控制：{eff}（持续 {dur_val} 轮）"))
+        try:
+            cr = apply_condition(tgt, eff)
+            for blk in (cr.content or []):
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    parts.append(blk)
+        except Exception:
+            pass
+        effects.append({"who": tgt, "condition": eff, "duration_rounds": int(dur_val)})
+
+    hp_after = int(WORLD.characters.get(tgt, {}).get("hp", 0))
+    WORLD._touch()
+    meta = {
+        "ok": True,
+        "attacker": attacker,
+        "art_id": str(art),
+        "target": tgt,
+        "mp_spent": int(eff_spent),
+        "power": max(0, int(eff_spent) - int(mp_cost)),
+        "success": bool(success),
+        "success_level": lvl,
+        "hp_before": hp_before,
+        "hp_after": hp_after,
+        "effects": effects,
+    }
+    return ToolResponse(content=parts, metadata=meta)
 
 
 def _signed(x: int) -> str:
@@ -2034,6 +2497,11 @@ TOOL_SPECS: Dict[str, ToolSpec] = {
         actor_keys={"name", "target"},
         participants_policy="both",
     ),
+    "cast_arts": ToolSpec(
+        required={"attacker", "art", "target"},
+        actor_keys={"attacker", "target"},
+        participants_policy="both",
+    ),
 }
 
 
@@ -2057,6 +2525,13 @@ def _normalize_params_for(tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
                 p["target"] = (int(x), int(y))
             except Exception:
                 pass
+    # cast_arts: ignore any provided mp_spent (统一由系统自动结算，防止模型传入该参数)
+    if tool == "cast_arts":
+        if "mp_spent" in p:
+            try:
+                del p["mp_spent"]
+            except Exception:
+                p.pop("mp_spent", None)
     return p
 
 
@@ -2119,4 +2594,5 @@ def validated_tool_dispatch() -> Dict[str, Any]:
         "set_protection": lambda **p: _validated_call("set_protection", set_guard, p),
         "clear_protection": lambda **p: _validated_call("clear_protection", clear_guard, p),
         "first_aid": lambda **p: _validated_call("first_aid", first_aid, p),
+        "cast_arts": lambda **p: _validated_call("cast_arts", cast_arts, p),
     }

@@ -22,7 +22,19 @@
         "Arts_Control": 30,
         "Throwables_Explosives": 30,
         "Perception": 45,
-        "Dodge": 40
+        "Dodge": 40,
+        "Arts_Resist": 40
+      },
+      "terra": {
+        "infection": {
+          "stage": 0,
+          "stress": 0,
+          "crystal_density": 0
+        },
+        "protection": {
+          "physical_armor": 0,
+          "arts_barrier": 0
+        }
       }
     },
     "inventory": {
@@ -54,8 +66,23 @@
         "Arts_Control": 55,
         "Fighting_Blade": 30,
         "Perception": 50,
-        "Dodge": 35
-      }
+        "Dodge": 35,
+        "Arts_Resist": 50
+      },
+      "terra": {
+        "infection": {
+          "stage": 2,
+          "stress": 35,
+          "crystal_density": 2
+        },
+        "protection": {
+          "physical_armor": 0,
+          "arts_barrier": 1
+        }
+      },
+      "arts_known": [
+        "amiya_binding"
+      ]
     },
     "inventory": {
       "amiya_focus": 1
@@ -86,7 +113,19 @@
         "Arts_Offense": 45,
         "Firearms_Handgun": 30,
         "Perception": 45,
-        "Dodge": 30
+        "Dodge": 30,
+        "Arts_Resist": 45
+      },
+      "terra": {
+        "infection": {
+          "stage": 2,
+          "stress": 20,
+          "crystal_density": 1
+        },
+        "protection": {
+          "physical_armor": 0,
+          "arts_barrier": 1
+        }
       }
     },
     "inventory": {
@@ -119,7 +158,19 @@
         "Throwables_Explosives": 40,
         "Fighting_Brawl": 25,
         "Perception": 60,
-        "Dodge": 45
+        "Dodge": 45,
+        "Arts_Resist": 35
+      },
+      "terra": {
+        "infection": {
+          "stage": 1,
+          "stress": 10,
+          "crystal_density": 0
+        },
+        "protection": {
+          "physical_armor": 1,
+          "arts_barrier": 0
+        }
       }
     },
     "inventory": {
