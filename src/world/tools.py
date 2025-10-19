@@ -1144,7 +1144,6 @@ def set_coc_character(
     sheet = WORLD.characters.setdefault(nm, {})
     sheet.update(
         {
-            "system": "coc",
             "hp": hp_now,
             "max_hp": hp_max,
             "coc": {
@@ -1164,7 +1163,7 @@ def set_coc_character(
                 text=f"设定(CoC) {nm}：HP {hp_now}/{hp_max}（公式：floor((CON+SIZ)/10)）",
             )
         ],
-        metadata={"name": nm, "hp": hp_now, "max_hp": hp_max, "system": "coc"},
+        metadata={"name": nm, "hp": hp_now, "max_hp": hp_max},
     )
 
 
@@ -1203,7 +1202,7 @@ def recompute_coc_derived(name: str) -> ToolResponse:
     WORLD.characters[nm] = st
     return ToolResponse(
         content=[TextBlock(type="text", text=f"重算(CoC)：{nm} HP {new_hp}/{hp_max}")],
-        metadata={"name": nm, "hp": new_hp, "max_hp": hp_max, "system": st.get("system")},
+        metadata={"name": nm, "hp": new_hp, "max_hp": hp_max},
     )
 
 
@@ -1594,7 +1593,7 @@ def get_stat_block(name: str) -> ToolResponse:
     if not st:
         return ToolResponse(content=[TextBlock(type="text", text=f"未找到 {name}")], metadata={"found": False})
     # CoC view
-    if str(st.get("system")).lower() == "coc":
+    if isinstance(st.get("coc"), dict):
         coc = dict(st.get("coc") or {})
         chars = {k.upper(): v for k, v in (coc.get("characteristics") or {}).items()}
         der = dict(coc.get("derived") or {})

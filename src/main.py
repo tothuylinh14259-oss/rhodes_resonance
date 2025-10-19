@@ -1304,11 +1304,11 @@ async def run_demo(
     if allowed_names_world:
         for name in allowed_names_world:
             entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
-            # Stat block: switch everything to CoC. If only D&D is provided, convert to CoC.
+            # Stat block: CoC-first. If only D&D is provided, convert to CoC.
             try:
-                system = str(entry.get("system", "")).lower()
-                if system == "coc" and isinstance(entry.get("coc"), dict):
-                    world.set_coc_character_from_config(name=name, coc=entry.get("coc") or {})
+                coc_block = entry.get("coc")
+                if isinstance(coc_block, dict):
+                    world.set_coc_character_from_config(name=name, coc=coc_block or {})
                 else:
                     dnd = entry.get("dnd") or {}
                     if dnd:
@@ -1399,9 +1399,9 @@ async def run_demo(
             if name in allowed_names_world:
                 continue
             try:
-                system = str(entry.get("system", "")).lower()
-                if system == "coc" and isinstance(entry.get("coc"), dict):
-                    world.set_coc_character_from_config(name=name, coc=entry.get("coc") or {})
+                coc_block = entry.get("coc")
+                if isinstance(coc_block, dict):
+                    world.set_coc_character_from_config(name=name, coc=coc_block or {})
                 else:
                     dnd = entry.get("dnd") or {}
                     if dnd:
