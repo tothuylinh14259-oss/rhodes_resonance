@@ -14,7 +14,7 @@ except Exception:
             self.content = content or []
             self.metadata = metadata or {}
 
-    class TextBlock(dict):  # type: ignore
+class TextBlock(dict):  # type: ignore
         def __init__(self, type: str = "text", text: str = ""):
             super().__init__(type=type, text=text)
 
@@ -55,6 +55,8 @@ def _rel_key(a: str, b: str) -> Tuple[str, str]:
 
 @dataclass
 class World:
+    # Monotonic version to help higher layers cache snapshots/runtime.
+    version: int = 0
     time_min: int = 8 * 60  # 08:00 in minutes
     weather: str = "sunny"
     relations: Dict[Tuple[str, str], int] = field(default_factory=dict)
@@ -96,6 +98,13 @@ class World:
     # Protection links: protectee -> ordered list of guardians
     guardians: Dict[str, List[str]] = field(default_factory=dict)
 
+    def _touch(self) -> None:
+        try:
+            self.version += 1
+        except Exception:
+            # be defensive; never fail mutators due to versioning
+            self.version = int(self.version or 0) + 1
+
     def snapshot(self) -> dict:
         # Build a sanitized weapon-def summary for consumers (id -> selected fields)
         def _weapon_summary():
@@ -117,6 +126,7 @@ class World:
             return out
 
         return {
+            "version": int(self.version),
             "time_min": self.time_min,
             "weather": self.weather,
             "relations": {f"{a}->{b}": v for (a, b), v in self.relations.items()},
@@ -174,7 +184,8 @@ def set_participants(names: List[str]) -> ToolResponse:
         seen.add(s)
         seq.append(s)
     WORLD.participants = seq
-    return ToolResponse(content=[TextBlock(type="text", text="参与者设定：" + (", ".join(seq) if seq else "(无)"))], metadata={"participants": list(seq)})
+    WORLD._touch()
+    return ToolResponse(content=[TextBlock(type="text", text="参与者设定：" + (", ".join(seq) if seq else "(无)"))], metadata={"ok": True, "participants": list(seq)})
 
 
 def set_character_meta(
@@ -205,9 +216,10 @@ def set_character_meta(
             q = str(quotes).strip()
             if q:
                 sheet["quotes"] = q
+    WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=f"设定角色元信息：{nm}")],
-        metadata={k: sheet.get(k) for k in ("persona", "appearance", "quotes")},
+        metadata={"ok": True, **{k: sheet.get(k) for k in ("persona", "appearance", "quotes")}},
     )
 
 def advance_time(mins: int):
@@ -220,6 +232,7 @@ def advance_time(mins: int):
         dict: { ok: bool, time_min: int }
     """
     WORLD.time_min += int(mins)
+    WORLD._touch()
     res = {"ok": True, "time_min": WORLD.time_min}
     blocks = [TextBlock(type="text", text=f"时间推进 {int(mins)} 分钟，当前时间(分钟)={WORLD.time_min}")]
     # Auto process events due
@@ -229,7 +242,7 @@ def advance_time(mins: int):
             blocks.extend(ev.content)
     except Exception:
         pass
-    return ToolResponse(content=blocks, metadata=res)
+    return ToolResponse(content=blocks, metadata={"ok": True, **res})
 
 
 def change_relation(a: str, b: str, delta: int, reason: str = ""):
@@ -246,20 +259,22 @@ def change_relation(a: str, b: str, delta: int, reason: str = ""):
     """
     k = _rel_key(a, b)
     WORLD.relations[k] = WORLD.relations.get(k, 0) + int(delta)
+    WORLD._touch()
     res = {"ok": True, "pair": list(k), "score": WORLD.relations[k], "reason": reason}
     return ToolResponse(
         content=[TextBlock(type="text", text=f"关系调整 {k[0]}->{k[1]}：{int(delta)}，当前分数={WORLD.relations[k]}。理由：{reason}")],
-        metadata=res,
+        metadata={"ok": True, **res},
     )
 
 
 def set_relation(a: str, b: str, value: int, reason: str = "初始化") -> ToolResponse:
     k = _rel_key(a, b)
     WORLD.relations[k] = int(value)
+    WORLD._touch()
     res = {"ok": True, "pair": list(k), "score": WORLD.relations[k], "reason": reason}
     return ToolResponse(
         content=[TextBlock(type="text", text=f"关系设定 {k[0]}->{k[1]} = {WORLD.relations[k]}。理由：{reason}")],
-        metadata=res,
+        metadata={"ok": True, **res},
     )
 
 
@@ -276,10 +291,11 @@ def grant_item(target: str, item: str, n: int = 1):
     """
     bag = WORLD.inventory.setdefault(target, {})
     bag[item] = bag.get(item, 0) + int(n)
+    WORLD._touch()
     res = {"ok": True, "target": target, "item": item, "count": bag[item]}
     return ToolResponse(
         content=[TextBlock(type="text", text=f"给予 {target} 物品 {item} x{int(n)}，现有数量={bag[item]}")],
-        metadata=res,
+        metadata={"ok": True, **res},
     )
 
 
@@ -289,9 +305,10 @@ def set_position(name: str, x: int, y: int) -> ToolResponse:
     # block here for dying/dead, because forced movement is allowed. Voluntary
     # movement is gated in move_towards().
     WORLD.positions[str(name)] = (int(x), int(y))
+    WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=f"设定 {name} 位置 -> ({int(x)}, {int(y)})")],
-        metadata={"name": name, "position": [int(x), int(y)]},
+        metadata={"ok": True, "name": name, "position": [int(x), int(y)]},
     )
 
 
@@ -306,9 +323,10 @@ def set_guard(guardian: str, protectee: str) -> ToolResponse:
     lst = WORLD.guardians.setdefault(p, [])
     if g not in lst:
         lst.append(g)
+        WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=f"守护：{g} -> {p}")],
-        metadata={"protectee": p, "guardians": list(lst), "added": g},
+        metadata={"ok": True, "protectee": p, "guardians": list(lst), "added": g},
     )
 
 
@@ -326,11 +344,14 @@ def clear_guard(guardian: Optional[str] = None, protectee: Optional[str] = None)
     if g is None and p is None:
         changed = sum(len(v) for v in WORLD.guardians.values())
         WORLD.guardians.clear()
-        return ToolResponse(content=[TextBlock(type="text", text=f"已清空所有守护关系（{changed} 条）")], metadata={"cleared": changed})
+        WORLD._touch()
+        return ToolResponse(content=[TextBlock(type="text", text=f"已清空所有守护关系（{changed} 条）")], metadata={"ok": True, "cleared": changed})
     if p is not None and g is None:
         lst = WORLD.guardians.pop(p, [])
         changed = len(lst)
-        return ToolResponse(content=[TextBlock(type="text", text=f"已清除 {p} 的全部守护（{changed} 名）")], metadata={"protectee": p, "cleared": changed})
+        if changed:
+            WORLD._touch()
+        return ToolResponse(content=[TextBlock(type="text", text=f"已清除 {p} 的全部守护（{changed} 名）")], metadata={"ok": True, "protectee": p, "cleared": changed})
     if g is not None and p is None:
         removed = 0
         for key in list(WORLD.guardians.keys()):
@@ -344,7 +365,9 @@ def clear_guard(guardian: Optional[str] = None, protectee: Optional[str] = None)
                     WORLD.guardians[key] = lst
                 else:
                     WORLD.guardians.pop(key, None)
-        return ToolResponse(content=[TextBlock(type="text", text=f"已将 {g} 从所有守护中移除（涉及 {removed} 名被保护者）")], metadata={"guardian": g, "affected": removed})
+        if removed:
+            WORLD._touch()
+        return ToolResponse(content=[TextBlock(type="text", text=f"已将 {g} 从所有守护中移除（涉及 {removed} 名被保护者）")], metadata={"ok": True, "guardian": g, "affected": removed})
     # both provided
     lst = WORLD.guardians.get(p, [])
     if g in lst:
@@ -354,7 +377,9 @@ def clear_guard(guardian: Optional[str] = None, protectee: Optional[str] = None)
         else:
             WORLD.guardians.pop(p, None)
         changed = 1
-    return ToolResponse(content=[TextBlock(type="text", text=f"已移除守护：{g} -> {p}")], metadata={"removed": changed, "protectee": p, "guardian": g})
+    if changed:
+        WORLD._touch()
+    return ToolResponse(content=[TextBlock(type="text", text=f"已移除守护：{g} -> {p}")], metadata={"ok": True, "removed": changed, "protectee": p, "guardian": g})
 
 
 def get_position(name: str) -> ToolResponse:
@@ -372,9 +397,10 @@ def get_position(name: str) -> ToolResponse:
 
 def set_objective_position(name: str, x: int, y: int) -> ToolResponse:
     WORLD.objective_positions[str(name)] = (int(x), int(y))
+    WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=f"目标 {name} 坐标设为 ({int(x)}, {int(y)})")],
-        metadata={"name": name, "position": [int(x), int(y)]},
+        metadata={"ok": True, "name": name, "position": [int(x), int(y)]},
     )
 
 
@@ -510,6 +536,12 @@ def get_reach_steps(name: str) -> int:
 
 def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse:
     """Move an actor toward target grid up to `steps` 4-way steps."""
+    if WORLD.participants and str(name) not in WORLD.participants:
+        pos = WORLD.positions.get(str(name)) or (0, 0)
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"参与者限制：仅当前场景参与者可主动移动。")],
+            metadata={"ok": False, "moved": 0, "position": list(pos), "error_type": "not_participant"},
+        )
     # Gate voluntary movement if the actor is down/dying/dead
     st = WORLD.characters.get(str(name), {})
     hp_now = int(st.get("hp", 0)) if st else 0
@@ -518,14 +550,14 @@ def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse
         pos = WORLD.positions.get(str(name)) or (0, 0)
         return ToolResponse(
             content=[TextBlock(type="text", text=f"{name} 处于濒死/倒地，无法移动。")],
-            metadata={"moved": 0, "position": list(pos), "blocked": True},
+            metadata={"ok": False, "moved": 0, "position": list(pos), "blocked": True},
         )
     steps = max(0, int(steps))
     if steps == 0:
         pos = WORLD.positions.get(str(name)) or (0, 0)
         return ToolResponse(
             content=[TextBlock(type="text", text=f"{name} 保持在 ({pos[0]}, {pos[1]})，未移动。")],
-            metadata={"moved": 0, "position": list(pos)},
+            metadata={"ok": True, "moved": 0, "position": list(pos)},
         )
     current = WORLD.positions.get(str(name))
     if current is None:
@@ -546,9 +578,11 @@ def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse
         f"{name} 向 ({tx}, {ty}) 移动 {format_distance_steps(moved)}，现位于 ({x}, {y})。"
         + (" 已抵达目标。" if reached else f" 距目标还差 {format_distance_steps(remaining)}。")
     )
+    WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=text)],
         metadata={
+            "ok": True,
             "moved": moved,
             "reached": reached,
             "remaining": remaining,
@@ -627,8 +661,9 @@ def set_scene(
                     if s:
                         vals.append(s)
         WORLD.scene_details = vals
+    WORLD._touch()
     text = f"设定场景：{WORLD.location}；目标：{'; '.join(WORLD.objectives) if WORLD.objectives else '(无)'}"
-    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata=WORLD.snapshot())
+    return ToolResponse(content=[TextBlock(type="text", text=text)], metadata={"ok": True, **WORLD.snapshot()})
 
 
 def add_objective(obj: str):
@@ -671,9 +706,10 @@ def set_speed(name: str, value: float = DEFAULT_MOVE_SPEED_STEPS, unit: str = "s
     if steps == 0 and value > 0:
         steps = 1
     WORLD.speeds[str(name)] = steps
+    WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=f"速度设定：{name} {format_distance_steps(steps)}")],
-        metadata={"name": name, "speed_steps": steps},
+        metadata={"ok": True, "name": name, "speed_steps": steps},
     )
 
 
@@ -692,12 +728,13 @@ def roll_initiative(participants: Optional[List[str]] = None):
     WORLD.round = 1
     WORLD.turn_idx = 0
     WORLD.in_combat = True
+    WORLD._touch()
     # reset tokens for first actor (if any)
     first = _current_actor_name()
     if first:
         _reset_turn_tokens_for(first)
     txt = "先攻：" + ", ".join(f"{n}({scores[n]})" for n in ordered)
-    return ToolResponse(content=[TextBlock(type="text", text=txt)], metadata={"initiative": ordered, "scores": scores})
+    return ToolResponse(content=[TextBlock(type="text", text=txt)], metadata={"ok": True, "initiative": ordered, "scores": scores})
 
 
 
@@ -709,7 +746,8 @@ def end_combat():
     WORLD.cover.clear()
     WORLD.conditions.clear()
     WORLD.triggers.clear()
-    return ToolResponse(content=[TextBlock(type="text", text="战斗结束")], metadata={"in_combat": False})
+    WORLD._touch()
+    return ToolResponse(content=[TextBlock(type="text", text="战斗结束")], metadata={"ok": True, "in_combat": False})
 
 
 def _current_actor_name() -> Optional[str]:
@@ -782,11 +820,11 @@ def next_turn():
     - If no alive actors exist, preserves indices and reports accordingly.
     """
     if not WORLD.in_combat or not WORLD.initiative_order:
-        return ToolResponse(content=[TextBlock(type="text", text="未处于战斗中")], metadata={"in_combat": False})
+        return ToolResponse(content=[TextBlock(type="text", text="未处于战斗中")], metadata={"ok": False, "in_combat": False})
 
     order = WORLD.initiative_order
     if not order:
-        return ToolResponse(content=[TextBlock(type="text", text="未处于战斗中")], metadata={"in_combat": False})
+        return ToolResponse(content=[TextBlock(type="text", text="未处于战斗中")], metadata={"ok": False, "in_combat": False})
 
     prev_idx = int(WORLD.turn_idx)
     n = len(order)
@@ -814,14 +852,16 @@ def next_turn():
 
     cur = order[WORLD.turn_idx]
     _reset_turn_tokens_for(cur)
+    WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=f"回合推进：R{WORLD.round} 轮到 {cur}")],
-        metadata={"round": WORLD.round, "actor": cur, "ok": True},
+        metadata={"ok": True, "round": WORLD.round, "actor": cur},
     )
 
 
 def get_turn() -> ToolResponse:
     return ToolResponse(content=[TextBlock(type="text", text=f"当前：R{WORLD.round} idx={WORLD.turn_idx} actor={_current_actor_name() or '(未定)'}")], metadata={
+        "ok": True,
         "round": WORLD.round,
         "turn_idx": WORLD.turn_idx,
         "actor": _current_actor_name(),
@@ -839,9 +879,10 @@ def reset_actor_turn(name: str) -> ToolResponse:
     nm = str(name)
     _reset_turn_tokens_for(nm)
     st = dict(WORLD.turn_state.get(nm, {}))
+    WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=f"[系统] {nm} 回合资源重置")],
-        metadata={"name": nm, "state": st},
+        metadata={"ok": True, "name": nm, "state": st},
     )
 
 
@@ -852,16 +893,19 @@ def use_action(name: str, kind: str = "action") -> ToolResponse:
         if st.get("action_used"):
             return ToolResponse(content=[TextBlock(type="text", text=f"[已用] {nm} 本回合动作已用完")], metadata={"ok": False})
         st["action_used"] = True
+        WORLD._touch()
         return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 使用 动作")], metadata={"ok": True})
     if kind == "bonus":
         if st.get("bonus_used"):
             return ToolResponse(content=[TextBlock(type="text", text=f"[已用] {nm} 本回合附赠动作已用完")], metadata={"ok": False})
         st["bonus_used"] = True
+        WORLD._touch()
         return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 使用 附赠动作")], metadata={"ok": True})
     if kind == "reaction":
         if not st.get("reaction_available", True):
             return ToolResponse(content=[TextBlock(type="text", text=f"[已用] {nm} 本轮反应不可用")], metadata={"ok": False})
         st["reaction_available"] = False
+        WORLD._touch()
         return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 使用 反应")], metadata={"ok": True})
     return ToolResponse(content=[TextBlock(type="text", text=f"未知动作类型 {kind}")], metadata={"ok": False})
 
@@ -1156,6 +1200,7 @@ def set_coc_character(
     )
     # Clear any dying flag when creating a fresh sheet
     sheet.pop("dying_turns_left", None)
+    WORLD._touch()
     return ToolResponse(
         content=[
             TextBlock(
@@ -1163,7 +1208,7 @@ def set_coc_character(
                 text=f"设定(CoC) {nm}：HP {hp_now}/{hp_max}（公式：floor((CON+SIZ)/10)）",
             )
         ],
-        metadata={"name": nm, "hp": hp_now, "max_hp": hp_max},
+        metadata={"ok": True, "name": nm, "hp": hp_now, "max_hp": hp_max},
     )
 
 
@@ -1176,7 +1221,7 @@ def recompute_coc_derived(name: str) -> ToolResponse:
     st = WORLD.characters.get(nm, {})
     coc = dict(st.get("coc") or {})
     if not coc:
-        return ToolResponse(content=[], metadata={"name": nm, "ok": False, "reason": "no_coc_block"})
+        return ToolResponse(content=[], metadata={"ok": False, "name": nm, "reason": "no_coc_block"})
     ch = {k.upper(): int(v) for k, v in (coc.get("characteristics") or {}).items()}
     con = int(ch.get("CON", 0))
     siz = int(ch.get("SIZ", 0))
@@ -1200,9 +1245,10 @@ def recompute_coc_derived(name: str) -> ToolResponse:
     coc["derived"] = derived
     st["coc"] = coc
     WORLD.characters[nm] = st
+    WORLD._touch()
     return ToolResponse(
         content=[TextBlock(type="text", text=f"重算(CoC)：{nm} HP {new_hp}/{hp_max}")],
-        metadata={"name": nm, "hp": new_hp, "max_hp": hp_max},
+        metadata={"ok": True, "name": nm, "hp": new_hp, "max_hp": hp_max},
     )
 
 
@@ -1223,32 +1269,7 @@ def set_coc_character_from_config(name: str, coc: Dict[str, Any]) -> ToolRespons
     return set_coc_character(name=name, characteristics={k: int(v) for k, v in (chars or {}).items()}, skills=skills, terra=terra)
 
 
-def set_coc_character_from_dnd(name: str, dnd: Dict[str, Any]) -> ToolResponse:
-    """Convert a minimal D&D block to a CoC 7e character and register it.
-
-    Mapping (rough, per docs): CoC ~= round(D&D × 5). Missing stats default to mid-line values.
-    - STR/DEX/CON/INT map directly; POW/APP/EDU/LUCK default to 50/50/60/50.
-    - SIZ defaults to 50 (adjust per character later if needed).
-    """
-    d = dict(dnd or {})
-    ab = {str(k).upper(): int(v) for k, v in (d.get("abilities") or {}).items() if k}
-    def to_coc(x: int) -> int:
-        try:
-            return int(round(int(x) * 5))
-        except Exception:
-            return 50
-    chars = {
-        "STR": to_coc(ab.get("STR", 10)),
-        "DEX": to_coc(ab.get("DEX", 10)),
-        "CON": to_coc(ab.get("CON", 10)),
-        "INT": to_coc(ab.get("INT", 10)),
-        "POW": 50,
-        "APP": 50,
-        "EDU": 60,
-        "SIZ": 50,
-        "LUCK": 50,
-    }
-    return set_coc_character(name=name, characteristics=chars)
+# DnD compatibility removed; use set_coc_character_from_config or set_coc_character directly.
 
 
 def get_character(name: str):
@@ -1277,7 +1298,8 @@ def _enter_dying(name: str, *, turns: int = DYING_TURNS_DEFAULT) -> ToolResponse
     except Exception:
         pass
     note = TextBlock(type="text", text=f"{nm} 进入濒死（{st['dying_turns_left']}回合后死亡；再次受伤即死）")
-    return ToolResponse(content=[note], metadata={"name": nm, "dying": True, "turns_left": st["dying_turns_left"]})
+    WORLD._touch()
+    return ToolResponse(content=[note], metadata={"ok": True, "name": nm, "dying": True, "turns_left": st["dying_turns_left"]})
 
 
 def _die(name: str, *, reason: str = "wounds") -> ToolResponse:
@@ -1300,7 +1322,8 @@ def _die(name: str, *, reason: str = "wounds") -> ToolResponse:
     except Exception:
         pass
     note = TextBlock(type="text", text=f"{nm} 死亡。")
-    return ToolResponse(content=[note], metadata={"name": nm, "dead": True, "reason": reason})
+    WORLD._touch()
+    return ToolResponse(content=[note], metadata={"ok": True, "name": nm, "dead": True, "reason": reason})
 
 
 def tick_dying_for(name: str) -> ToolResponse:
@@ -1312,7 +1335,7 @@ def tick_dying_for(name: str) -> ToolResponse:
     nm = str(name)
     st = WORLD.characters.get(nm, {})
     if not st or st.get("dying_turns_left") is None:
-        return ToolResponse(content=[], metadata={"name": nm, "affected": False})
+        return ToolResponse(content=[], metadata={"ok": True, "name": nm, "affected": False})
     try:
         left = int(st.get("dying_turns_left", 0))
     except Exception:
@@ -1327,7 +1350,8 @@ def tick_dying_for(name: str) -> ToolResponse:
         return res
     # Otherwise, report remaining
     note = TextBlock(type="text", text=f"{nm} 濒死剩余 {st['dying_turns_left']} 回合。")
-    return ToolResponse(content=[note], metadata={"name": nm, "turns_left": st["dying_turns_left"], "affected": True})
+    WORLD._touch()
+    return ToolResponse(content=[note], metadata={"ok": True, "name": nm, "turns_left": st["dying_turns_left"], "affected": True})
 
 
 def damage(name: str, amount: int):
@@ -1346,7 +1370,7 @@ def damage(name: str, amount: int):
         die_res = _die(nm, reason="reinjury")
         parts: List[TextBlock] = [TextBlock(type="text", text=f"{nm} 在濒死状态下再次受到 {amt} 伤害，立即死亡。")]
         parts.extend(die_res.content or [])
-        return ToolResponse(content=parts, metadata={"name": nm, "hp": 0, "max_hp": st.get("max_hp"), "dead": True})
+        return ToolResponse(content=parts, metadata={"ok": True, "name": nm, "hp": 0, "max_hp": st.get("max_hp"), "dead": True})
 
     # Apply damage normally
     st["hp"] = max(0, hp_before - amt)
@@ -1358,9 +1382,10 @@ def damage(name: str, amount: int):
         res = _enter_dying(nm, turns=DYING_TURNS_DEFAULT)
         parts.extend(res.content or [])
         return ToolResponse(content=parts, metadata={"name": nm, "hp": 0, "max_hp": st.get("max_hp"), "dead": True, "dying": True, "turns_left": st.get("dying_turns_left")})
+    WORLD._touch()
     return ToolResponse(
         content=parts,
-        metadata={"name": nm, "hp": st["hp"], "max_hp": st.get("max_hp"), "dead": False},
+        metadata={"ok": True, "name": nm, "hp": st["hp"], "max_hp": st.get("max_hp"), "dead": False},
     )
 
 
@@ -1402,6 +1427,7 @@ def first_aid(name: str, target: str) -> ToolResponse:
         except Exception:
             st["hp"] = 1
         logs.append(TextBlock(type="text", text=f"{rescuer} 成功稳定 {tgt}（HP 至少 1，脱离濒死）"))
+        WORLD._touch()
         return ToolResponse(content=logs, metadata={"ok": True, "rescuer": rescuer, "target": tgt, "stabilized": True, "hp": st.get("hp")})
 
     # Non-dying healing: +1 HP once per injury
@@ -1420,6 +1446,7 @@ def first_aid(name: str, target: str) -> ToolResponse:
         st["hp"] = min(max_hp, hp + 1)
         st["first_aid_applied_on"] = injury_id
         logs.append(TextBlock(type="text", text=f"{rescuer} 急救成功，{tgt} 恢复 1 点 HP（{st['hp']}/{max_hp}）"))
+        WORLD._touch()
         return ToolResponse(content=logs, metadata={"ok": True, "rescuer": rescuer, "target": tgt, "healed": 1, "hp": st.get("hp")})
 
     # Otherwise nothing to do
@@ -1655,6 +1682,13 @@ def attack_with_weapon(
     - No auto-move; if distance > reach_steps, fail early.
     - ability/damage_expr are sourced from weapon defs with safe defaults.
     """
+    # participants gate: when participants are set, both attacker and defender must be participants
+    if WORLD.participants:
+        if str(attacker) not in WORLD.participants or str(defender) not in WORLD.participants:
+            return ToolResponse(
+                content=[TextBlock(type="text", text=f"参与者限制：仅当前场景参与者可以进行/承受攻击。")],
+                metadata={"ok": False, "error_type": "not_participant", "attacker": attacker, "defender": defender},
+            )
     atk = WORLD.characters.get(attacker, {})
     # Voluntary attack is blocked if attacker is down/dying/dead (hp<=0 or dying bookkeeping exists)
     try:
@@ -1686,10 +1720,10 @@ def attack_with_weapon(
         return ToolResponse(
             content=[msg],
             metadata={
+                "ok": False,
                 "attacker": attacker,
                 "defender": defender,
                 "weapon_id": weapon,
-                "ok": False,
                 "error_type": "weapon_not_owned",
             },
         )
@@ -1714,6 +1748,7 @@ def attack_with_weapon(
         return ToolResponse(
             content=pre_logs + [msg],
             metadata={
+                "ok": False,
                 "attacker": attacker,
                 "defender": defender,
                 "weapon_id": weapon,
@@ -1764,9 +1799,12 @@ def attack_with_weapon(
                 parts.append(blk)
     hp_after = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
     distance_after = distance_before
+    # Any hit/miss still mutates state through damage(); touch once per attack
+    WORLD._touch()
     return ToolResponse(
         content=parts,
         metadata={
+            "ok": True,
             "attacker": attacker,
             "defender": defender,
             "weapon_id": weapon,
@@ -1939,3 +1977,146 @@ def add_mark(text: str):
         if len(WORLD.marks) > 10:
             WORLD.marks = WORLD.marks[-10:]
     return ToolResponse(content=[TextBlock(type="text", text=f"(环境刻痕)+{s}")], metadata={"marks": list(WORLD.marks)})
+
+
+# ============================================================
+# Tool parameter validation (centralized in world)
+# ============================================================
+
+from dataclasses import dataclass as _dataclass
+
+@_dataclass(frozen=True)
+class ToolSpec:
+    required: Set[str]
+    actor_keys: Set[str] = frozenset()
+    numeric_min0: Set[str] = frozenset()   # params that must be non-negative integers
+    participants_policy: str = "none"      # one of: none | source | both
+    source_param: Optional[str] = None     # when policy=source, which param holds the source actor name
+    extra_policy: str = "ignore"           # ignore | error
+
+
+TOOL_SPECS: Dict[str, ToolSpec] = {
+    "perform_attack": ToolSpec(
+        required={"attacker", "defender", "weapon"},
+        actor_keys={"attacker", "defender"},
+        participants_policy="both",
+    ),
+    "advance_position": ToolSpec(
+        required={"name", "target", "steps"},
+        actor_keys={"name"},
+        numeric_min0={"steps"},
+        participants_policy="source",
+        source_param="name",
+    ),
+    "adjust_relation": ToolSpec(
+        required={"a", "b", "value"},
+        actor_keys={"a", "b"},
+        participants_policy="none",
+    ),
+    "transfer_item": ToolSpec(
+        required={"target", "item"},
+        actor_keys={"target"},
+        numeric_min0=set(),
+        participants_policy="none",
+    ),
+    "set_protection": ToolSpec(
+        required={"guardian", "protectee"},
+        actor_keys={"guardian", "protectee"},
+        participants_policy="both",
+    ),
+    "clear_protection": ToolSpec(
+        required=set(),
+        actor_keys={"guardian", "protectee"},
+        participants_policy="none",
+    ),
+    "first_aid": ToolSpec(
+        required={"name", "target"},
+        actor_keys={"name", "target"},
+        participants_policy="both",
+    ),
+}
+
+
+def _coerce_nonneg_int(v: Any) -> Optional[int]:
+    try:
+        iv = int(v)
+    except Exception:
+        return None
+    return iv if iv >= 0 else None
+
+
+def _normalize_params_for(tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    p = dict(params or {})
+    # advance_position: target may be dict {x,y}
+    if tool == "advance_position":
+        tgt = p.get("target")
+        if isinstance(tgt, dict):
+            x = tgt.get("x")
+            y = tgt.get("y")
+            try:
+                p["target"] = (int(x), int(y))
+            except Exception:
+                pass
+    return p
+
+
+def _validated_call(tool_name: str, fn, params: Dict[str, Any]) -> ToolResponse:
+    spec = TOOL_SPECS.get(tool_name)
+    if not spec:
+        return ToolResponse(content=[TextBlock(type="text", text=f"未知工具 {tool_name}")], metadata={"ok": False, "error_type": "unknown_tool"})
+
+    p = _normalize_params_for(tool_name, dict(params or {}))
+
+    # 1) required
+    for k in spec.required:
+        if k not in p or p[k] in (None, ""):
+            return ToolResponse(content=[TextBlock(type="text", text=f"缺少参数：{k}")], metadata={"ok": False, "error_type": "missing_param", "param": k})
+
+    # 2) numeric_min0
+    for k in spec.numeric_min0:
+        if k in p:
+            iv = _coerce_nonneg_int(p[k])
+            if iv is None:
+                return ToolResponse(content=[TextBlock(type="text", text=f"参数需为非负整数：{k}")], metadata={"ok": False, "error_type": "invalid_type", "param": k})
+            p[k] = iv
+
+    # 3) actor_keys to str
+    for k in spec.actor_keys:
+        if k in p and p[k] is not None:
+            p[k] = str(p[k])
+
+    # 4) participants policy
+    if WORLD.participants:
+        if spec.participants_policy == "source" and spec.source_param:
+            src = str(p.get(spec.source_param, ""))
+            if src and src not in WORLD.participants:
+                return ToolResponse(content=[TextBlock(type="text", text=f"参与者限制：{spec.source_param}={src} 非参与者")], metadata={"ok": False, "error_type": "not_participant", "param": spec.source_param, "value": src})
+        elif spec.participants_policy == "both":
+            for k in spec.actor_keys:
+                v = p.get(k)
+                if isinstance(v, str) and v not in WORLD.participants:
+                    return ToolResponse(content=[TextBlock(type="text", text=f"参与者限制：{k}={v} 非参与者")], metadata={"ok": False, "error_type": "not_participant", "param": k, "value": v})
+
+    # 5) call
+    try:
+        return fn(**p)
+    except TypeError as exc:
+        return ToolResponse(content=[TextBlock(type="text", text=str(exc))], metadata={"ok": False, "error_type": "invalid_parameters"})
+    except Exception as exc:  # pragma: no cover
+        return ToolResponse(content=[TextBlock(type="text", text=str(exc))], metadata={"ok": False, "error_type": exc.__class__.__name__})
+
+
+def validated_tool_dispatch() -> Dict[str, Any]:
+    """Return a mapping of tool-name -> validated function callable(**params).
+
+    These names are expected by the LLM prompt (perform_attack, advance_position, ...).
+    """
+    return {
+        "perform_attack": lambda **p: _validated_call("perform_attack", attack_with_weapon, p),
+        "advance_position": lambda **p: _validated_call("advance_position", move_towards, p),
+        "adjust_relation": lambda **p: _validated_call("adjust_relation", set_relation, p),
+        "transfer_item": lambda **p: _validated_call("transfer_item", grant_item, p),
+        "set_protection": lambda **p: _validated_call("set_protection", set_guard, p),
+        "clear_protection": lambda **p: _validated_call("clear_protection", clear_guard, p),
+        "first_aid": lambda **p: _validated_call("first_aid", first_aid, p),
+    }

@@ -438,17 +438,20 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         except Exception:
             pass
 
+    # Use world-level validated dispatch so all parameter/participants checks are centralized.
+    try:
+        _VALIDATED = world_impl.validated_tool_dispatch()  # type: ignore[attr-defined]
+    except Exception:
+        _VALIDATED = {}
+
     def perform_attack(
         attacker,
         defender,
         weapon: str,
         reason: str = "",
     ):
-        resp = world.attack_with_weapon(
-            attacker=attacker,
-            defender=defender,
-            weapon=weapon,
-        )
+        fn = _VALIDATED.get("perform_attack") or (lambda **p: world.attack_with_weapon(**p))
+        resp = fn(attacker=attacker, defender=defender, weapon=weapon)
         meta = resp.metadata or {}
         hit = meta.get("hit")
         dmg = meta.get("damage_total")
@@ -491,15 +494,8 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         return resp
 
     def advance_position(name, target, steps, reason: str = ""):
-        if isinstance(target, dict):
-            tx = target.get("x", 0)
-            ty = target.get("y", 0)
-            tgt = (int(tx), int(ty))
-        elif isinstance(target, (list, tuple)) and len(target) >= 2:
-            tgt = (int(target[0]), int(target[1]))
-        else:
-            tgt = (0, 0)
-        resp = world.move_towards(name=name, target=tgt, steps=int(steps))
+        fn = _VALIDATED.get("advance_position") or (lambda **p: world.move_towards(**p))
+        resp = fn(name=name, target=target, steps=steps)
         meta = resp.metadata or {}
         reason_text = (str(reason).strip() or "未提供")
         try:
@@ -510,12 +506,13 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         except Exception:
             pass
         _log_action(
-            f"move {name} -> {tgt} steps={steps} moved={meta.get('moved')} remaining={meta.get('remaining')} reason={reason_text}"
+            f"move {name} -> {target} steps={steps} moved={meta.get('moved')} remaining={meta.get('remaining')} reason={reason_text}"
         )
         return resp
 
     def adjust_relation(a, b, value, reason: str = ""):
-        resp = world.set_relation(a, b, int(value), reason or "")
+        fn = _VALIDATED.get("adjust_relation") or (lambda **p: world.set_relation(**p))
+        resp = fn(a=a, b=b, value=value, reason=reason or "")
         meta = resp.metadata or {}
         try:
             meta["call_reason"] = (str(reason).strip() or "未提供")
@@ -528,7 +525,8 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         return resp
 
     def transfer_item(target, item, n: int = 1, reason: str = ""):
-        resp = world.grant_item(target=target, item=item, n=int(n))
+        fn = _VALIDATED.get("transfer_item") or (lambda **p: world.grant_item(**p))
+        resp = fn(target=target, item=item, n=n)
         meta = resp.metadata or {}
         reason_text = (str(reason).strip() or "未提供")
         try:
@@ -544,7 +542,8 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         return resp
 
     def set_protection(guardian: str, protectee: str, reason: str = ""):
-        resp = world.set_guard(guardian, protectee)
+        fn = _VALIDATED.get("set_protection") or (lambda **p: world.set_guard(**p))
+        resp = fn(guardian=guardian, protectee=protectee)
         meta = resp.metadata or {}
         reason_text = (str(reason).strip() or "未提供")
         try:
@@ -560,7 +559,8 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
     def clear_protection(guardian: str = "", protectee: str = "", reason: str = ""):
         g = guardian if guardian else None
         p = protectee if protectee else None
-        resp = world.clear_guard(g, p)
+        fn = _VALIDATED.get("clear_protection") or (lambda **pp: world.clear_guard(**pp))
+        resp = fn(guardian=g, protectee=p)
         meta = resp.metadata or {}
         reason_text = (str(reason).strip() or "未提供")
         try:
@@ -574,7 +574,8 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         return resp
 
     def first_aid(name: str, target: str, reason: str = ""):
-        resp = world.first_aid(name, target)
+        fn = _VALIDATED.get("first_aid") or (lambda **p: world.first_aid(**p))
+        resp = fn(name=name, target=target)
         meta = resp.metadata or {}
         reason_text = (str(reason).strip() or "未提供")
         try:
@@ -907,10 +908,9 @@ class _WorldPort:
     get_turn = staticmethod(world_impl.get_turn)
     reset_actor_turn = staticmethod(world_impl.reset_actor_turn)
     end_combat = staticmethod(world_impl.end_combat)
-    # CoC 7e support
+    # CoC 7e support (DnD compatibility removed)
     set_coc_character = staticmethod(world_impl.set_coc_character)
     set_coc_character_from_config = staticmethod(world_impl.set_coc_character_from_config)
-    set_coc_character_from_dnd = staticmethod(world_impl.set_coc_character_from_dnd)
     recompute_coc_derived = staticmethod(world_impl.recompute_coc_derived)
     skill_check_coc = staticmethod(world_impl.skill_check_coc)
     set_weapon_defs = staticmethod(world_impl.set_weapon_defs)
@@ -936,6 +936,7 @@ class _WorldPort:
     def runtime() -> Dict[str, Any]:
         W = world_impl.WORLD
         return {
+            "version": int(getattr(W, "version", 0)),
             "positions": dict(W.positions),
             "in_combat": bool(W.in_combat),
             "turn_state": dict(W.turn_state),
@@ -945,7 +946,7 @@ class _WorldPort:
         }
 
 
-# reach/attack range normalization moved to world.set_dnd_character_from_config
+# Note: DnD compatibility and conversion paths removed; CoC-only runtime.
 
 
 # ============================================================
@@ -1010,16 +1011,6 @@ def build_sys_prompt(*, name: str, persona: str, appearance: str | None, quotes:
     except Exception as e:
         # no fallback: propagate
         raise
-
-# Tool name to actor parameter keys mapping (for validation)
-TOOL_ACTOR_PARAMS = {
-    "perform_attack": ["attacker", "defender"],
-    "advance_position": ["name"],
-    "adjust_relation": ["a", "b"],
-    "transfer_item": ["target"],
-    "set_protection": ["guardian", "protectee"],
-    "clear_protection": ["guardian", "protectee"],
-}
 
 # Tool call pattern
 TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
@@ -1177,6 +1168,574 @@ def _parse_story_positions(raw: Any, target: Dict[str, Tuple[int, int]]) -> None
                 continue
 
 
+@dataclass
+class TurnContext:
+    world: Any
+    emit: Callable[..., None]
+    tool_dispatch: Dict[str, object]
+    tool_list: List[object]
+    chat_log: List[Dict[str, Any]]
+    action_log: List[Dict[str, Any]]
+    last_seen: Dict[str, int]
+    current_round: int
+    recap_enabled: bool
+    recap_msg_limit: int
+    recap_action_limit: int
+    allowed_set: set[str]
+    allowed_names_str: str
+    model_cfg: Mapping[str, Any]
+    build_agent: Callable[..., ReActAgent]
+    debug_dump_prompts: bool = False
+
+
+def relation_brief_for(world: Any, name: str) -> str:
+    try:
+        rel_map = dict(world.snapshot().get("relations") or {})
+    except Exception:
+        rel_map = {}
+    if not rel_map:
+        return ""
+    me = str(name)
+    entries: List[str] = []
+    for key, raw in rel_map.items():
+        try:
+            a, b = key.split("->", 1)
+        except Exception:
+            continue
+        if a != me or b == me:
+            continue
+        try:
+            score = int(raw)
+        except Exception:
+            continue
+        label = _relation_category(score)
+        entries.append(f"{b}:{score:+d}（{label}）")
+    return "；".join(entries)
+
+
+def weapon_brief_for(world: Any, nm: str) -> str:
+    try:
+        snap = world.snapshot()
+        wdefs = dict((snap.get("weapon_defs") or {}))
+        bag = dict((snap.get("inventory") or {}).get(str(nm), {}) or {})
+    except Exception:
+        return "无"
+    entries: List[str] = []
+    for wid, count in bag.items():
+        if int(count) <= 0 or wid not in wdefs:
+            continue
+        try:
+            reach = int((wdefs[wid] or {}).get("reach_steps", 1))
+        except Exception:
+            reach = 1
+        try:
+            dmg = str((wdefs[wid] or {}).get("damage_expr") or "")
+        except Exception:
+            dmg = ""
+        if dmg:
+            entries.append(f"{wid}(触及{reach}步, {dmg})")
+        else:
+            entries.append(f"{wid}(触及{reach}步)")
+    return "；".join(entries) if entries else "无"
+
+
+def apply_story_position(world: Any, story_positions: Dict[str, Tuple[int, int]], name: str) -> None:
+    pos = story_positions.get(str(name))
+    if not pos:
+        return
+    try:
+        world.set_position(name, int(pos[0]), int(pos[1]))
+    except Exception:
+        pass
+
+
+def normalize_scene_cfg(sc: Optional[Mapping[str, Any]]):
+    name = None
+    objectives: List[str] = []
+    details: List[str] = []
+    weather: Optional[str] = None
+    time_min: Optional[int] = None
+    if isinstance(sc, dict):
+        name_candidate = sc.get("name")
+        if isinstance(name_candidate, str) and name_candidate.strip():
+            name = name_candidate.strip()
+        objs = sc.get("objectives")
+        if isinstance(objs, list):
+            for obj in objs:
+                if isinstance(obj, str) and obj.strip():
+                    objectives.append(obj.strip())
+        details_val = sc.get("details")
+        if isinstance(details_val, str) and details_val.strip():
+            details = [details_val.strip()]
+        elif isinstance(details_val, list):
+            for d in details_val:
+                if isinstance(d, str) and d.strip():
+                    details.append(d.strip())
+        tstr = sc.get("time")
+        if isinstance(tstr, str) and tstr:
+            m = re.match(r"^(\d{1,2}):(\d{2})$", tstr.strip())
+            if m:
+                hh, mm = int(m.group(1)), int(m.group(2))
+                if 0 <= hh < 24 and 0 <= mm < 60:
+                    time_min = hh * 60 + mm
+        if time_min is None:
+            tm = sc.get("time_min", None)
+            if isinstance(tm, (int, float)):
+                try:
+                    time_min = int(tm)
+                except Exception:
+                    time_min = None
+        w = sc.get("weather")
+        if isinstance(w, str) and w.strip():
+            weather = w.strip()
+    return name, objectives, details, weather, time_min
+
+
+def apply_scene_to_world(world: Any, name, objectives, details, weather, time_min):
+    try:
+        snap0 = world.snapshot()
+        current_loc = str((snap0 or {}).get("location") or "")
+    except Exception:
+        current_loc = ""
+    world.set_scene(
+        name or current_loc,
+        objectives or None,
+        append=False,
+        details=details or None,
+        time_min=time_min,
+        weather=weather,
+    )
+
+
+async def bcast(ctx: TurnContext, hub: MsgHub, msg: Msg, *, phase: Optional[str] = None):
+    await hub.broadcast(msg)
+    text = _safe_text(msg)
+    ctx.emit(
+        "narrative",
+        actor=msg.name,
+        phase=phase,
+        data={"text": text, "role": getattr(msg, "role", None)},
+    )
+    try:
+        ctx.chat_log.append({
+            "actor": getattr(msg, "name", None),
+            "role": getattr(msg, "role", None),
+            "text": text,
+            "turn": ctx.current_round,
+            "phase": phase or "",
+        })
+    except Exception:
+        pass
+
+
+def emit_turn_state(ctx: TurnContext) -> None:
+    try:
+        rt = ctx.world.runtime()
+        positions = rt.get("positions", {})
+        in_combat = bool(rt.get("in_combat"))
+        r_avail = rt.get("turn_state", {})
+        ctx.emit(
+            "state_update",
+            phase="turn-state",
+            data={
+                "positions": {k: list(v) for k, v in positions.items()},
+                "in_combat": in_combat,
+                "reaction_available": r_avail,
+            },
+        )
+    except Exception as exc:
+        ctx.emit(
+            "error",
+            phase="turn-state",
+            data={
+                "message": f"获取回合信息失败: {exc}",
+                "error_type": "turn_snapshot",
+            },
+        )
+
+
+def emit_world_state(ctx: TurnContext, turn_val: int) -> None:
+    snapshot = ctx.world.snapshot()
+    ctx.emit("state_update", phase="world", turn=turn_val, data={"state": snapshot})
+
+
+def write_dev_context_card(ctx: TurnContext, name: str) -> None:
+    try:
+        world_txt = _world_summary_text(ctx.world.snapshot())
+        start = int(ctx.last_seen.get(name, 0))
+        recent_msgs = [e for e in ctx.chat_log[start:] if e.get("actor") not in (None, "Host")]
+        if ctx.recap_msg_limit > 0:
+            recent_msgs = recent_msgs[-ctx.recap_msg_limit:]
+        rel_text = relation_brief_for(ctx.world, name)
+        lines: List[str] = []
+        lines.append(f"=== Round {ctx.current_round} | Actor: {name} ===")
+        if rel_text:
+            lines.append(f"[Relation] {rel_text}")
+        lines.append("[World]")
+        lines.append(world_txt)
+        if recent_msgs:
+            lines.append("[Recent Messages]")
+            for e in recent_msgs:
+                txt = _clip(str(e.get("text") or "").strip(), 160)
+                lines.append(f"- {e.get('actor')}: {txt}")
+        logs_dir = project_root() / "logs"
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        safe = "".join(ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name))
+        path = logs_dir / f"{safe}_context_dev.log"
+        with path.open("a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n\n")
+    except Exception:
+        pass
+
+
+def reach_preview_lines(world: Any, name: str) -> List[str]:
+    lines: List[str] = []
+    try:
+        def _fmt_steps(n: int) -> str:
+            try:
+                s = int(n)
+            except Exception:
+                s = 0
+            if s < 0:
+                s = 0
+            return f"{s}步"
+        snap = world.snapshot() or {}
+        pos_map = (snap.get("positions") or {})
+        if not isinstance(pos_map, dict) or str(name) not in pos_map:
+            return lines
+        me_pos = pos_map[str(name)]
+        if not isinstance(me_pos, (list, tuple)) or len(me_pos) < 2:
+            return lines
+        me_xy = (int(me_pos[0]), int(me_pos[1]))
+        scene_units: List[Tuple[str, Tuple[int, int]]] = []
+        for nm, p in (pos_map or {}).items():
+            try:
+                if not isinstance(p, (list, tuple)) or len(p) < 2:
+                    continue
+                scene_units.append((str(nm), (int(p[0]), int(p[1]))))
+            except Exception:
+                continue
+        def manhattan(a, b):
+            return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
+        try:
+            adj = []
+            for nm, p in scene_units:
+                if nm == str(name):
+                    continue
+                d = manhattan(me_xy, p)
+                if d <= 1:
+                    adj.append((nm, int(d)))
+            if adj:
+                adj.sort(key=lambda t: (t[1], t[0]))
+                try:
+                    ts = (world.runtime().get("turn_state") or {}).get(str(name), {}) or {}
+                    react_avail = bool(ts.get("reaction_available", True))
+                except Exception:
+                    react_avail = True
+                tail = "（反应：可用）" if react_avail else "（反应：已用）"
+                parts = [f"{nm}({_fmt_steps(d)})" for nm, d in adj]
+                lines.append(REACH_LABEL_ADJ.format(tail=tail) + ", ".join(parts))
+        except Exception:
+            pass
+        inv = (snap.get("inventory") or {}).get(str(name), {}) or {}
+        wdefs = (snap.get("weapon_defs") or {}) or {}
+        weapons = []
+        for wid, cnt in inv.items():
+            try:
+                if int(cnt) <= 0:
+                    continue
+            except Exception:
+                continue
+            wid_str = str(wid)
+            if wid_str not in wdefs:
+                continue
+            try:
+                rsteps = int((wdefs[wid_str] or {}).get("reach_steps", 1))
+            except Exception:
+                rsteps = 1
+            rsteps = max(1, rsteps)
+            weapons.append((wid_str, rsteps))
+        weapons.sort(key=lambda t: (t[1], t[0]))
+        for wid, rsteps in weapons:
+            items = []
+            for nm, p in scene_units:
+                try:
+                    d = manhattan(me_xy, p)
+                except Exception:
+                    continue
+                if nm == str(name):
+                    continue
+                if d <= int(rsteps):
+                    items.append((nm, int(d)))
+            if not items:
+                continue
+            items.sort(key=lambda t: (t[1], t[0]))
+            parts = [f"{nm}({_fmt_steps(d)})" for nm, d in items]
+            lines.append(REACH_LABEL_TARGETS.format(weapon=wid, steps=int(rsteps)) + ", ".join(parts))
+    except Exception:
+        return []
+    return lines
+
+
+def make_ephemeral_agent(ctx: TurnContext, name: str, private_section: Optional[str]) -> ReActAgent:
+    try:
+        sheet_now = (ctx.world.snapshot().get("characters") or {}).get(name, {}) or {}
+        persona_now = sheet_now.get("persona") or ""
+        appearance_now = sheet_now.get("appearance")
+        quotes_now = sheet_now.get("quotes")
+    except Exception:
+        persona_now = ""; appearance_now = None; quotes_now = None
+    sys_prompt_text = build_sys_prompt(
+        name=name,
+        persona=str(persona_now or ""),
+        appearance=appearance_now,
+        quotes=quotes_now,
+        relation_brief=relation_brief_for(ctx.world, name),
+        weapon_brief=weapon_brief_for(ctx.world, name),
+        allowed_names=ctx.allowed_names_str,
+    )
+    if CTX_PRIVATE_SECTION_MODE == "system" and private_section:
+        sys_prompt_text = sys_prompt_text + "\n" + private_section
+    agent = ctx.build_agent(
+        name,
+        str(persona_now or ""),
+        ctx.model_cfg,
+        sys_prompt=sys_prompt_text,
+        allowed_names=ctx.allowed_names_str,
+        appearance=appearance_now,
+        quotes=quotes_now,
+        relation_brief=relation_brief_for(ctx.world, name),
+        weapon_brief=weapon_brief_for(ctx.world, name),
+        tools=ctx.tool_list,
+    )
+    try:
+        setattr(agent, "_debug_sys_prompt", sys_prompt_text)
+    except Exception:
+        pass
+    return agent
+
+
+async def handle_tool_calls(ctx: TurnContext, origin: Msg, hub: MsgHub):
+    text = _safe_text(origin)
+    tool_calls = _parse_tool_calls(text)
+    if not tool_calls:
+        return
+    for tool_name, params in tool_calls:
+        phase = f"tool:{tool_name}"
+        func = ctx.tool_dispatch.get(tool_name)
+        if not func:
+            ctx.emit(
+                "error",
+                actor=origin.name,
+                phase=phase,
+                data={
+                    "message": f"未知工具调用 {tool_name}",
+                    "tool": tool_name,
+                    "params": params,
+                    "error_type": "tool_not_found",
+                },
+            )
+            continue
+        # 参数与参与者校验已下沉至 world 的 validated_tool_dispatch；这里不再做 name/participants 检查。
+        try:
+            if not str(params.get("reason", "")).strip():
+                params["reason"] = "未提供"
+        except Exception:
+            params["reason"] = "未提供"
+        params_slim = dict(params or {})
+        if "reason" in params_slim:
+            try:
+                del params_slim["reason"]
+            except Exception:
+                pass
+        ctx.emit(
+            "tool_call",
+            actor=origin.name,
+            phase=phase,
+            data={"tool": tool_name, "params": params_slim},
+        )
+        try:
+            ctx.action_log.append({
+                "actor": origin.name,
+                "tool": tool_name,
+                "type": "call",
+                "params": dict(params or {}),
+                "turn": ctx.current_round,
+            })
+        except Exception:
+            pass
+        try:
+            resp = func(**params)
+        except TypeError as exc:
+            ctx.emit(
+                "error",
+                actor=origin.name,
+                phase=phase,
+                data={
+                    "message": str(exc),
+                    "tool": tool_name,
+                    "params": params,
+                    "error_type": "invalid_parameters",
+                },
+            )
+            continue
+        except Exception as exc:
+            ctx.emit(
+                "error",
+                actor=origin.name,
+                phase=phase,
+                data={
+                    "message": str(exc),
+                    "tool": tool_name,
+                    "params": params,
+                    "error_type": exc.__class__.__name__,
+                },
+            )
+            continue
+        text_blocks = getattr(resp, "content", None)
+        lines: List[str] = []
+        if isinstance(text_blocks, list):
+            for blk in text_blocks:
+                if hasattr(blk, "text"):
+                    lines.append(str(getattr(blk, "text", "")))
+                elif isinstance(blk, dict):
+                    lines.append(str(blk.get("text", "")))
+                else:
+                    lines.append(str(blk))
+        meta = getattr(resp, "metadata", None)
+        try:
+            def _strip_reason(t: str) -> str:
+                s = str(t or "")
+                s = re.sub(r"\s*(?:行动)?(?:理由|reason|Reason)[:：][\s\S]*$", "", s).strip()
+                if re.match(r"^(?:行动)?(?:理由|reason|Reason)[:：]", s):
+                    return ""
+                return s
+            lines = [x for x in (_strip_reason(x) for x in lines) if x]
+        except Exception:
+            pass
+        ctx.emit(
+            "tool_result",
+            actor=origin.name,
+            phase=phase,
+            data={"tool": tool_name, "metadata": meta, "text": lines},
+        )
+        try:
+            ctx.action_log.append({
+                "actor": origin.name,
+                "tool": tool_name,
+                "type": "result",
+                "text": list(lines),
+                "meta": meta,
+                "turn": ctx.current_round,
+            })
+        except Exception:
+            pass
+        if not lines:
+            continue
+        tool_msg = Msg(
+            name=f"{origin.name}[tool]",
+            content="\n".join(line for line in lines if line),
+            role="assistant",
+        )
+        await bcast(ctx, hub, tool_msg, phase=phase)
+
+
+def recap_for(ctx: TurnContext, name: str) -> Optional[Msg]:
+    if not ctx.recap_enabled:
+        return None
+    start = int(ctx.last_seen.get(name, 0))
+    recent_msgs = [e for e in ctx.chat_log[start:] if e.get("actor") not in (None, "Host")]
+    if ctx.recap_msg_limit > 0:
+        recent_msgs = recent_msgs[-ctx.recap_msg_limit:]
+    if not recent_msgs:
+        return None
+    lines: List[str] = [RECAP_TITLE.format(name=name)]
+    lines.append(RECAP_SECTION_RECENT)
+    for e in recent_msgs:
+        txt = _clip(str(e.get("text") or "").strip(), RECAP_CLIP_CHARS)
+        lines.append(f"- {e.get('actor')}: {txt}")
+    ctx.last_seen[name] = len(ctx.chat_log)
+    return Msg("Host", "\n".join(lines), "assistant")
+
+
+async def npc_ephemeral_say(ctx: TurnContext, name: str, private_section: Optional[str], hub: MsgHub, recap_msg: Optional[Msg] = None) -> None:
+    ephemeral = make_ephemeral_agent(ctx, name, private_section)
+    debug_items: List[Tuple[str, str]] = []
+    for token in list(CTX_INJECTION_ORDER or []):
+        try:
+            tk = str(token).strip().lower()
+            if tk == "env" and CTX_INJECT_ENV_SUMMARY:
+                try:
+                    env_text = _world_summary_text(ctx.world.snapshot())
+                    await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
+                    debug_items.append(("env", env_text))
+                except Exception:
+                    pass
+            elif tk == "recap" and CTX_INJECT_RECAP:
+                try:
+                    if recap_msg is not None:
+                        await ephemeral.memory.add(recap_msg)
+                        debug_items.append(("recap", _safe_text(recap_msg)))
+                except Exception:
+                    pass
+            elif tk == "reach_preview" and CTX_INJECT_REACH_PREVIEW:
+                try:
+                    lines = reach_preview_lines(ctx.world, name)
+                    if lines:
+                        lines = [REACH_RULE_LINE] + lines
+                        text = "\n".join(lines)
+                        await ephemeral.memory.add(Msg("Host", text, "assistant"))
+                        debug_items.append(("reach_preview", text))
+                except Exception:
+                    pass
+            elif tk == "private" and CTX_PRIVATE_SECTION_MODE == "memory" and private_section:
+                try:
+                    await ephemeral.memory.add(Msg("Host", private_section, "assistant"))
+                    debug_items.append(("private", private_section))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    if ctx.debug_dump_prompts:
+        try:
+            root = project_root()
+            dump_dir = root / "logs" / "prompts"
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            safe = "".join(ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name))
+            rnd = ctx.current_round
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            path = dump_dir / f"{safe}_r{rnd}_{ts}.txt"
+            sys_text = str(getattr(ephemeral, "_debug_sys_prompt", ""))
+            lines: List[str] = []
+            lines.append("=== SYSTEM PROMPT ===")
+            lines.append(sys_text)
+            lines.append("")
+            lines.append("=== MEMORY MESSAGES (in order) ===")
+            for tk, txt in debug_items:
+                lines.append(f"--- [{tk}] ---")
+                lines.append(str(txt or ""))
+                lines.append("")
+            with path.open("w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+        except Exception:
+            pass
+    out = await ephemeral(None)
+    try:
+        raw_text = _safe_text(out)
+        cleaned = _strip_tool_calls_from_text(raw_text)
+        if cleaned and cleaned.strip():
+            msg_clean = Msg(getattr(out, "name", name), cleaned, getattr(out, "role", "assistant") or "assistant")
+            await bcast(ctx, hub, msg_clean, phase=f"npc:{name}")
+        else:
+            await bcast(ctx, hub, out, phase=f"npc:{name}")
+    except Exception:
+        await bcast(ctx, hub, out, phase=f"npc:{name}")
+    await handle_tool_calls(ctx, out, hub)
+
+
 async def run_demo(
     *,
     emit: Callable[..., None],
@@ -1202,21 +1761,9 @@ async def run_demo(
         if isinstance(initial_section, dict):
             _parse_story_positions(initial_section.get("positions") or {}, story_positions)
 
-    def _apply_story_position(name: str) -> None:
-        pos = story_positions.get(str(name))
-        if not pos:
-            return
-        try:
-            world.set_position(name, pos[0], pos[1])
-        except Exception:
-            pass
+    # story position application moved to top-level helper
 
-    def _build_sys_prompt(*, name: str, persona: str, appearance: Optional[str], quotes: Optional[list[str] | str], relation_brief: Optional[str], weapon_brief: Optional[str], allowed_names: str) -> str:
-        return build_sys_prompt(
-            name=name, persona=persona, appearance=appearance, quotes=quotes,
-            relation_brief=relation_brief, weapon_brief=weapon_brief,
-            allowed_names=allowed_names, prompt_template=None, tools_text=None
-        )
+    # system prompt assembly uses global build_sys_prompt
 
     # Build actors from configs
     char_cfg = dict(characters or {})
@@ -1304,25 +1851,20 @@ async def run_demo(
     if allowed_names_world:
         for name in allowed_names_world:
             entry = (char_cfg.get(name) or {}) if isinstance(char_cfg, dict) else {}
-            # Stat block: CoC-first. If only D&D is provided, convert to CoC.
+            # Stat block: CoC only (DnD compatibility removed).
             try:
                 coc_block = entry.get("coc")
                 if isinstance(coc_block, dict):
                     world.set_coc_character_from_config(name=name, coc=coc_block or {})
                 else:
-                    dnd = entry.get("dnd") or {}
-                    if dnd:
-                        # Convert legacy D&D block to CoC on the fly
-                        world.set_coc_character_from_dnd(name=name, dnd=dnd)
-                    else:
-                        # Create a minimal CoC sheet with mid-line defaults
-                        world.set_coc_character(
-                            name=name,
-                            characteristics={"STR": 50, "DEX": 50, "CON": 50, "INT": 50, "POW": 50, "APP": 50, "EDU": 60, "SIZ": 50, "LUCK": 50},
-                        )
+                    # Create a minimal CoC sheet with mid-line defaults
+                    world.set_coc_character(
+                        name=name,
+                        characteristics={"STR": 50, "DEX": 50, "CON": 50, "INT": 50, "POW": 50, "APP": 50, "EDU": 60, "SIZ": 50, "LUCK": 50},
+                    )
             except Exception:
                 pass
-            _apply_story_position(name)
+            apply_story_position(world, story_positions, name)
             # Load inventory (weapons as items) from character config
             try:
                 inv = entry.get("inventory") or {}
@@ -1370,13 +1912,13 @@ async def run_demo(
                 # 不加入 participants_order（Hub 仅管理 NPC Agent 的内存）
                 pass
             else:
-                sys_prompt_text = _build_sys_prompt(
+                sys_prompt_text = build_sys_prompt(
                     name=name,
                     persona=persona,
                     appearance=appearance,
                     quotes=quotes,
-                    relation_brief=_relation_brief(name),
-                    weapon_brief=_weapon_brief_for(name),
+                    relation_brief=relation_brief_for(world, name),
+                    weapon_brief=weapon_brief_for(world, name),
                     allowed_names=allowed_names_str,
                 )
                 agent = build_agent(
@@ -1387,8 +1929,8 @@ async def run_demo(
                     allowed_names=allowed_names_str,
                     appearance=appearance,
                     quotes=quotes,
-                    relation_brief=_relation_brief(name),
-                    weapon_brief=_weapon_brief_for(name),
+                    relation_brief=relation_brief_for(world, name),
+                    weapon_brief=weapon_brief_for(world, name),
                     tools=tool_list,
                 )
                 # 仅 NPC 参与 Hub 和初始化 pipeline
@@ -1403,14 +1945,13 @@ async def run_demo(
                 if isinstance(coc_block, dict):
                     world.set_coc_character_from_config(name=name, coc=coc_block or {})
                 else:
-                    dnd = entry.get("dnd") or {}
-                    if dnd:
-                        world.set_coc_character_from_dnd(name=name, dnd=dnd)
-                    else:
-                        world.set_coc_character(name=name, characteristics={"STR": 50, "DEX": 50, "CON": 50, "INT": 50, "POW": 50, "APP": 50, "EDU": 60, "SIZ": 50, "LUCK": 50})
+                    world.set_coc_character(
+                        name=name,
+                        characteristics={"STR": 50, "DEX": 50, "CON": 50, "INT": 50, "POW": 50, "APP": 50, "EDU": 60, "SIZ": 50, "LUCK": 50},
+                    )
             except Exception:
                 pass
-            _apply_story_position(name)
+            apply_story_position(world, story_positions, name)
     # No fallback to default protagonists; if story provides no positions, run without participants.
 
     for nm in story_positions:
@@ -1419,7 +1960,7 @@ async def run_demo(
                 continue
         except Exception:
             pass
-        _apply_story_position(nm)
+        apply_story_position(world, story_positions, nm)
 
     # Initialize relations from config
     rel_cfg = rel_cfg_raw or {}
@@ -1437,68 +1978,11 @@ async def run_demo(
                 except Exception:
                     pass
 
-    # Scene setup from story config
-    def _normalize_scene_cfg(sc: Optional[Mapping[str, Any]]):
-        name = None
-        objectives: List[str] = []
-        details: List[str] = []
-        weather: Optional[str] = None
-        time_min: Optional[int] = None
-        if isinstance(sc, dict):
-            name_candidate = sc.get("name")
-            if isinstance(name_candidate, str) and name_candidate.strip():
-                name = name_candidate.strip()
-            objs = sc.get("objectives")
-            if isinstance(objs, list):
-                for obj in objs:
-                    if isinstance(obj, str) and obj.strip():
-                        objectives.append(obj.strip())
-            details_val = sc.get("details")
-            if isinstance(details_val, str) and details_val.strip():
-                details = [details_val.strip()]
-            elif isinstance(details_val, list):
-                for d in details_val:
-                    if isinstance(d, str) and d.strip():
-                        details.append(d.strip())
-            # Prefer HH:MM string if provided; fallback to time_min
-            tstr = sc.get("time")
-            if isinstance(tstr, str) and tstr:
-                m = re.match(r"^(\d{1,2}):(\d{2})$", tstr.strip())
-                if m:
-                    hh, mm = int(m.group(1)), int(m.group(2))
-                    if 0 <= hh < 24 and 0 <= mm < 60:
-                        time_min = hh * 60 + mm
-            if time_min is None:
-                tm = sc.get("time_min", None)
-                if isinstance(tm, (int, float)):
-                    try:
-                        time_min = int(tm)
-                    except Exception:
-                        time_min = None
-            w = sc.get("weather")
-            if isinstance(w, str) and w.strip():
-                weather = w.strip()
-        return name, objectives, details, weather, time_min
-
-    def _apply_scene_to_world(name, objectives, details, weather, time_min):
-        try:
-            snap0 = world.snapshot()
-            current_loc = str((snap0 or {}).get("location") or "")
-        except Exception:
-            current_loc = ""
-        world.set_scene(
-            name or current_loc,
-            objectives or None,
-            append=False,
-            details=details or None,
-            time_min=time_min,
-            weather=weather,
-        )
-
+    # Scene setup from story config (moved to top-level helpers)
     scene_cfg = story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
-    scene_name, scene_objectives, scene_details, scene_weather, scene_time_min = _normalize_scene_cfg(scene_cfg)
+    scene_name, scene_objectives, scene_details, scene_weather, scene_time_min = normalize_scene_cfg(scene_cfg)
     if any([scene_name, scene_objectives, scene_details, scene_weather, scene_time_min is not None]):
-        _apply_scene_to_world(scene_name, scene_objectives, scene_details, scene_weather, scene_time_min)
+        apply_scene_to_world(world, scene_name, scene_objectives, scene_details, scene_weather, scene_time_min)
 
     current_round = 0
 
@@ -1513,38 +1997,36 @@ async def run_demo(
         payload = dict(data or {})
         emit(event_type=event_type, actor=actor, phase=phase, turn=turn if turn is not None else (current_round or None), data=payload)
 
-    async def _bcast(hub: MsgHub, msg: Msg, *, phase: Optional[str] = None):
-        await hub.broadcast(msg)
-        text = _safe_text(msg)
-        _emit(
-            "narrative",
-            actor=msg.name,
-            phase=phase,
-            data={"text": text, "role": getattr(msg, "role", None)},
-        )
-        # record to in-memory chat log for recap (best-effort)
-        try:
-            CHAT_LOG.append({
-                "actor": getattr(msg, "name", None),
-                "role": getattr(msg, "role", None),
-                "text": text,
-                "turn": current_round,
-                "phase": phase or "",
-            })
-        except Exception:
-            pass
-
-    # Centralised tool dispatch mapping (must be injected by caller)
+    # Prepare per-run context for top-level helpers
     TOOL_DISPATCH = dict(tool_dispatch or {})
     allowed_set = {str(n) for n in (allowed_names_world or [])}
-    # ---- In-memory mini logs for per-turn recap (broadcast to all participants) ----
     CHAT_LOG: List[Dict[str, Any]] = []     # {actor, role, text, turn, phase}
     ACTION_LOG: List[Dict[str, Any]] = []   # {actor, tool, type, text|params, meta, turn}
     LAST_SEEN: Dict[str, int] = {}          # per-actor chat index checkpoint
-    # Recap settings: fixed defaults (feature flags removed)
     recap_enabled = True
     recap_msg_limit = DEFAULT_RECAP_MSG_LIMIT
     recap_action_limit = DEFAULT_RECAP_ACTION_LIMIT
+
+    ctx = TurnContext(
+        world=world,
+        emit=_emit,
+        tool_dispatch=TOOL_DISPATCH,
+        tool_list=tool_list,
+        chat_log=CHAT_LOG,
+        action_log=ACTION_LOG,
+        last_seen=LAST_SEEN,
+        current_round=current_round,
+        recap_enabled=recap_enabled,
+        recap_msg_limit=recap_msg_limit,
+        recap_action_limit=recap_action_limit,
+        allowed_set=allowed_set,
+        allowed_names_str=allowed_names_str,
+        model_cfg=model_cfg,
+        build_agent=build_agent,
+        debug_dump_prompts=DEBUG_DUMP_PROMPTS,
+    )
+
+    # ---- In-memory mini logs for per-turn recap (kept in ctx) ----
 
     # Async CLI input helper (avoid blocking event loop when玩家发言)
     async def _async_input(prompt: str) -> str:
@@ -1554,492 +2036,18 @@ async def run_demo(
         except Exception:
             return ""
 
-    # --- Dev-only context snapshot: write a compact card per-actor to logs/<actor>_context_dev.log ---
-    def _write_dev_context_card(name: str) -> None:
-        """Append a human-friendly context card for `name` to its own log file.
+    # Dev context card moved to top-level helper
 
-        This does NOT broadcast to agents and does NOT affect memory.
-        """
-        try:
-            # Build sections
-            snap = world.snapshot()
-            world_txt = _world_summary_text(snap)
-
-            start = int(LAST_SEEN.get(name, 0))
-            recent_msgs = [e for e in CHAT_LOG[start:] if e.get("actor") not in (None, "Host")]
-            if recap_msg_limit > 0:
-                recent_msgs = recent_msgs[-recap_msg_limit:]
-            # Dev view no longer includes a separate Recent Actions block;
-            # actions/results are already reflected in broadcast messages.
-
-            rel_text = _relation_brief(name)
-
-            lines: List[str] = []
-            lines.append(f"=== Round {current_round} | Actor: {name} ===")
-            if rel_text:
-                lines.append(f"[Relation] {rel_text}")
-            lines.append("[World]")
-            lines.append(world_txt)
-            if recent_msgs:
-                lines.append("[Recent Messages]")
-                for e in recent_msgs:
-                    txt = _clip(str(e.get("text") or "").strip(), 160)
-                    lines.append(f"- {e.get('actor')}: {txt}")
-            # (no Recent Actions section by design)
-
-            # Write to logs/<actor>_context_dev.log
-            logs_dir = project_root() / "logs"
-            try:
-                logs_dir.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
-            # Use actor name directly (project uses ASCII names); fallback to safe filename
-            safe = "".join(ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name))
-            path = logs_dir / f"{safe}_context_dev.log"
-            with path.open("a", encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n\n")
-        except Exception:
-            # Dev utility is best-effort; never break the main loop
-            pass
-
-    async def _handle_tool_calls(origin: Msg, hub: MsgHub):
-        text = _safe_text(origin)
-        tool_calls = _parse_tool_calls(text)
-        if not tool_calls:
-            return
-        for tool_name, params in tool_calls:
-            phase = f"tool:{tool_name}"
-            func = TOOL_DISPATCH.get(tool_name)
-            if not func:
-                _emit(
-                    "error",
-                    actor=origin.name,
-                    phase=phase,
-                    data={
-                        "message": f"未知工具调用 {tool_name}",
-                        "tool": tool_name,
-                        "params": params,
-                        "error_type": "tool_not_found",
-                    },
-                )
-                continue
-            # Enforce that tool params refer to known participants only
-            def _bad_actor(val: object) -> str | None:
-                if not allowed_set:
-                    return None
-                if isinstance(val, str) and val not in allowed_set:
-                    return val
-                return None
-            name_keys = TOOL_ACTOR_PARAMS.get(tool_name, [])
-            invalid = None
-            for k in name_keys:
-                invalid = _bad_actor(params.get(k))
-                if invalid:
-                    break
-            if invalid:
-                _emit(
-                    "error",
-                    actor=origin.name,
-                    phase=phase,
-                    data={
-                        "message": f"无效角色名：{invalid}",
-                        "tool": tool_name,
-                        "params": params,
-                        "allowed": sorted(allowed_set),
-                        "error_type": "invalid_actor",
-                    },
-                )
-                await _bcast(hub, Msg("Host", f"无效角色名：{invalid}。合法参与者：{', '.join(sorted(allowed_set))}", "assistant"), phase=phase)
-                continue
-            # Ensure a reason exists; if missing, add a default for traceability
-            try:
-                if not str(params.get("reason", "")).strip():
-                    params["reason"] = "未提供"
-            except Exception:
-                params["reason"] = "未提供"
-            # omit verbose 'reason' from params for front-end brevity
-            params_slim = dict(params or {})
-            if "reason" in params_slim:
-                try:
-                    del params_slim["reason"]
-                except Exception:
-                    pass
-            _emit(
-                "tool_call",
-                actor=origin.name,
-                phase=phase,
-                data={"tool": tool_name, "params": params_slim},
-            )
-            try:
-                ACTION_LOG.append({
-                    "actor": origin.name,
-                    "tool": tool_name,
-                    "type": "call",
-                    "params": dict(params or {}),
-                    "turn": current_round,
-                })
-            except Exception:
-                pass
-            try:
-                resp = func(**params)
-            except TypeError as exc:
-                _emit(
-                    "error",
-                    actor=origin.name,
-                    phase=phase,
-                    data={
-                        "message": str(exc),
-                        "tool": tool_name,
-                        "params": params,
-                        "error_type": "invalid_parameters",
-                    },
-                )
-                continue
-            except Exception as exc:  # pylint: disable=broad-except
-                _emit(
-                    "error",
-                    actor=origin.name,
-                    phase=phase,
-                    data={
-                        "message": str(exc),
-                        "tool": tool_name,
-                        "params": params,
-                        "error_type": exc.__class__.__name__,
-                    },
-                )
-                continue
-            text_blocks = getattr(resp, "content", None)
-            lines: List[str] = []
-            if isinstance(text_blocks, list):
-                for blk in text_blocks:
-                    if hasattr(blk, "text"):
-                        lines.append(str(getattr(blk, "text", "")))
-                    elif isinstance(blk, dict):
-                        lines.append(str(blk.get("text", "")))
-                    else:
-                        lines.append(str(blk))
-            meta = getattr(resp, "metadata", None)
-            # Strip trailing/standalone rationale like "理由：..." / "reason: ..." from lines
-            try:
-                def _strip_reason(t: str) -> str:
-                    s = str(t or "")
-                    # remove tailing rationale segment
-                    s = re.sub(r"\s*(?:行动)?(?:理由|reason|Reason)[:：][\s\S]*$", "", s).strip()
-                    # drop lines that are rationale-only
-                    if re.match(r"^(?:行动)?(?:理由|reason|Reason)[:：]", s):
-                        return ""
-                    return s
-                lines = [x for x in (_strip_reason(x) for x in lines) if x]
-            except Exception:
-                pass
-            _emit(
-                "tool_result",
-                actor=origin.name,
-                phase=phase,
-                data={"tool": tool_name, "metadata": meta, "text": lines},
-            )
-            try:
-                ACTION_LOG.append({
-                    "actor": origin.name,
-                    "tool": tool_name,
-                    "type": "result",
-                    "text": list(lines),
-                    "meta": meta,
-                    "turn": current_round,
-                })
-            except Exception:
-                pass
-            if not lines:
-                continue
-            tool_msg = Msg(
-                name=f"{origin.name}[tool]",
-                content="\n".join(line for line in lines if line),
-                role="assistant",
-            )
-            await _bcast(hub, tool_msg, phase=phase)
+    # Tool call handling moved to top-level helper
 
 
-    def _recap_for(name: str) -> Optional[Msg]:
-        """Build a concise recap message for the upcoming actor, or None if empty/disabled.
-
-        Recap includes up to N recent broadcasts (excluding Host-only boilerplate) and
-        up to M recent tool results. The recap is broadcast to all participants.
-        """
-        if not recap_enabled:
-            return None
-        start = int(LAST_SEEN.get(name, 0))
-        # Exclude pure Host messages to avoid duplicating world-summary headers
-        recent_msgs = [e for e in CHAT_LOG[start:] if e.get("actor") not in (None, "Host")]
-        if recap_msg_limit > 0:
-            recent_msgs = recent_msgs[-recap_msg_limit:]
-        # Drop the separate actions section from recap; messages already include tool results
-        recent_actions = []
-        if not recent_msgs:
-            return None
-        lines: List[str] = [RECAP_TITLE.format(name=name)]
-        if recent_msgs:
-            lines.append(RECAP_SECTION_RECENT)
-            for e in recent_msgs:
-                txt = _clip(str(e.get("text") or "").strip(), RECAP_CLIP_CHARS)
-                lines.append(f"- {e.get('actor')}: {txt}")
-        # No separate actions block
-        LAST_SEEN[name] = len(CHAT_LOG)
-        return Msg("Host", "\\n".join(lines), "assistant")
+    # Recap moved to top-level helper
 
     # --- State snapshot emitters (helper to reduce duplicate blocks) ---
-    def _emit_turn_state() -> None:
-        try:
-            rt = world.runtime()
-            positions = rt.get("positions", {})
-            in_combat = bool(rt.get("in_combat"))
-            r_avail = rt.get("turn_state", {})
-            _emit(
-                "state_update",
-                phase="turn-state",
-                data={
-                    "positions": {k: list(v) for k, v in positions.items()},
-                    "in_combat": in_combat,
-                    "reaction_available": r_avail,
-                },
-            )
-        except Exception as exc:
-            _emit(
-                "error",
-                phase="turn-state",
-                data={
-                    "message": f"获取回合信息失败: {exc}",
-                    "error_type": "turn_snapshot",
-                },
-            )
-
-    def _emit_world_state(turn_val: int) -> None:
-        snapshot = world.snapshot()
-        _emit("state_update", phase="world", turn=turn_val, data={"state": snapshot})
+    # Snapshot emitters moved to top-level helpers
 
     # --- Ephemeral NPC helper to remove duplication ---
-    def _make_ephemeral_agent(name: str, private_section: Optional[str]) -> ReActAgent:
-        try:
-            sheet_now = (world.snapshot().get("characters") or {}).get(name, {}) or {}
-            persona_now = sheet_now.get("persona") or ""
-            appearance_now = sheet_now.get("appearance")
-            quotes_now = sheet_now.get("quotes")
-        except Exception:
-            persona_now = ""; appearance_now = None; quotes_now = None
-        sys_prompt_text = _build_sys_prompt(
-            name=name,
-            persona=str(persona_now or ""),
-            appearance=appearance_now,
-            quotes=quotes_now,
-            relation_brief=_relation_brief(name),
-            weapon_brief=_weapon_brief_for(name),
-            allowed_names=allowed_names_str,
-        )
-        # Attach per-turn private section based on policy
-        if CTX_PRIVATE_SECTION_MODE == "system" and private_section:
-            sys_prompt_text = sys_prompt_text + "\n" + private_section
-        agent = build_agent(
-            name,
-            str(persona_now or ""),
-            model_cfg,
-            sys_prompt=sys_prompt_text,
-            allowed_names=allowed_names_str,
-            appearance=appearance_now,
-            quotes=quotes_now,
-            relation_brief=_relation_brief(name),
-            weapon_brief=_weapon_brief_for(name),
-            tools=tool_list,
-        )
-        # Attach debug sys prompt for dumping (harmless attribute)
-        try:
-            setattr(agent, "_debug_sys_prompt", sys_prompt_text)
-        except Exception:
-            pass
-        return agent
-
-    # Helper: build in-reach target preview lines for a given actor (NPC-only tip)
-    def _reach_preview_lines(name: str) -> List[str]:
-        lines: List[str] = []
-        try:
-            def _fmt_steps(n: int) -> str:
-                try:
-                    s = int(n)
-                except Exception:
-                    s = 0
-                if s < 0:
-                    s = 0
-                return f"{s}步"
-
-            snap = world.snapshot() or {}
-            pos_map = (snap.get("positions") or {})
-            if not isinstance(pos_map, dict) or str(name) not in pos_map:
-                return lines  # no position -> no preview
-            me_pos = pos_map[str(name)]
-            if not isinstance(me_pos, (list, tuple)) or len(me_pos) < 2:
-                return lines
-            me_xy = (int(me_pos[0]), int(me_pos[1]))
-
-            # Units on scene (with positions)
-            scene_units: List[Tuple[str, Tuple[int, int]]] = []
-            for nm, p in (pos_map or {}).items():
-                try:
-                    if not isinstance(p, (list, tuple)) or len(p) < 2:
-                        continue
-                    scene_units.append((str(nm), (int(p[0]), int(p[1]))))
-                except Exception:
-                    continue
-
-            # Manhattan (L1) distance to align with engine reach rules
-            def manhattan(a, b):
-                return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
-
-            # 1) Adjacency (≤1 step) for guard/protection related actions
-            try:
-                adj = []
-                for nm, p in scene_units:
-                    if nm == str(name):
-                        continue
-                    d = manhattan(me_xy, p)
-                    if d <= 1:
-                        adj.append((nm, int(d)))
-                if adj:
-                    adj.sort(key=lambda t: (t[1], t[0]))
-                    # reaction availability from runtime to hint guard interception readiness
-                    try:
-                        ts = (world.runtime().get("turn_state") or {}).get(str(name), {}) or {}
-                        react_avail = bool(ts.get("reaction_available", True))
-                    except Exception:
-                        react_avail = True
-                    tail = "（反应：可用）" if react_avail else "（反应：已用）"
-                    parts = [f"{nm}({_fmt_steps(d)})" for nm, d in adj]
-                    lines.append(REACH_LABEL_ADJ.format(tail=tail) + ", ".join(parts))
-            except Exception:
-                pass
-
-            # 2) Per-weapon in-reach preview
-            inv = (snap.get("inventory") or {}).get(str(name), {}) or {}
-            wdefs = (snap.get("weapon_defs") or {}) or {}
-            weapons = []  # (weapon_id, reach_steps)
-            for wid, cnt in inv.items():
-                try:
-                    if int(cnt) <= 0:
-                        continue
-                except Exception:
-                    continue
-                wid_str = str(wid)
-                if wid_str not in wdefs:
-                    continue
-                try:
-                    rsteps = int((wdefs[wid_str] or {}).get("reach_steps", 1))
-                except Exception:
-                    rsteps = 1
-                rsteps = max(1, rsteps)
-                weapons.append((wid_str, rsteps))
-            weapons.sort(key=lambda t: (t[1], t[0]))
-
-            for wid, rsteps in weapons:
-                items = []
-                for nm, p in scene_units:
-                    try:
-                        d = manhattan(me_xy, p)
-                    except Exception:
-                        continue
-                    if nm == str(name):
-                        continue
-                    if d <= int(rsteps):
-                        items.append((nm, int(d)))
-                if not items:
-                    continue
-                items.sort(key=lambda t: (t[1], t[0]))
-                parts = [f"{nm}({_fmt_steps(d)})" for nm, d in items]
-                lines.append(REACH_LABEL_TARGETS.format(weapon=wid, steps=int(rsteps)) + ", ".join(parts))
-        except Exception:
-            # best-effort
-            return []
-        return lines
-
-    async def _npc_ephemeral_say(name: str, private_section: Optional[str], hub: MsgHub, recap_msg: Optional[Msg] = None) -> None:
-        ephemeral = _make_ephemeral_agent(name, private_section)
-        # Inject context memory according to policy order and toggles
-        debug_items: List[Tuple[str, str]] = []  # (token, text)
-        for token in list(CTX_INJECTION_ORDER or []):
-            try:
-                tk = str(token).strip().lower()
-                if tk == "env" and CTX_INJECT_ENV_SUMMARY:
-                    try:
-                        env_text = _world_summary_text(world.snapshot())
-                        await ephemeral.memory.add(Msg("Host", env_text, "assistant"))
-                        debug_items.append(("env", env_text))
-                    except Exception:
-                        pass
-                elif tk == "recap" and CTX_INJECT_RECAP:
-                    try:
-                        if recap_msg is not None:
-                            await ephemeral.memory.add(recap_msg)
-                            debug_items.append(("recap", _safe_text(recap_msg)))
-                    except Exception:
-                        pass
-                elif tk == "reach_preview" and CTX_INJECT_REACH_PREVIEW:
-                    try:
-                        lines = _reach_preview_lines(name)
-                        if lines:
-                            lines = [REACH_RULE_LINE] + lines
-                            text = "\n".join(lines)
-                            await ephemeral.memory.add(Msg("Host", text, "assistant"))
-                            debug_items.append(("reach_preview", text))
-                    except Exception:
-                        pass
-                elif tk == "private" and CTX_PRIVATE_SECTION_MODE == "memory" and private_section:
-                    try:
-                        await ephemeral.memory.add(Msg("Host", private_section, "assistant"))
-                        debug_items.append(("private", private_section))
-                    except Exception:
-                        pass
-            except Exception:
-                # Never break the turn due to context injection issues
-                pass
-
-        # Optional: dump the full prompt bundle (system + memory) for inspection
-        if DEBUG_DUMP_PROMPTS:
-            try:
-                root = project_root()
-                dump_dir = root / "logs" / "prompts"
-                dump_dir.mkdir(parents=True, exist_ok=True)
-                # filename: <actor>_r<round>_<timestamp>.txt
-                try:
-                    rt = world.runtime()
-                    rnd = int(rt.get("round", 0))
-                except Exception:
-                    rnd = 0
-                safe = "".join(ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name))
-                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                path = dump_dir / f"{safe}_r{rnd}_{ts}.txt"
-                sys_text = str(getattr(ephemeral, "_debug_sys_prompt", ""))
-                lines: List[str] = []
-                lines.append("=== SYSTEM PROMPT ===")
-                lines.append(sys_text)
-                lines.append("")
-                lines.append("=== MEMORY MESSAGES (in order) ===")
-                for tk, txt in debug_items:
-                    lines.append(f"--- [{tk}] ---")
-                    lines.append(str(txt or ""))
-                    lines.append("")
-                with path.open("w", encoding="utf-8") as f:
-                    f.write("\n".join(lines))
-            except Exception:
-                pass
-        out = await ephemeral(None)
-        try:
-            raw_text = _safe_text(out)
-            cleaned = _strip_tool_calls_from_text(raw_text)
-            if cleaned and cleaned.strip():
-                msg_clean = Msg(getattr(out, "name", name), cleaned, getattr(out, "role", "assistant") or "assistant")
-                await _bcast(hub, msg_clean, phase=f"npc:{name}")
-            else:
-                await _bcast(hub, out, phase=f"npc:{name}")
-        except Exception:
-            # If anything goes wrong, fall back to broadcasting the original
-            await _bcast(hub, out, phase=f"npc:{name}")
-        await _handle_tool_calls(out, hub)
+    # Ephemeral agent, reach preview, and NPC turn helpers moved to top-level helpers
 
     # Human-readable header for participants and starting positions
     _start_pos_lines = []
@@ -2118,7 +2126,7 @@ async def run_demo(
                 if str(actor_types.get(name, "npc")) != "npc":
                     continue
                 try:
-                    await _npc_ephemeral_say(name, None, hub, recap_msg=None)
+                    await npc_ephemeral_say(ctx, name, None, hub, recap_msg=None)
                 except Exception:
                     pass
         except Exception:
@@ -2188,11 +2196,8 @@ async def run_demo(
                 hdr_round = round_idx
             current_round = hdr_round
             # 压缩回合提示，避免冗长旁白
-            await _bcast(
-                hub,
-                Msg("Host", f"第{hdr_round}回合", "assistant"),
-                phase="round-start",
-            )
+            ctx.current_round = current_round
+            await bcast(ctx, hub, Msg("Host", f"第{hdr_round}回合", "assistant"), phase="round-start")
             try:
                 turn = world.get_turn()
                 meta = turn.metadata or {}
@@ -2202,8 +2207,8 @@ async def run_demo(
             except Exception:
                 pass
 
-            _emit_turn_state()
-            _emit_world_state(current_round)
+            emit_turn_state(ctx)
+            emit_world_state(ctx, current_round)
             # 移除回合开始时的世界概要广播；仅在每个 NPC 行动前发送概要（见 context:world）
 
             # If无敌对，则退出战斗模式但不强制结束整体流程（除非显式要求）
@@ -2268,22 +2273,18 @@ async def run_demo(
                 # Inject a recap message for all participants before the actor decides
                 try:
                     # Dev-only context card to per-actor log file
-                    _write_dev_context_card(name)
+                    write_dev_context_card(ctx, name)
                     # Also broadcast a fresh world summary right before decision,
                     # so each turn gets "世界概要 + 行动记忆 + 指导 prompt" together.
                     if CTX_BROADCAST_CONTEXT_TO_OBSERVERS:
                         try:
-                            await _bcast(
-                                hub,
-                                Msg("Host", _world_summary_text(world.snapshot()), "assistant"),
-                                phase="context:world",
-                            )
+                            await bcast(ctx, hub, Msg("Host", _world_summary_text(world.snapshot()), "assistant"), phase="context:world")
                         except Exception as exc:
                             # 记录世界概要渲染/广播失败，不中断回合
                             _emit("error", phase="context:world", data={"message": "世界概要广播失败", "error_type": "context_world_render", "exception": str(exc)})
-                        recap_msg = _recap_for(name)
+                        recap_msg = recap_for(ctx, name)
                         if recap_msg is not None:
-                            await _bcast(hub, recap_msg, phase="context:recap")
+                            await bcast(ctx, hub, recap_msg, phase="context:recap")
                     # 3: 不再注入“私人提示”到 agent 的内存，按你的选择仅使用 环境信息 + 场景回顾 作为上下文
                 except Exception:
                     pass
@@ -2428,10 +2429,10 @@ async def run_demo(
                         private_section_pc = "\n".join(private_lines)
 
                         # 玩家角色也走一次临时 agent，由模型输出对白并执行工具（不广播原话）
-                        await _npc_ephemeral_say(name, private_section_pc, hub, recap_msg)
+                        await npc_ephemeral_say(ctx, name, private_section_pc, hub, recap_msg)
                 else:
                     # 2a) NPC：构建一次性 agent（含本回私有提示），注入环境与回顾后输出对白+工具
-                    await _npc_ephemeral_say(name, private_section, hub, recap_msg)
+                    await npc_ephemeral_say(ctx, name, private_section, hub, recap_msg)
 
                 # Close player input prompt if any (frontend expects an explicit end signal)
                 if str(actor_types.get(name, "npc")) == "player":
@@ -2489,11 +2490,7 @@ async def run_demo(
 
         final_snapshot = world.snapshot()
         _emit("state_update", phase="final", data={"state": final_snapshot})
-        await _bcast(
-            hub,
-            Msg("Host", f"自动演算结束。{('(' + end_reason + ')') if end_reason else ''}", "assistant"),
-            phase="system",
-        )
+        await bcast(ctx, hub, Msg("Host", f"自动演算结束。{('(' + end_reason + ')') if end_reason else ''}", "assistant"), phase="system")
 
 
 def _world_summary_text(snap: dict) -> str:
@@ -3425,7 +3422,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
     def _validate_characters(obj: dict) -> tuple[bool, str]:
         if not isinstance(obj, dict):
             return False, "characters must be an object"
-        # Loose validation: allow any keys; if `dnd` exists, check obvious ints
+        # Loose validation: allow any keys except legacy 'dnd' which is no longer supported
         for nm, data in obj.items():
             if nm == "relations":
                 # relations is object of name -> name -> int
@@ -3443,14 +3440,8 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                 continue
             if not isinstance(data, dict):
                 return False, f"character {nm} must be an object"
-            dnd = data.get("dnd")
-            if dnd is not None and isinstance(dnd, dict):
-                for key in ("ac", "max_hp"):
-                    if key in dnd:
-                        try:
-                            int(dnd[key])
-                        except Exception:
-                            return False, f"{nm}.dnd.{key} must be integer"
+            if "dnd" in data:
+                return False, f"character {nm}: 'dnd' block is not supported (use 'coc')"
         return True, "ok"
 
     def _atomic_write(path: Path, obj: dict) -> None:
