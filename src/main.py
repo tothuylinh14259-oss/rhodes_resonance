@@ -19,6 +19,7 @@ import json
 import re
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 from pathlib import Path
+
 """Top-level optional imports for the Agentscope runtime.
 
 These are optional at import time to allow unit tests that only exercise
@@ -32,14 +33,20 @@ try:  # optional at import time (unit tests may not install agentscope)
     from agentscope.message import Msg  # type: ignore
     from agentscope.pipeline import MsgHub  # type: ignore
 except Exception:  # pragma: no cover - provide light stubs for tests
+
     class AgentBase:  # type: ignore
         pass
+
     class ReActAgent:  # type: ignore
         pass
+
     class Msg:  # type: ignore
         pass
+
     class MsgHub:  # type: ignore
         pass
+
+
 from dataclasses import asdict, is_dataclass, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -81,9 +88,7 @@ DEFAULT_RECAP_MSG_LIMIT = 6
 DEFAULT_RECAP_ACTION_LIMIT = 6
 
 # System prompt building (tools list + templates)
-DEFAULT_TOOLS_TEXT = (
-    "perform_attack(), cast_arts(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection(), first_aid()"
-)
+DEFAULT_TOOLS_TEXT = "perform_attack(), cast_arts(), advance_position(), adjust_relation(), transfer_item(), set_protection(), clear_protection(), first_aid()"
 
 # --- Default system prompt templates ---
 DEFAULT_PROMPT_HEADER = (
@@ -92,34 +97,30 @@ DEFAULT_PROMPT_HEADER = (
     "外观特征：{appearance}\n"
     "常用语气/台词：{quotes}\n"
     "当前立场提示（仅你视角）：{relation_brief}\n"
-    "可用武器：{weapon_brief}\n"
-    "可用术式：{arts_brief}\n"
 )
 
 DEFAULT_PROMPT_RULES = (
     "对话要求：\n"
     "- 先用中文说1-2句对白/想法/微动作，符合人设。\n"
     "- 明确指令优先：若本回合的私有提示中出现“优先处理对白”，你应当首先回应，不能忽略或转移话题。\n"
-    "- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{\"key\": \"value\"}}))，不要再输出意图 JSON。\n"
-    "- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。\n"
+    '- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{"key": "value"}}))。\n'
     "- 作战规则（硬性）：只能对reach_preview里的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先用 advance_position 进入触及范围后再发动攻击。\n"
     "- 有效行动要求：当存在敌对关系（关系<=-10）时，每回合至少进行一次有效行动（advance_position/perform_attack/transfer_item/set_protection/clear_protection）。对超出触及范围的 perform_attack 视为无效行动。\n"
     "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
     "- 若必须违背既定关系行事或违反作战硬规则，请在对白中说明充分理由，并拒绝执行，同时给出更稳妥的替代行动。\n"
-    "- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为'未提供'。\n"
     '- 不要输出任何"系统提示"或括号内的系统旁白；只输出对白与 CALL_TOOL。\n'
     "- 参与者名称（仅可用）：{allowed_names}\n"
 )
 
 DEFAULT_PROMPT_TOOL_GUIDE = (
-    "可用工具：\n"
-    "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；仅能对“可及目标”使用。攻击不会自动靠近；若距离不足必须先调用 advance_position，否则视为违规。\n"
-    "- cast_arts(attacker, art, target, reason)：施放源石技艺；命中/效果基于术式的 cast_skill（如 Arts_Control/Arts_Offense）对目标的 Arts_Resist 进行对抗；仅能对 reach_preview 中“可及术式+目标”使用；无需提供 MP 数值（表达式不依赖 MP/POW），系统按术式规则自动结算。带 line-of-sight 的术式需要视线。\n"
-    "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；target 必须为 [x,y] 数组；必须提供行动理由。\n"
-    "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
-    "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
+    "可用工具（必须提供行动理由）：\n"
+    "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击，仅能对“可及目标”使用。\n"
+    "- cast_arts(attacker, art, target, reason)：施放源石技艺，仅能对“可及目标”使用。。"
+    "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；target 必须为 [x,y] 数组。\n"
+    "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值。\n"
+    "- transfer_item(target, item, n=1, reason)：移交或分配物资。\n"
     "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
-    "- clear_protection(guardian=\"\", protectee=\"\", reason)：清除守护关系；可按守护者/被保护者/全部清理。\n"
+    '- clear_protection(guardian="", protectee="", reason)：清除守护关系；可按守护者/被保护者/全部清理。\n'
     "- first_aid(name, target, reason)：对目标进行急救（First Aid）；成功可稳定濒死（HP至少1）或为新伤回复1点HP。\n"
 )
 
@@ -155,7 +156,9 @@ DEFAULT_PROMPT_TEMPLATE = (
 )
 
 # World summary templates (rendered text; not called "系统提示"避免联想)
-WORLD_SUMMARY_HEADER = "环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}"
+WORLD_SUMMARY_HEADER = (
+    "环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}"
+)
 WORLD_SUMMARY_DETAILS = "环境细节：{details}"
 WORLD_SUMMARY_OBJECTIVES = "目标：{objectives}"
 WORLD_SUMMARY_POSITIONS = "坐标：{positions}"
@@ -167,12 +170,10 @@ RECAP_SECTION_RECENT = "最近播报："
 RECAP_CLIP_CHARS = 160
 
 # Reach preview & hard rule line
-REACH_RULE_LINE = (
-    "作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。"
-)
+REACH_RULE_LINE = "作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。"
 REACH_LABEL_ADJ = "相邻（≤1步）{tail}："
-REACH_LABEL_TARGETS = "可及武器+目标（{weapon}，触及 {steps}步）："
-REACH_LABEL_ARTS = "可及术式+目标（{art}，触及 {steps}步）："
+REACH_LABEL_TARGETS = "可及武器（{weapon}，触及 {steps}步）可用目标："
+REACH_LABEL_ARTS = "可及术式（{art}，触及 {steps}步）可用目标："
 
 # Player/private tips
 PLAYER_CTRL_TITLE = "玩家控制提示（仅你可见）："
@@ -188,8 +189,12 @@ PRIV_DIST_UNKNOWN_LINE = "- {who}：未记录"
 PRIV_DIST_CANNOT_COMPUTE = "- 无法计算：未记录你的坐标"
 PRIV_VALID_ACTION_RULE_LINE = "有效行动要求：存在敌对关系时，每回合必须进行一次有效行动；对超出触及范围的 perform_attack 视为无效。"
 PRIV_DYING_TITLE = "状态提示（仅你可见）——你处于濒死状态（HP={hp})："
-PRIV_DYING_LINE_1 = "- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。"
-PRIV_DYING_LINE_2 = "- 你将在 {turns} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。"
+PRIV_DYING_LINE_1 = (
+    "- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。"
+)
+PRIV_DYING_LINE_2 = (
+    "- 你将在 {turns} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。"
+)
 PRIV_DYING_LINE_3 = ""
 
 # === End of Policy ===
@@ -197,7 +202,6 @@ PRIV_DYING_LINE_3 = ""
 # ============================================================
 # Settings Loader (inline)
 # ============================================================
-
 
 
 def project_root() -> Path:
@@ -211,7 +215,11 @@ def project_root() -> Path:
         if (parent / "configs").exists():
             return parent
     try:
-        return here.parents[1] if (here.parents[1] / "configs").exists() else here.parents[2]
+        return (
+            here.parents[1]
+            if (here.parents[1] / "configs").exists()
+            else here.parents[2]
+        )
     except Exception:
         return here.parents[1]
 
@@ -259,19 +267,21 @@ def load_story_config(selected_id: Optional[str] = None) -> dict:
     data = _load_json(_configs_dir() / "story.json")
     if not data:
         # no fallback: require explicit story config
-        raise FileNotFoundError("configs/story.json is missing or empty; fallback removed")
+        raise FileNotFoundError(
+            "configs/story.json is missing or empty; fallback removed"
+        )
 
     try:
         # container shape (ignore any legacy active_id; prefer explicit selection)
         if isinstance(data, dict) and isinstance(data.get("stories"), dict):
             stories = data.get("stories") or {}
             sid = ""
-            sel = (str(selected_id).strip() if selected_id is not None else "")
+            sel = str(selected_id).strip() if selected_id is not None else ""
             if sel and sel in stories:
                 sid = sel
             else:
                 # stable default: first by sorted order
-                sid = (sorted(stories.keys())[0] if stories else "")
+                sid = sorted(stories.keys())[0] if stories else ""
             story = stories.get(sid) if sid else None
             if isinstance(story, dict):
                 return story
@@ -310,13 +320,17 @@ try:  # optional at import time (unit tests may not install agentscope)
     from agentscope.model import OpenAIChatModel  # type: ignore
     from agentscope.tool import Toolkit  # type: ignore
 except Exception:  # pragma: no cover - provide light stubs for tests
+
     class OpenAIChatFormatter:  # type: ignore
         pass
+
     class InMemoryMemory:  # type: ignore
         pass
+
     class OpenAIChatModel:  # type: ignore
         def __init__(self, *a, **k):
             pass
+
     class Toolkit:  # type: ignore
         def register_tool_function(self, *a, **k):
             pass
@@ -351,14 +365,21 @@ def make_kimi_npc(
         raise RuntimeError(
             "MOONSHOT_API_KEY is not set. Please export MOONSHOT_API_KEY to use the Kimi API."
         )
-    base_url = str(model_cfg.get("base_url") or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1"))
+    base_url = str(
+        model_cfg.get("base_url")
+        or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
+    )
     sec = dict(model_cfg.get("npc") or {})
     model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
     tools_text = DEFAULT_TOOLS_TEXT
     tpl = _join_lines(prompt_template)
 
-    appearance_text = (appearance or "外观描写未提供，可根据设定自行补充细节。").strip() if isinstance(appearance, str) else "外观描写未提供，可根据设定自行补充细节。"
+    appearance_text = (
+        (appearance or "外观描写未提供，可根据设定自行补充细节。").strip()
+        if isinstance(appearance, str)
+        else "外观描写未提供，可根据设定自行补充细节。"
+    )
     if isinstance(quotes, (list, tuple)):
         quote_items = [str(q).strip() for q in quotes if str(q).strip()]
         quotes_text = " / ".join(quote_items)
@@ -366,7 +387,9 @@ def make_kimi_npc(
         quotes_text = quotes.strip() or "保持原角色语气自行发挥。"
     else:
         quotes_text = "保持原角色语气自行发挥。"
-    relation_text = (relation_brief or "暂无明确关系记录，默认保持谨慎中立。").strip() or "暂无明确关系记录，默认保持谨慎中立。"
+    relation_text = (
+        relation_brief or "暂无明确关系记录，默认保持谨慎中立。"
+    ).strip() or "暂无明确关系记录，默认保持谨慎中立。"
 
     format_args = {
         "name": name,
@@ -429,6 +452,7 @@ def make_kimi_npc(
 # Actions (inline)
 # ============================================================
 
+
 def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
     """Create action tools bound to a provided world API (duck-typed).
 
@@ -464,14 +488,16 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         weapon: str,
         reason: str = "",
     ):
-        fn = _VALIDATED.get("perform_attack") or (lambda **p: world.attack_with_weapon(**p))
+        fn = _VALIDATED.get("perform_attack") or (
+            lambda **p: world.attack_with_weapon(**p)
+        )
         resp = fn(attacker=attacker, defender=defender, weapon=weapon)
         meta = resp.metadata or {}
         hit = meta.get("hit")
         dmg = meta.get("damage_total")
         hp_before = meta.get("hp_before")
         hp_after = meta.get("hp_after")
-        reason_text = (str(reason).strip() or "未提供")
+        reason_text = str(reason).strip() or "未提供"
         try:
             resp.content = list(getattr(resp, "content", []) or [])
             resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
@@ -488,7 +514,9 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         )
         return resp
 
-    def perform_skill_check(name, skill, dc=None, advantage: str = "none", reason: str = ""):
+    def perform_skill_check(
+        name, skill, dc=None, advantage: str = "none", reason: str = ""
+    ):
         # CoC percentile skill check; dc ignored for compatibility
         resp = world.skill_check_coc(name=name, skill=skill)
         meta = resp.metadata or {}
@@ -496,7 +524,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         roll = meta.get("roll")
         target = meta.get("target")
         level = meta.get("success_level")
-        reason_text = (str(reason).strip() or "未提供")
+        reason_text = str(reason).strip() or "未提供"
         try:
             resp.content = list(getattr(resp, "content", []) or [])
             resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
@@ -504,14 +532,16 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
             resp.metadata = meta
         except Exception:
             pass
-        _log_action(f"skill_check {name} skill={skill} -> success={success} level={level} roll={roll}/{target} reason={reason_text}")
+        _log_action(
+            f"skill_check {name} skill={skill} -> success={success} level={level} roll={roll}/{target} reason={reason_text}"
+        )
         return resp
 
     def advance_position(name, target, steps, reason: str = ""):
         fn = _VALIDATED.get("advance_position") or (lambda **p: world.move_towards(**p))
         resp = fn(name=name, target=target, steps=steps)
         meta = resp.metadata or {}
-        reason_text = (str(reason).strip() or "未提供")
+        reason_text = str(reason).strip() or "未提供"
         try:
             resp.content = list(getattr(resp, "content", []) or [])
             resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
@@ -529,7 +559,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         resp = fn(a=a, b=b, value=value, reason=reason or "")
         meta = resp.metadata or {}
         try:
-            meta["call_reason"] = (str(reason).strip() or "未提供")
+            meta["call_reason"] = str(reason).strip() or "未提供"
             resp.metadata = meta
         except Exception:
             pass
@@ -542,7 +572,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         fn = _VALIDATED.get("transfer_item") or (lambda **p: world.grant_item(**p))
         resp = fn(target=target, item=item, n=n)
         meta = resp.metadata or {}
-        reason_text = (str(reason).strip() or "未提供")
+        reason_text = str(reason).strip() or "未提供"
         try:
             resp.content = list(getattr(resp, "content", []) or [])
             resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
@@ -559,7 +589,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         fn = _VALIDATED.get("set_protection") or (lambda **p: world.set_guard(**p))
         resp = fn(guardian=guardian, protectee=protectee)
         meta = resp.metadata or {}
-        reason_text = (str(reason).strip() or "未提供")
+        reason_text = str(reason).strip() or "未提供"
         try:
             resp.content = list(getattr(resp, "content", []) or [])
             resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
@@ -573,10 +603,12 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
     def clear_protection(guardian: str = "", protectee: str = "", reason: str = ""):
         g = guardian if guardian else None
         p = protectee if protectee else None
-        fn = _VALIDATED.get("clear_protection") or (lambda **pp: world.clear_guard(**pp))
+        fn = _VALIDATED.get("clear_protection") or (
+            lambda **pp: world.clear_guard(**pp)
+        )
         resp = fn(guardian=g, protectee=p)
         meta = resp.metadata or {}
-        reason_text = (str(reason).strip() or "未提供")
+        reason_text = str(reason).strip() or "未提供"
         try:
             resp.content = list(getattr(resp, "content", []) or [])
             resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
@@ -591,7 +623,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         fn = _VALIDATED.get("first_aid") or (lambda **p: world.first_aid(**p))
         resp = fn(name=name, target=target)
         meta = resp.metadata or {}
-        reason_text = (str(reason).strip() or "未提供")
+        reason_text = str(reason).strip() or "未提供"
         try:
             resp.content = list(getattr(resp, "content", []) or [])
             resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
@@ -599,7 +631,9 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
             resp.metadata = meta
         except Exception:
             pass
-        _log_action(f"first_aid rescuer={name} target={target} ok={meta.get('ok')} stabilized={meta.get('stabilized')} healed={meta.get('healed')} reason={reason_text}")
+        _log_action(
+            f"first_aid rescuer={name} target={target} ok={meta.get('ok')} stabilized={meta.get('stabilized')} healed={meta.get('healed')} reason={reason_text}"
+        )
         return resp
 
     def cast_arts(attacker: str, art: str, target: str, reason: str = ""):
@@ -608,7 +642,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         kwargs = {"attacker": attacker, "art": art, "target": target}
         resp = fn(**kwargs)
         meta = resp.metadata or {}
-        reason_text = (str(reason).strip() or "未提供")
+        reason_text = str(reason).strip() or "未提供"
         try:
             resp.content = list(getattr(resp, "content", []) or [])
             resp.content.append({"type": "text", "text": f"理由：{reason_text}"})
@@ -648,6 +682,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
 # ============================================================
 # Eventlog (inline)
 # ============================================================
+
 
 class EventType(str, Enum):
     """Supported event categories for the demo logging pipeline."""
@@ -717,9 +752,13 @@ class Event:
         if self.event_type is EventType.STATE_UPDATE:
             if "state" in self.data:
                 return
-            delta_ok = any(k in self.data for k in ("positions", "in_combat", "reaction_available"))
+            delta_ok = any(
+                k in self.data for k in ("positions", "in_combat", "reaction_available")
+            )
             if not delta_ok:
-                raise ValueError("Event 'state_update' missing required fields: state (or positions/in_combat/reaction_available)")
+                raise ValueError(
+                    "Event 'state_update' missing required fields: state (or positions/in_combat/reaction_available)"
+                )
             return
 
         required_keys: Dict[EventType, List[str]] = {
@@ -739,7 +778,9 @@ class Event:
 
     def to_dict(self) -> Dict[str, Any]:
         if self.timestamp is None or self.sequence is None:
-            raise RuntimeError("Event must be normalised by EventBus before serialisation")
+            raise RuntimeError(
+                "Event must be normalised by EventBus before serialisation"
+            )
         payload: Dict[str, Any] = {
             "event_id": self.event_id,
             "sequence": self.sequence,
@@ -945,7 +986,9 @@ class _WorldPort:
     end_combat = staticmethod(world_impl.end_combat)
     # CoC 7e support (DnD compatibility removed)
     set_coc_character = staticmethod(world_impl.set_coc_character)
-    set_coc_character_from_config = staticmethod(world_impl.set_coc_character_from_config)
+    set_coc_character_from_config = staticmethod(
+        world_impl.set_coc_character_from_config
+    )
     recompute_coc_derived = staticmethod(world_impl.recompute_coc_derived)
     skill_check_coc = staticmethod(world_impl.skill_check_coc)
     set_weapon_defs = staticmethod(world_impl.set_weapon_defs)
@@ -1002,34 +1045,49 @@ RELATION_ARCH_ENEMY = -60
 ##### Prompt templates moved to top in "Prompt & Context Policy" section #####
 
 
-
-def build_sys_prompt(*, name: str, persona: str, appearance: str | None, quotes: list[str] | str | None, relation_brief: str | None, weapon_brief: str | None, arts_brief: str | None = None, allowed_names: str, prompt_template: str | list[str] | None = None, tools_text: str | None = None) -> str:
+def build_sys_prompt(
+    *,
+    name: str,
+    persona: str,
+    appearance: str | None,
+    quotes: list[str] | str | None,
+    relation_brief: str | None,
+    weapon_brief: str | None,
+    arts_brief: str | None = None,
+    allowed_names: str,
+    prompt_template: str | list[str] | None = None,
+    tools_text: str | None = None,
+) -> str:
     """Build system prompt for an NPC using either a custom template or the default.
 
     Keeps text normalization consistent across call sites.
     """
     # Normalize fields
-    appearance_text = (appearance or '外观描写未提供，可根据设定自行补充细节。').strip() or '外观描写未提供，可根据设定自行补充细节。'
+    appearance_text = (
+        appearance or "外观描写未提供，可根据设定自行补充细节。"
+    ).strip() or "外观描写未提供，可根据设定自行补充细节。"
     if isinstance(quotes, (list, tuple)):
         items = [str(q).strip() for q in quotes if str(q).strip()]
-        quotes_text = ' / '.join(items) if items else '保持原角色语气自行发挥。'
+        quotes_text = " / ".join(items) if items else "保持原角色语气自行发挥。"
     elif isinstance(quotes, str):
-        quotes_text = quotes.strip() or '保持原角色语气自行发挥。'
+        quotes_text = quotes.strip() or "保持原角色语气自行发挥。"
     else:
-        quotes_text = '保持原角色语气自行发挥。'
-    relation_text = (relation_brief or '暂无明确关系记录，默认保持谨慎中立。').strip() or '暂无明确关系记录，默认保持谨慎中立。'
+        quotes_text = "保持原角色语气自行发挥。"
+    relation_text = (
+        relation_brief or "暂无明确关系记录，默认保持谨慎中立。"
+    ).strip() or "暂无明确关系记录，默认保持谨慎中立。"
     tools_txt = tools_text or DEFAULT_TOOLS_TEXT
 
     args = {
-        'name': name,
-        'persona': persona,
-        'appearance': appearance_text,
-        'quotes': quotes_text,
-        'relation_brief': relation_text,
-        'weapon_brief': (weapon_brief or '无'),
-        'arts_brief': (arts_brief or '无'),
-        'tools': tools_txt,
-        'allowed_names': allowed_names or 'Doctor, Amiya',
+        "name": name,
+        "persona": persona,
+        "appearance": appearance_text,
+        "quotes": quotes_text,
+        "relation_brief": relation_text,
+        "weapon_brief": (weapon_brief or "无"),
+        "arts_brief": (arts_brief or "无"),
+        "tools": tools_txt,
+        "allowed_names": allowed_names or "Doctor, Amiya",
     }
 
     # Choose template: provided one (list or str) or the DEFAULT_PROMPT_TEMPLATE
@@ -1051,6 +1109,7 @@ def build_sys_prompt(*, name: str, persona: str, appearance: str | None, quotes:
         # no fallback: propagate
         raise
 
+
 # Tool call pattern
 TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 
@@ -1058,6 +1117,7 @@ TOOL_CALL_PATTERN = re.compile(r"CALL_TOOL\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 # ============================================================
 # Utility Functions
 # ============================================================
+
 
 def _relation_category(score: int) -> str:
     """Categorize relation score into human-readable labels."""
@@ -1112,7 +1172,7 @@ def _extract_json_after(s: str, start_pos: int) -> Tuple[Optional[str], int]:
     Returns (json_string, end_position) or (None, start_pos) if not found.
     """
     n = len(s)
-    i = s.find('{', start_pos)
+    i = s.find("{", start_pos)
     if i == -1:
         return None, start_pos
     brace = 0
@@ -1131,12 +1191,12 @@ def _extract_json_after(s: str, start_pos: int) -> Tuple[Optional[str], int]:
         else:
             if ch == '"':
                 in_str = True
-            elif ch == '{':
+            elif ch == "{":
                 brace += 1
-            elif ch == '}':
+            elif ch == "}":
                 brace -= 1
                 if brace == 0:
-                    return s[i:j+1], j+1
+                    return s[i : j + 1], j + 1
         j += 1
     return None, start_pos
 
@@ -1185,7 +1245,7 @@ def _strip_tool_calls_from_text(text: str) -> str:
         if not m:
             out_parts.append(text[idx:])
             break
-        out_parts.append(text[idx:m.start()])
+        out_parts.append(text[idx : m.start()])
         scan_from = m.end()
         json_body, end_pos = _extract_json_after(text, scan_from)
         if json_body:
@@ -1305,7 +1365,7 @@ def arts_brief_for(world: Any, nm: str) -> str:
         cost = (mp or {}).get("cost", 0)
         # 不在提示中呈现“可变/固定”的 MP 模式，避免误导角色去输入 mp_spent
         cskill = a.get("cast_skill") or ""
-        cpart = (f", 技能{cskill}" if cskill else "")
+        cpart = f", 技能{cskill}" if cskill else ""
         parts.append(f"{label}(触及{steps}步, 消耗{cost}{cpart})")
     brief = "；".join(parts) if parts else "无"
     if cur_mp is not None and max_mp is not None:
@@ -1313,7 +1373,9 @@ def arts_brief_for(world: Any, nm: str) -> str:
     return brief
 
 
-def apply_story_position(world: Any, story_positions: Dict[str, Tuple[int, int]], name: str) -> None:
+def apply_story_position(
+    world: Any, story_positions: Dict[str, Tuple[int, int]], name: str
+) -> None:
     pos = story_positions.get(str(name))
     if not pos:
         return
@@ -1381,7 +1443,9 @@ def apply_scene_to_world(world: Any, name, objectives, details, weather, time_mi
     )
 
 
-async def bcast(ctx: TurnContext, hub: MsgHub, msg: Msg, *, phase: Optional[str] = None):
+async def bcast(
+    ctx: TurnContext, hub: MsgHub, msg: Msg, *, phase: Optional[str] = None
+):
     await hub.broadcast(msg)
     text = _safe_text(msg)
     ctx.emit(
@@ -1391,13 +1455,15 @@ async def bcast(ctx: TurnContext, hub: MsgHub, msg: Msg, *, phase: Optional[str]
         data={"text": text, "role": getattr(msg, "role", None)},
     )
     try:
-        ctx.chat_log.append({
-            "actor": getattr(msg, "name", None),
-            "role": getattr(msg, "role", None),
-            "text": text,
-            "turn": ctx.current_round,
-            "phase": phase or "",
-        })
+        ctx.chat_log.append(
+            {
+                "actor": getattr(msg, "name", None),
+                "role": getattr(msg, "role", None),
+                "text": text,
+                "turn": ctx.current_round,
+                "phase": phase or "",
+            }
+        )
     except Exception:
         pass
 
@@ -1439,6 +1505,7 @@ def emit_world_state(ctx: TurnContext, turn_val: int) -> None:
 def reach_preview_lines(world: Any, name: str) -> List[str]:
     lines: List[str] = []
     try:
+
         def _fmt_steps(n: int) -> str:
             try:
                 s = int(n)
@@ -1447,8 +1514,9 @@ def reach_preview_lines(world: Any, name: str) -> List[str]:
             if s < 0:
                 s = 0
             return f"{s}步"
+
         snap = world.snapshot() or {}
-        pos_map = (snap.get("positions") or {})
+        pos_map = snap.get("positions") or {}
         if not isinstance(pos_map, dict) or str(name) not in pos_map:
             return lines
         me_pos = pos_map[str(name)]
@@ -1463,8 +1531,10 @@ def reach_preview_lines(world: Any, name: str) -> List[str]:
                 scene_units.append((str(nm), (int(p[0]), int(p[1]))))
             except Exception:
                 continue
+
         def manhattan(a, b):
             return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
+
         try:
             adj = []
             for nm, p in scene_units:
@@ -1476,7 +1546,9 @@ def reach_preview_lines(world: Any, name: str) -> List[str]:
             if adj:
                 adj.sort(key=lambda t: (t[1], t[0]))
                 try:
-                    ts = (world.runtime().get("turn_state") or {}).get(str(name), {}) or {}
+                    ts = (world.runtime().get("turn_state") or {}).get(
+                        str(name), {}
+                    ) or {}
                     react_avail = bool(ts.get("reaction_available", True))
                 except Exception:
                     react_avail = True
@@ -1519,7 +1591,10 @@ def reach_preview_lines(world: Any, name: str) -> List[str]:
                 continue
             items.sort(key=lambda t: (t[1], t[0]))
             parts = [f"{nm}({_fmt_steps(d)})" for nm, d in items]
-            lines.append(REACH_LABEL_TARGETS.format(weapon=wid, steps=int(rsteps)) + ", ".join(parts))
+            lines.append(
+                REACH_LABEL_TARGETS.format(weapon=wid, steps=int(rsteps))
+                + ", ".join(parts)
+            )
         # Arts preview (known arts within range)
         try:
             ch = dict((snap.get("characters") or {}).get(str(name), {}) or {})
@@ -1544,7 +1619,10 @@ def reach_preview_lines(world: Any, name: str) -> List[str]:
                 parts = [f"{nm}({_fmt_steps(d)})" for nm, d in items]
                 # Use internal id for consistency with action/tool calls
                 art_name = str(aid)
-                lines.append(REACH_LABEL_ARTS.format(art=art_name, steps=rsteps) + ", ".join(parts))
+                lines.append(
+                    REACH_LABEL_ARTS.format(art=art_name, steps=rsteps)
+                    + ", ".join(parts)
+                )
         except Exception:
             pass
     except Exception:
@@ -1552,14 +1630,18 @@ def reach_preview_lines(world: Any, name: str) -> List[str]:
     return lines
 
 
-def make_ephemeral_agent(ctx: TurnContext, name: str, private_section: Optional[str]) -> ReActAgent:
+def make_ephemeral_agent(
+    ctx: TurnContext, name: str, private_section: Optional[str]
+) -> ReActAgent:
     try:
         sheet_now = (ctx.world.snapshot().get("characters") or {}).get(name, {}) or {}
         persona_now = sheet_now.get("persona") or ""
         appearance_now = sheet_now.get("appearance")
         quotes_now = sheet_now.get("quotes")
     except Exception:
-        persona_now = ""; appearance_now = None; quotes_now = None
+        persona_now = ""
+        appearance_now = None
+        quotes_now = None
 
     # Build system prompt (outside the try/except so it always runs)
     sys_prompt_text = build_sys_prompt(
@@ -1634,13 +1716,15 @@ async def handle_tool_calls(ctx: TurnContext, origin: Msg, hub: MsgHub):
             data={"tool": tool_name, "params": params_slim},
         )
         try:
-            ctx.action_log.append({
-                "actor": origin.name,
-                "tool": tool_name,
-                "type": "call",
-                "params": dict(params or {}),
-                "turn": ctx.current_round,
-            })
+            ctx.action_log.append(
+                {
+                    "actor": origin.name,
+                    "tool": tool_name,
+                    "type": "call",
+                    "params": dict(params or {}),
+                    "turn": ctx.current_round,
+                }
+            )
         except Exception:
             pass
         try:
@@ -1683,12 +1767,16 @@ async def handle_tool_calls(ctx: TurnContext, origin: Msg, hub: MsgHub):
                     lines.append(str(blk))
         meta = getattr(resp, "metadata", None)
         try:
+
             def _strip_reason(t: str) -> str:
                 s = str(t or "")
-                s = re.sub(r"\s*(?:行动)?(?:理由|reason|Reason)[:：][\s\S]*$", "", s).strip()
+                s = re.sub(
+                    r"\s*(?:行动)?(?:理由|reason|Reason)[:：][\s\S]*$", "", s
+                ).strip()
                 if re.match(r"^(?:行动)?(?:理由|reason|Reason)[:：]", s):
                     return ""
                 return s
+
             lines = [x for x in (_strip_reason(x) for x in lines) if x]
         except Exception:
             pass
@@ -1699,14 +1787,16 @@ async def handle_tool_calls(ctx: TurnContext, origin: Msg, hub: MsgHub):
             data={"tool": tool_name, "metadata": meta, "text": lines},
         )
         try:
-            ctx.action_log.append({
-                "actor": origin.name,
-                "tool": tool_name,
-                "type": "result",
-                "text": list(lines),
-                "meta": meta,
-                "turn": ctx.current_round,
-            })
+            ctx.action_log.append(
+                {
+                    "actor": origin.name,
+                    "tool": tool_name,
+                    "type": "result",
+                    "text": list(lines),
+                    "meta": meta,
+                    "turn": ctx.current_round,
+                }
+            )
         except Exception:
             pass
         if not lines:
@@ -1723,9 +1813,11 @@ def recap_for(ctx: TurnContext, name: str) -> Optional[Msg]:
     if not ctx.recap_enabled:
         return None
     start = int(ctx.last_seen.get(name, 0))
-    recent_msgs = [e for e in ctx.chat_log[start:] if e.get("actor") not in (None, "Host")]
+    recent_msgs = [
+        e for e in ctx.chat_log[start:] if e.get("actor") not in (None, "Host")
+    ]
     if ctx.recap_msg_limit > 0:
-        recent_msgs = recent_msgs[-ctx.recap_msg_limit:]
+        recent_msgs = recent_msgs[-ctx.recap_msg_limit :]
     if not recent_msgs:
         return None
     lines: List[str] = [RECAP_TITLE.format(name=name)]
@@ -1737,7 +1829,13 @@ def recap_for(ctx: TurnContext, name: str) -> Optional[Msg]:
     return Msg("Host", "\n".join(lines), "assistant")
 
 
-async def npc_ephemeral_say(ctx: TurnContext, name: str, private_section: Optional[str], hub: MsgHub, recap_msg: Optional[Msg] = None) -> None:
+async def npc_ephemeral_say(
+    ctx: TurnContext,
+    name: str,
+    private_section: Optional[str],
+    hub: MsgHub,
+    recap_msg: Optional[Msg] = None,
+) -> None:
     ephemeral = make_ephemeral_agent(ctx, name, private_section)
     debug_items: List[Tuple[str, str]] = []
     for token in list(CTX_INJECTION_ORDER or []):
@@ -1767,9 +1865,15 @@ async def npc_ephemeral_say(ctx: TurnContext, name: str, private_section: Option
                         debug_items.append(("reach_preview", text))
                 except Exception:
                     pass
-            elif tk == "private" and CTX_PRIVATE_SECTION_MODE == "memory" and private_section:
+            elif (
+                tk == "private"
+                and CTX_PRIVATE_SECTION_MODE == "memory"
+                and private_section
+            ):
                 try:
-                    await ephemeral.memory.add(Msg("Host", private_section, "assistant"))
+                    await ephemeral.memory.add(
+                        Msg("Host", private_section, "assistant")
+                    )
                     debug_items.append(("private", private_section))
                 except Exception:
                     pass
@@ -1780,7 +1884,9 @@ async def npc_ephemeral_say(ctx: TurnContext, name: str, private_section: Option
             root = project_root()
             dump_dir = root / "logs" / "prompts"
             dump_dir.mkdir(parents=True, exist_ok=True)
-            safe = "".join(ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name))
+            safe = "".join(
+                ch if ch.isalnum() or ch in ("_", "-", ".") else "_" for ch in str(name)
+            )
             # Keep only the latest dump per actor; remove older files for this actor
             try:
                 for _p in dump_dir.glob(f"{safe}_*.txt"):
@@ -1810,7 +1916,11 @@ async def npc_ephemeral_say(ctx: TurnContext, name: str, private_section: Option
         raw_text = _safe_text(out)
         cleaned = _strip_tool_calls_from_text(raw_text)
         if cleaned and cleaned.strip():
-            msg_clean = Msg(getattr(out, "name", name), cleaned, getattr(out, "role", "assistant") or "assistant")
+            msg_clean = Msg(
+                getattr(out, "name", name),
+                cleaned,
+                getattr(out, "role", "assistant") or "assistant",
+            )
             await bcast(ctx, hub, msg_clean, phase=f"npc:{name}")
         else:
             await bcast(ctx, hub, out, phase=f"npc:{name}")
@@ -1838,11 +1948,15 @@ async def run_demo(
     story_positions: Dict[str, Tuple[int, int]] = {}
 
     if isinstance(story_cfg, dict):
-        _parse_story_positions(story_cfg.get("initial_positions") or {}, story_positions)
+        _parse_story_positions(
+            story_cfg.get("initial_positions") or {}, story_positions
+        )
         _parse_story_positions(story_cfg.get("positions") or {}, story_positions)
         initial_section = story_cfg.get("initial")
         if isinstance(initial_section, dict):
-            _parse_story_positions(initial_section.get("positions") or {}, story_positions)
+            _parse_story_positions(
+                initial_section.get("positions") or {}, story_positions
+            )
 
     # story position application moved to top-level helper
 
@@ -1865,7 +1979,10 @@ async def run_demo(
     # Map actor name -> type ("npc" or "player"); default to npc
     actor_types: Dict[str, str] = {}
     try:
-        actor_types = {str(nm): str((entry or {}).get("type", "npc")).lower() for nm, entry in actor_entries.items()}
+        actor_types = {
+            str(nm): str((entry or {}).get("type", "npc")).lower()
+            for nm, entry in actor_entries.items()
+        }
     except Exception:
         actor_types = {}
     # Participants resolution per request: derive purely from story positions that were ingested
@@ -1878,7 +1995,9 @@ async def run_demo(
     except Exception:
         pass
     try:
-        allowed_names_world: List[str] = list(world.snapshot().get("participants") or [])
+        allowed_names_world: List[str] = list(
+            world.snapshot().get("participants") or []
+        )
     except Exception:
         allowed_names_world = list(allowed_names)
     allowed_names_str = ", ".join(allowed_names_world) if allowed_names_world else ""
@@ -1943,7 +2062,17 @@ async def run_demo(
                     # Create a minimal CoC sheet with mid-line defaults
                     world.set_coc_character(
                         name=name,
-                        characteristics={"STR": 50, "DEX": 50, "CON": 50, "INT": 50, "POW": 50, "APP": 50, "EDU": 60, "SIZ": 50, "LUCK": 50},
+                        characteristics={
+                            "STR": 50,
+                            "DEX": 50,
+                            "CON": 50,
+                            "INT": 50,
+                            "POW": 50,
+                            "APP": 50,
+                            "EDU": 60,
+                            "SIZ": 50,
+                            "LUCK": 50,
+                        },
                     )
             except Exception:
                 pass
@@ -1960,6 +2089,7 @@ async def run_demo(
                             pass
             except Exception:
                 pass
+
             # Build per-actor weapon brief for prompt
             def _weapon_brief_for(nm: str) -> str:
                 try:
@@ -1980,6 +2110,7 @@ async def run_demo(
                     dmg = wd.get("damage", "")
                     entries.append(f"{wid}(触及 {rs}步, 伤害 {dmg or '?'} )")
                 return "；".join(entries) if entries else "无"
+
             # Read meta from world (single source of truth)
             try:
                 sheet = (world.snapshot().get("characters") or {}).get(name, {}) or {}
@@ -2030,7 +2161,17 @@ async def run_demo(
                 else:
                     world.set_coc_character(
                         name=name,
-                        characteristics={"STR": 50, "DEX": 50, "CON": 50, "INT": 50, "POW": 50, "APP": 50, "EDU": 60, "SIZ": 50, "LUCK": 50},
+                        characteristics={
+                            "STR": 50,
+                            "DEX": 50,
+                            "CON": 50,
+                            "INT": 50,
+                            "POW": 50,
+                            "APP": 50,
+                            "EDU": 60,
+                            "SIZ": 50,
+                            "LUCK": 50,
+                        },
                     )
             except Exception:
                 pass
@@ -2063,9 +2204,26 @@ async def run_demo(
 
     # Scene setup from story config (moved to top-level helpers)
     scene_cfg = story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
-    scene_name, scene_objectives, scene_details, scene_weather, scene_time_min = normalize_scene_cfg(scene_cfg)
-    if any([scene_name, scene_objectives, scene_details, scene_weather, scene_time_min is not None]):
-        apply_scene_to_world(world, scene_name, scene_objectives, scene_details, scene_weather, scene_time_min)
+    scene_name, scene_objectives, scene_details, scene_weather, scene_time_min = (
+        normalize_scene_cfg(scene_cfg)
+    )
+    if any(
+        [
+            scene_name,
+            scene_objectives,
+            scene_details,
+            scene_weather,
+            scene_time_min is not None,
+        ]
+    ):
+        apply_scene_to_world(
+            world,
+            scene_name,
+            scene_objectives,
+            scene_details,
+            scene_weather,
+            scene_time_min,
+        )
 
     current_round = 0
 
@@ -2078,14 +2236,22 @@ async def run_demo(
         data: Optional[Dict[str, Any]] = None,
     ) -> None:
         payload = dict(data or {})
-        emit(event_type=event_type, actor=actor, phase=phase, turn=turn if turn is not None else (current_round or None), data=payload)
+        emit(
+            event_type=event_type,
+            actor=actor,
+            phase=phase,
+            turn=turn if turn is not None else (current_round or None),
+            data=payload,
+        )
 
     # Prepare per-run context for top-level helpers
     TOOL_DISPATCH = dict(tool_dispatch or {})
     allowed_set = {str(n) for n in (allowed_names_world or [])}
-    CHAT_LOG: List[Dict[str, Any]] = []     # {actor, role, text, turn, phase}
-    ACTION_LOG: List[Dict[str, Any]] = []   # {actor, tool, type, text|params, meta, turn}
-    LAST_SEEN: Dict[str, int] = {}          # per-actor chat index checkpoint
+    CHAT_LOG: List[Dict[str, Any]] = []  # {actor, role, text, turn, phase}
+    ACTION_LOG: List[Dict[str, Any]] = (
+        []
+    )  # {actor, tool, type, text|params, meta, turn}
+    LAST_SEEN: Dict[str, int] = {}  # per-actor chat index checkpoint
     recap_enabled = True
     recap_msg_limit = DEFAULT_RECAP_MSG_LIMIT
     recap_action_limit = DEFAULT_RECAP_ACTION_LIMIT
@@ -2123,7 +2289,6 @@ async def run_demo(
 
     # Tool call handling moved to top-level helper
 
-
     # Recap moved to top-level helper
 
     # --- State snapshot emitters (helper to reduce duplicate blocks) ---
@@ -2134,7 +2299,9 @@ async def run_demo(
 
     # Fallback: 若上游未载入术式表，这里尝试一次惰性载入，避免术式提示/施放为“未知术式”
     try:
-        if hasattr(world, "get_arts_defs") and callable(getattr(world, "get_arts_defs")):
+        if hasattr(world, "get_arts_defs") and callable(
+            getattr(world, "get_arts_defs")
+        ):
             arts_defs_now = world.get_arts_defs() or {}
             if not arts_defs_now and hasattr(world, "set_arts_defs"):
                 try:
@@ -2160,8 +2327,13 @@ async def run_demo(
     except Exception:
         _start_pos_lines = []
     _participants_header = (
-        "参与者：" + (", ".join(world.snapshot().get("participants") or []) if (world.snapshot().get("participants") or []) else "(无)") +
-        (" | 初始坐标：" + "; ".join(_start_pos_lines) if _start_pos_lines else "")
+        "参与者："
+        + (
+            ", ".join(world.snapshot().get("participants") or [])
+            if (world.snapshot().get("participants") or [])
+            else "(无)"
+        )
+        + (" | 初始坐标：" + "; ".join(_start_pos_lines) if _start_pos_lines else "")
     )
 
     # Opening text: read from configs, persist into world.scene_details (append) for single-source-of-truth
@@ -2170,13 +2342,13 @@ async def run_demo(
         if isinstance(story_cfg, dict):
             sc = story_cfg.get("scene")
             if isinstance(sc, dict):
-                txt = (sc.get("description") or sc.get("opening") or "")
+                txt = sc.get("description") or sc.get("opening") or ""
                 if isinstance(txt, str) and txt.strip():
                     opening_text = txt.strip()
     except Exception:
         opening_text = None
     default_opening = "旧城区·北侧仓棚。铁梁回声震耳，每名战斗者都盯紧了自己的对手——退路已绝，只能分出胜负！"
-    opening_line = (opening_text or default_opening)
+    opening_line = opening_text or default_opening
     # Append opening into world.scene_details if not already present
     try:
         snap0 = world.snapshot()
@@ -2186,7 +2358,15 @@ async def run_demo(
             details_new = details0 + [opening_line]
             world.set_scene(current_loc, None, append=True, details=details_new)
     except Exception as exc:
-        _emit("error", phase="scene", data={"message": "写入场景细节失败", "error_type": "scene_details_append", "exception": str(exc)})
+        _emit(
+            "error",
+            phase="scene",
+            data={
+                "message": "写入场景细节失败",
+                "error_type": "scene_details_append",
+                "exception": str(exc),
+            },
+        )
     announcement_text = opening_line + "\n" + _participants_header
 
     # 若无参与者（按 positions 推断）则在进入 Hub 前直接记录并结束
@@ -2196,7 +2376,11 @@ async def run_demo(
         except Exception:
             pass
         try:
-            _emit("system", phase="system", data={"message": f"无参与者，自动结束。{_participants_header}"})
+            _emit(
+                "system",
+                phase="system",
+                data={"message": f"无参与者，自动结束。{_participants_header}"},
+            )
         except Exception:
             pass
         try:
@@ -2235,7 +2419,7 @@ async def run_demo(
     ) as hub:
         # 开场：让每个 NPC 先各发一条对白（并可附带工具调用），以便在玩家输入前呈现剧情开端
         try:
-            for name in (list(allowed_names_world) or []):
+            for name in list(allowed_names_world) or []:
                 if str(actor_types.get(name, "npc")) != "npc":
                     continue
                 try:
@@ -2279,16 +2463,18 @@ async def run_demo(
                 base = list(allowed_names_world)
             else:
                 snap = world.snapshot()
-                base = list((snap.get("positions") or {}).keys()) or list((snap.get("characters") or {}).keys())
+                base = list((snap.get("positions") or {}).keys()) or list(
+                    (snap.get("characters") or {}).keys()
+                )
             return [n for n in base if _is_alive(n)]
 
         def _hostiles_present(threshold: int = -10) -> bool:
             names = _living_field_names()
             if len(names) <= 1:
                 return False
-            snap_rel = (world.snapshot().get("relations") or {})
+            snap_rel = world.snapshot().get("relations") or {}
             for i, a in enumerate(names):
-                for b in names[i+1:]:
+                for b in names[i + 1 :]:
                     try:
                         sc_ab = int(snap_rel.get(f"{str(a)}->{str(b)}", 0))
                     except Exception:
@@ -2300,6 +2486,7 @@ async def run_demo(
                     if sc_ab <= threshold or sc_ba <= threshold:
                         return True
             return False
+
         while True:
             try:
                 rt = world.runtime()
@@ -2310,7 +2497,12 @@ async def run_demo(
             current_round = hdr_round
             # 压缩回合提示，避免冗长旁白
             ctx.current_round = current_round
-            await bcast(ctx, hub, Msg("Host", f"第{hdr_round}回合", "assistant"), phase="round-start")
+            await bcast(
+                ctx,
+                hub,
+                Msg("Host", f"第{hdr_round}回合", "assistant"),
+                phase="round-start",
+            )
             try:
                 turn = world.get_turn()
                 meta = turn.metadata or {}
@@ -2337,13 +2529,15 @@ async def run_demo(
 
             combat_cleared = False
             # 按参与者名称轮转；玩家与 NPC 均在其中
-            for name in (list(allowed_names_world) or []):
+            for name in list(allowed_names_world) or []:
                 name = str(name)
                 # Skip turn only if the character is truly dead (hp<=0 and not in dying state)
                 try:
-                    sheet = (world.snapshot().get("characters") or {}).get(name, {}) or {}
-                    hpv = int(sheet.get('hp', 1))
-                    dt = sheet.get('dying_turns_left', None)
+                    sheet = (world.snapshot().get("characters") or {}).get(
+                        name, {}
+                    ) or {}
+                    hpv = int(sheet.get("hp", 1))
+                    dt = sheet.get("dying_turns_left", None)
                     is_dead = (hpv <= 0) and (dt is None)
                     if is_dead:
                         _emit(
@@ -2351,7 +2545,11 @@ async def run_demo(
                             actor=name,
                             turn=current_round,
                             phase="actor-turn",
-                            data={"round": current_round, "skipped": True, "reason": "dead"},
+                            data={
+                                "round": current_round,
+                                "skipped": True,
+                                "reason": "dead",
+                            },
                         )
                         _emit(
                             "turn_end",
@@ -2369,7 +2567,7 @@ async def run_demo(
                 except Exception:
                     reset = None
                 try:
-                    st_meta = (reset.metadata or {}).get('state') if reset else None
+                    st_meta = (reset.metadata or {}).get("state") if reset else None
                 except Exception:
                     st_meta = None
                 _emit(
@@ -2390,10 +2588,27 @@ async def run_demo(
                     # so each turn gets "世界概要 + 行动记忆 + 指导 prompt" together.
                     if CTX_BROADCAST_CONTEXT_TO_OBSERVERS:
                         try:
-                            await bcast(ctx, hub, Msg("Host", _world_summary_text(world.snapshot()), "assistant"), phase="context:world")
+                            await bcast(
+                                ctx,
+                                hub,
+                                Msg(
+                                    "Host",
+                                    _world_summary_text(world.snapshot()),
+                                    "assistant",
+                                ),
+                                phase="context:world",
+                            )
                         except Exception as exc:
                             # 记录世界概要渲染/广播失败，不中断回合
-                            _emit("error", phase="context:world", data={"message": "世界概要广播失败", "error_type": "context_world_render", "exception": str(exc)})
+                            _emit(
+                                "error",
+                                phase="context:world",
+                                data={
+                                    "message": "世界概要广播失败",
+                                    "error_type": "context_world_render",
+                                    "exception": str(exc),
+                                },
+                            )
                         recap_msg = recap_for(ctx, name)
                         if recap_msg is not None:
                             await bcast(ctx, hub, recap_msg, phase="context:recap")
@@ -2475,10 +2690,14 @@ async def run_demo(
                         my_pos = positions.get(name)
                         # 候选单位：优先 participants；否则使用所有已登记坐标的单位
                         try:
-                            participants_now = list(world.snapshot().get("participants") or [])
+                            participants_now = list(
+                                world.snapshot().get("participants") or []
+                            )
                         except Exception:
                             participants_now = []
-                        candidates = [n for n in (participants_now or list(positions.keys()))]
+                        candidates = [
+                            n for n in (participants_now or list(positions.keys()))
+                        ]
                         # 排除自己
                         candidates = [n for n in candidates if str(n) != str(name)]
                         lines_priv.append(PRIV_DIST_TITLE)
@@ -2503,9 +2722,13 @@ async def run_demo(
                             # 距离升序，名称次序作为平手兜底
                             known.sort(key=lambda t: (t[0], t[1]))
                             for dist, who in known:
-                                lines_priv.append(PRIV_DIST_LINE.format(who=who, dist=int(dist)))
+                                lines_priv.append(
+                                    PRIV_DIST_LINE.format(who=who, dist=int(dist))
+                                )
                             for who in unknown:
-                                lines_priv.append(PRIV_DIST_UNKNOWN_LINE.format(who=who))
+                                lines_priv.append(
+                                    PRIV_DIST_UNKNOWN_LINE.format(who=who)
+                                )
                     except Exception:
                         # 容错：距离提示失败时跳过，不影响回合
                         pass
@@ -2518,7 +2741,12 @@ async def run_demo(
                     # 玩家发言：优先使用外部提供的异步输入通道（用于网页端），否则回退到 CLI 输入。
                     # 阻塞等待玩家输入，以保留“玩家优先发言”的体验（不自动跳过）。
                     try:
-                        _emit("system", actor=name, phase="player_input", data={"waiting": True})
+                        _emit(
+                            "system",
+                            actor=name,
+                            phase="player_input",
+                            data={"waiting": True},
+                        )
                     except Exception:
                         pass
                     text_in = ""
@@ -2530,7 +2758,9 @@ async def run_demo(
                             text_in = ""
                     else:
                         try:
-                            text_in = (await _async_input(f"[{name}] 请输入对白： ")).strip()
+                            text_in = (
+                                await _async_input(f"[{name}] 请输入对白： ")
+                            ).strip()
                         except Exception:
                             text_in = ""
                     if text_in:
@@ -2541,7 +2771,9 @@ async def run_demo(
                         private_section_pc = "\n".join(private_lines)
 
                         # 玩家角色也走一次临时 agent，由模型输出对白并执行工具（不广播原话）
-                        await npc_ephemeral_say(ctx, name, private_section_pc, hub, recap_msg)
+                        await npc_ephemeral_say(
+                            ctx, name, private_section_pc, hub, recap_msg
+                        )
                 else:
                     # 2a) NPC：构建一次性 agent（含本回私有提示），注入环境与回顾后输出对白+工具
                     await npc_ephemeral_say(ctx, name, private_section, hub, recap_msg)
@@ -2549,14 +2781,22 @@ async def run_demo(
                 # Close player input prompt if any (frontend expects an explicit end signal)
                 if str(actor_types.get(name, "npc")) == "player":
                     try:
-                        _emit("system", actor=name, phase="player_input_end", data={"waiting": False})
+                        _emit(
+                            "system",
+                            actor=name,
+                            phase="player_input_end",
+                            data={"waiting": False},
+                        )
                     except Exception:
                         pass
 
                 # End-of-turn: if actor is in dying state, decrement their own dying timer now
                 try:
                     ch2 = (world.snapshot().get("characters") or {}).get(name, {}) or {}
-                    if int(ch2.get('hp', 0)) <= 0 and ch2.get('dying_turns_left') is not None:
+                    if (
+                        int(ch2.get("hp", 0)) <= 0
+                        and ch2.get("dying_turns_left") is not None
+                    ):
                         world.tick_dying_for(name)
                 except Exception:
                     pass
@@ -2583,12 +2823,19 @@ async def run_demo(
                 # Soft pause: if a pause was requested, block here (between actors)
                 if pause_gate is not None:
                     try:
-                        await getattr(pause_gate, "wait_if_requested")(after_actor=name, round_val=current_round)
+                        await getattr(pause_gate, "wait_if_requested")(
+                            after_actor=name, round_val=current_round
+                        )
                     except Exception:
                         # Defensive: never break the loop due to pause gate errors
                         pass
 
-            _emit("turn_end", phase="round", turn=current_round, data={"round": current_round})
+            _emit(
+                "turn_end",
+                phase="round",
+                turn=current_round,
+                data={"round": current_round},
+            )
             if combat_cleared:
                 break
             round_idx += 1
@@ -2602,7 +2849,16 @@ async def run_demo(
 
         final_snapshot = world.snapshot()
         _emit("state_update", phase="final", data={"state": final_snapshot})
-        await bcast(ctx, hub, Msg("Host", f"自动演算结束。{('(' + end_reason + ')') if end_reason else ''}", "assistant"), phase="system")
+        await bcast(
+            ctx,
+            hub,
+            Msg(
+                "Host",
+                f"自动演算结束。{('(' + end_reason + ')') if end_reason else ''}",
+                "assistant",
+            ),
+            phase="system",
+        )
 
 
 def _world_summary_text(snap: dict) -> str:
@@ -2628,7 +2884,8 @@ def _world_summary_text(snap: dict) -> str:
     char_lines = []
     try:
         for nm, st in chars.items():
-            hp = st.get("hp"); max_hp = st.get("max_hp")
+            hp = st.get("hp")
+            max_hp = st.get("max_hp")
             if hp is not None and max_hp is not None:
                 extra = ""
                 # Append dying turns-left or death marker if applicable
@@ -2644,7 +2901,9 @@ def _world_summary_text(snap: dict) -> str:
     except Exception:
         pass
 
-    details = [d for d in (snap.get("scene_details") or []) if isinstance(d, str) and d.strip()]
+    details = [
+        d for d in (snap.get("scene_details") or []) if isinstance(d, str) and d.strip()
+    ]
     lines = [
         WORLD_SUMMARY_HEADER.format(location=location, hh=hh, mm=mm, weather=weather),
         WORLD_SUMMARY_OBJECTIVES.format(
@@ -2662,8 +2921,12 @@ def _world_summary_text(snap: dict) -> str:
             )
         ),
         # 说明：避免使用“系统提示”措辞以免模型联想出系统旁白；且不显示任何物品信息
-        WORLD_SUMMARY_POSITIONS.format(positions=("; ".join(pos_lines) if pos_lines else "未记录")),
-        WORLD_SUMMARY_CHARACTERS.format(chars=("; ".join(char_lines) if char_lines else "未登记")),
+        WORLD_SUMMARY_POSITIONS.format(
+            positions=("; ".join(pos_lines) if pos_lines else "未记录")
+        ),
+        WORLD_SUMMARY_CHARACTERS.format(
+            chars=("; ".join(char_lines) if char_lines else "未登记")
+        ),
     ]
     if details:
         # Insert details after the header line
@@ -2671,8 +2934,9 @@ def _world_summary_text(snap: dict) -> str:
     return "\n".join(lines)
 
 
-
-def _bootstrap_runtime(*, for_server: bool = False, selected_story_id: Optional[str] = None):
+def _bootstrap_runtime(
+    *, for_server: bool = False, selected_story_id: Optional[str] = None
+):
     # Load configs and create logging context, optionally reset world for server session
     model_cfg_obj = load_model_config()
     story_cfg = load_story_config(selected_story_id)
@@ -2699,7 +2963,9 @@ def main() -> None:
     print("============================================================")
 
     # Bootstrap shared runtime bits
-    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(for_server=False)
+    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = (
+        _bootstrap_runtime(for_server=False)
+    )
 
     # Clean prompt dumps at run start; keep only latest per actor during run
     try:
@@ -2713,10 +2979,15 @@ def main() -> None:
     except Exception:
         pass
 
-
     # Emit function adapter
     def emit(*, event_type: str, actor=None, phase=None, turn=None, data=None) -> None:
-        ev = Event(event_type=EventType(event_type), actor=actor, phase=phase, turn=turn, data=dict(data or {}))
+        ev = Event(
+            event_type=EventType(event_type),
+            actor=actor,
+            phase=phase,
+            turn=turn,
+            data=dict(data or {}),
+        )
         log_ctx.bus.publish(ev)
 
     # Load weapon table into world before tools are used
@@ -2876,7 +3147,6 @@ class _EventBridge:
             except Exception:
                 pass
 
-
     async def send_control(self, typ: str, payload: dict | None = None) -> None:
         """Broadcast a control message to all clients (non-event)."""
         dead = []
@@ -2932,6 +3202,7 @@ _STATE = _ServerState()
 _SESSIONS: Dict[str, _ServerState] = {}
 _SESSIONS_LOCK = Lock()
 
+
 def _get_session(sid: Optional[str]) -> _ServerState:
     if not sid:
         return _STATE  # backward-compat: no SID -> legacy singleton
@@ -2942,22 +3213,23 @@ def _get_session(sid: Optional[str]) -> _ServerState:
             _SESSIONS[sid] = st
         return st
 
+
 def _parse_sid_from(req: Any) -> Optional[str]:
     sid = None
     # Try HTTP header first (REST)
     try:
-        hdrs = getattr(req, 'headers', None)
+        hdrs = getattr(req, "headers", None)
         if hdrs:
-            sid = str(hdrs.get('X-Session-ID') or '').strip()
+            sid = str(hdrs.get("X-Session-ID") or "").strip()
     except Exception:
         sid = None
     # Fallback to query string (?sid=...); works for WebSocket
     if not sid:
         try:
-            scope = getattr(req, 'scope', None) or {}
-            raw_qs = scope.get('query_string', b'') or b''
-            qs = parse_qs(raw_qs.decode('utf-8')) if raw_qs else {}
-            sid = (qs.get('sid', [''])[0] or '').strip()
+            scope = getattr(req, "scope", None) or {}
+            raw_qs = scope.get("query_string", b"") or b""
+            qs = parse_qs(raw_qs.decode("utf-8")) if raw_qs else {}
+            sid = (qs.get("sid", [""])[0] or "").strip()
         except Exception:
             sid = None
     return sid or None
@@ -2991,7 +3263,9 @@ class PauseGate:
     def is_paused_or_requested(self) -> bool:
         return bool(self.requested or self.paused)
 
-    async def wait_if_requested(self, *, after_actor: Optional[str] = None, round_val: Optional[int] = None) -> None:
+    async def wait_if_requested(
+        self, *, after_actor: Optional[str] = None, round_val: Optional[int] = None
+    ) -> None:
         if not self.requested:
             return
         # Enter paused state at the first safe point we encounter
@@ -3028,7 +3302,9 @@ class PauseGate:
                 pass
 
 
-async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) -> Tuple[bool, str]:
+async def _start_game_server_mode(
+    *, selected_story_id: Optional[str] = None
+) -> Tuple[bool, str]:
     """Start one game run in background if not already running."""
     if _STATE.is_running():
         return True, "already running"
@@ -3041,9 +3317,11 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
         except Exception:
             pass
 
-    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(
-        for_server=True,
-        selected_story_id=_STATE.selected_story_id or None,
+    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = (
+        _bootstrap_runtime(
+            for_server=True,
+            selected_story_id=_STATE.selected_story_id or None,
+        )
     )
     _STATE.log_ctx = log_ctx
     try:
@@ -3051,9 +3329,14 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
     except Exception as exc:
         # record error to structured logs but do not fail start
         try:
-            ev = Event(event_type=EventType.ERROR, data={
-                "message": "加载武器表失败", "error_type": "weapon_defs_load", "exception": str(exc)
-            })
+            ev = Event(
+                event_type=EventType.ERROR,
+                data={
+                    "message": "加载武器表失败",
+                    "error_type": "weapon_defs_load",
+                    "exception": str(exc),
+                },
+            )
             log_ctx.bus.publish(ev)
         except Exception:
             pass
@@ -3065,19 +3348,27 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
             world.set_arts_defs(arts)
         # Structured telemetry (server mode): record arts load result
         try:
-            ev = Event(event_type=EventType.SYSTEM, data={
-                "message": "术式表载入完成",
-                "arts_defs_count": len(arts or {}),
-                "arts_defs_keys": sorted(list((arts or {}).keys())),
-            })
+            ev = Event(
+                event_type=EventType.SYSTEM,
+                data={
+                    "message": "术式表载入完成",
+                    "arts_defs_count": len(arts or {}),
+                    "arts_defs_keys": sorted(list((arts or {}).keys())),
+                },
+            )
             log_ctx.bus.publish(ev)
         except Exception:
             pass
     except Exception as exc:
         try:
-            ev = Event(event_type=EventType.ERROR, data={
-                "message": "加载术式表失败", "error_type": "arts_defs_load", "exception": str(exc)
-            })
+            ev = Event(
+                event_type=EventType.ERROR,
+                data={
+                    "message": "加载术式表失败",
+                    "error_type": "arts_defs_load",
+                    "exception": str(exc),
+                },
+            )
             log_ctx.bus.publish(ev)
         except Exception:
             pass
@@ -3091,7 +3382,13 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
     _STATE.pause_gate = gate
 
     def emit(*, event_type: str, actor=None, phase=None, turn=None, data=None) -> None:
-        ev = Event(event_type=EventType(event_type), actor=actor, phase=phase, turn=turn, data=dict(data or {}))
+        ev = Event(
+            event_type=EventType(event_type),
+            actor=actor,
+            phase=phase,
+            turn=turn,
+            data=dict(data or {}),
+        )
         ev.correlation_id = _STATE.session_id
         # 1) structured/story logs
         try:
@@ -3100,7 +3397,9 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
             published = None
         # 2) WS broadcast with the normalised dict (sequence/timestamp assigned by bus)
         try:
-            payload = published.to_dict() if published else ev.to_dict()  # ev may lack seq/timestamp
+            payload = (
+                published.to_dict() if published else ev.to_dict()
+            )  # ev may lack seq/timestamp
             asyncio.create_task(_STATE.bridge.on_event(payload))
         except Exception:
             pass
@@ -3122,15 +3421,20 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
             # Pre-populate world & snapshot from story config so hello has positions
             try:
                 story_positions: Dict[str, Tuple[int, int]] = {}
+
                 def _ingest_positions(raw: Any) -> None:
                     if not isinstance(raw, dict):
                         return
                     for actor_name, pos in raw.items():
                         if isinstance(pos, (list, tuple)) and len(pos) >= 2:
                             try:
-                                story_positions[str(actor_name)] = (int(pos[0]), int(pos[1]))
+                                story_positions[str(actor_name)] = (
+                                    int(pos[0]),
+                                    int(pos[1]),
+                                )
                             except Exception:
                                 continue
+
                 if isinstance(story_cfg, dict):
                     _ingest_positions(story_cfg.get("initial_positions") or {})
                     _ingest_positions(story_cfg.get("positions") or {})
@@ -3195,13 +3499,19 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
                 story_cfg=story_cfg,
                 characters=characters,
                 world=world,
-                player_input_provider=lambda actor_name: _STATE.get_player_queue(str(actor_name)).get(),
+                player_input_provider=lambda actor_name: _STATE.get_player_queue(
+                    str(actor_name)
+                ).get(),
                 pause_gate=gate,
             )
         except Exception as exc:
             # Emit a terminal error event
             try:
-                err = Event(event_type=EventType.ERROR, phase="final", data={"message": f"runtime error: {exc}"})
+                err = Event(
+                    event_type=EventType.ERROR,
+                    phase="final",
+                    data={"message": f"runtime error: {exc}"},
+                )
                 log_ctx.bus.publish(err)
                 asyncio.create_task(_STATE.bridge.on_event(err.to_dict()))
             except Exception:
@@ -3211,15 +3521,19 @@ async def _start_game_server_mode(*, selected_story_id: Optional[str] = None) ->
             try:
                 # friendly end marker for clients
                 end_seq = _STATE.bridge.last_sequence + 1
-                asyncio.create_task(_STATE.bridge.on_event({
-                    "event_id": f"END-{_STATE.session_id}",
-                    "sequence": end_seq,
-                    "timestamp": "",
-                    "event_type": "system",
-                    "phase": "final",
-                    "data": {"message": "game finished"},
-                    "correlation_id": _STATE.session_id,
-                }))
+                asyncio.create_task(
+                    _STATE.bridge.on_event(
+                        {
+                            "event_id": f"END-{_STATE.session_id}",
+                            "sequence": end_seq,
+                            "timestamp": "",
+                            "event_type": "system",
+                            "phase": "final",
+                            "data": {"message": "game finished"},
+                            "correlation_id": _STATE.session_id,
+                        }
+                    )
+                )
             except Exception:
                 pass
             try:
@@ -3270,7 +3584,9 @@ async def _stop_game_server_mode() -> Tuple[bool, str]:
 
 
 # Multi-session variants operating on a specific _ServerState
-async def _start_game_for(state: _ServerState, *, selected_story_id: Optional[str] = None) -> Tuple[bool, str]:
+async def _start_game_for(
+    state: _ServerState, *, selected_story_id: Optional[str] = None
+) -> Tuple[bool, str]:
     if state.is_running():
         return True, "already running"
 
@@ -3280,18 +3596,25 @@ async def _start_game_for(state: _ServerState, *, selected_story_id: Optional[st
         except Exception:
             pass
 
-    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(
-        for_server=True,
-        selected_story_id=state.selected_story_id or None,
+    model_cfg, story_cfg, characters, weapons, world, log_ctx, root = (
+        _bootstrap_runtime(
+            for_server=True,
+            selected_story_id=state.selected_story_id or None,
+        )
     )
     state.log_ctx = log_ctx
     try:
         world.set_weapon_defs(weapons)
     except Exception as exc:
         try:
-            ev = Event(event_type=EventType.ERROR, data={
-                "message": "加载武器表失败", "error_type": "weapon_defs_load", "exception": str(exc)
-            })
+            ev = Event(
+                event_type=EventType.ERROR,
+                data={
+                    "message": "加载武器表失败",
+                    "error_type": "weapon_defs_load",
+                    "exception": str(exc),
+                },
+            )
             log_ctx.bus.publish(ev)
         except Exception:
             pass
@@ -3303,7 +3626,13 @@ async def _start_game_for(state: _ServerState, *, selected_story_id: Optional[st
     state.pause_gate = gate
 
     def emit(*, event_type: str, actor=None, phase=None, turn=None, data=None) -> None:
-        ev = Event(event_type=EventType(event_type), actor=actor, phase=phase, turn=turn, data=dict(data or {}))
+        ev = Event(
+            event_type=EventType(event_type),
+            actor=actor,
+            phase=phase,
+            turn=turn,
+            data=dict(data or {}),
+        )
         ev.correlation_id = state.session_id
         try:
             published = log_ctx.bus.publish(ev)
@@ -3329,15 +3658,20 @@ async def _start_game_for(state: _ServerState, *, selected_story_id: Optional[st
             await state.bridge.clear()
             try:
                 story_positions: Dict[str, Tuple[int, int]] = {}
+
                 def _ingest_positions(raw: Any) -> None:
                     if not isinstance(raw, dict):
                         return
                     for actor_name, pos in raw.items():
                         if isinstance(pos, (list, tuple)) and len(pos) >= 2:
                             try:
-                                story_positions[str(actor_name)] = (int(pos[0]), int(pos[1]))
+                                story_positions[str(actor_name)] = (
+                                    int(pos[0]),
+                                    int(pos[1]),
+                                )
                             except Exception:
                                 continue
+
                 if isinstance(story_cfg, dict):
                     _ingest_positions(story_cfg.get("initial_positions") or {})
                     _ingest_positions(story_cfg.get("positions") or {})
@@ -3400,12 +3734,18 @@ async def _start_game_for(state: _ServerState, *, selected_story_id: Optional[st
                 story_cfg=story_cfg,
                 characters=characters,
                 world=world,
-                player_input_provider=lambda actor_name: state.get_player_queue(str(actor_name)).get(),
+                player_input_provider=lambda actor_name: state.get_player_queue(
+                    str(actor_name)
+                ).get(),
                 pause_gate=gate,
             )
         except Exception as exc:
             try:
-                err = Event(event_type=EventType.ERROR, phase="final", data={"message": f"runtime error: {exc}"})
+                err = Event(
+                    event_type=EventType.ERROR,
+                    phase="final",
+                    data={"message": f"runtime error: {exc}"},
+                )
                 log_ctx.bus.publish(err)
                 asyncio.create_task(state.bridge.on_event(err.to_dict()))
             except Exception:
@@ -3414,15 +3754,19 @@ async def _start_game_for(state: _ServerState, *, selected_story_id: Optional[st
             state.running = False
             try:
                 end_seq = state.bridge.last_sequence + 1
-                asyncio.create_task(state.bridge.on_event({
-                    "event_id": f"END-{state.session_id}",
-                    "sequence": end_seq,
-                    "timestamp": "",
-                    "event_type": "system",
-                    "phase": "final",
-                    "data": {"message": "game finished"},
-                    "correlation_id": state.session_id,
-                }))
+                asyncio.create_task(
+                    state.bridge.on_event(
+                        {
+                            "event_id": f"END-{state.session_id}",
+                            "sequence": end_seq,
+                            "timestamp": "",
+                            "event_type": "system",
+                            "phase": "final",
+                            "data": {"message": "game finished"},
+                            "correlation_id": state.session_id,
+                        }
+                    )
+                )
             except Exception:
                 pass
             try:
@@ -3467,10 +3811,11 @@ async def _stop_game_for(state: _ServerState) -> Tuple[bool, str]:
     return True, "stopped"
 
 
-
 def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] = None):
     if FastAPI is None or uvicorn is None:
-        raise RuntimeError("FastAPI/uvicorn not installed. Install fastapi and uvicorn[standard].")
+        raise RuntimeError(
+            "FastAPI/uvicorn not installed. Install fastapi and uvicorn[standard]."
+        )
     app = FastAPI()
 
     # CORS if requested (for cross-origin frontends like dev servers)
@@ -3524,12 +3869,16 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                 # details: list of strings
                 det = scene.get("details")
                 if det is not None:
-                    if not isinstance(det, list) or not all(isinstance(x, str) for x in det):
+                    if not isinstance(det, list) or not all(
+                        isinstance(x, str) for x in det
+                    ):
                         return False, "scene.details must be an array of strings"
                 # objectives: list of strings
                 objs = scene.get("objectives")
                 if objs is not None:
-                    if not isinstance(objs, list) or not all(isinstance(x, str) for x in objs):
+                    if not isinstance(objs, list) or not all(
+                        isinstance(x, str) for x in objs
+                    ):
                         return False, "scene.objectives must be an array of strings"
             # initial_positions: { name: [x,y] }
             ip = story.get("initial_positions")
@@ -3540,9 +3889,13 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                     if not (isinstance(v, (list, tuple)) and len(v) >= 2):
                         return False, f"initial_positions.{k} must be [x,y]"
                     try:
-                        int(v[0]); int(v[1])
+                        int(v[0])
+                        int(v[1])
                     except Exception:
-                        return False, f"initial_positions.{k} coordinates must be integers"
+                        return (
+                            False,
+                            f"initial_positions.{k} coordinates must be integers",
+                        )
             return True, "ok"
 
         if not isinstance(obj, dict):
@@ -3564,14 +3917,28 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
     def _validate_weapons(obj: dict) -> tuple[bool, str]:
         if not isinstance(obj, dict):
             return False, "weapons must be an object"
-        allowed = {"label", "reach_steps", "skill", "defense_skill", "damage", "damage_type"}
+        allowed = {
+            "label",
+            "reach_steps",
+            "skill",
+            "defense_skill",
+            "damage",
+            "damage_type",
+        }
         for wid, w in obj.items():
             if not isinstance(w, dict):
                 return False, f"weapon {wid} must be an object"
             extra = set(w.keys()) - allowed
             if extra:
                 return False, f"weapon {wid} has unknown keys: {sorted(extra)}"
-            for req in ("label", "reach_steps", "skill", "defense_skill", "damage", "damage_type"):
+            for req in (
+                "label",
+                "reach_steps",
+                "skill",
+                "defense_skill",
+                "damage",
+                "damage_type",
+            ):
                 if req not in w:
                     return False, f"weapon {wid} missing required field '{req}'"
             try:
@@ -3582,6 +3949,7 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                 return False, f"weapon {wid}.reach_steps must be an integer"
             dmg = str(w.get("damage") or "").lower()
             import re as _re
+
             if not _re.fullmatch(r"\d*d\d+(?:[+-]\d+)?", dmg):
                 return False, f"weapon {wid}.damage must be NdM[+/-K], got '{dmg}'"
         return True, "ok"
@@ -3608,7 +3976,10 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             if not isinstance(data, dict):
                 return False, f"character {nm} must be an object"
             if "dnd" in data:
-                return False, f"character {nm}: 'dnd' block is not supported (use 'coc')"
+                return (
+                    False,
+                    f"character {nm}: 'dnd' block is not supported (use 'coc')",
+                )
         return True, "ok"
 
     def _atomic_write(path: Path, obj: dict) -> None:
@@ -3625,7 +3996,9 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         try:
             p = _cfg_path(str(name))
         except KeyError:
-            return JSONResponse({"ok": False, "message": f"unsupported config: {name}"}, status_code=404)
+            return JSONResponse(
+                {"ok": False, "message": f"unsupported config: {name}"}, status_code=404
+            )
         data = _json_load_text(p)
         # Hard delete policy: never expose legacy active_id back to clients
         if str(name) == "story" and isinstance(data, dict) and ("active_id" in data):
@@ -3642,11 +4015,15 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         try:
             p = _cfg_path(name)
         except KeyError:
-            return JSONResponse({"ok": False, "message": f"unsupported config: {name}"}, status_code=404)
+            return JSONResponse(
+                {"ok": False, "message": f"unsupported config: {name}"}, status_code=404
+            )
         data = dict(payload or {})
         # Hard delete: reject legacy active_id even if provided
         if name == "story" and isinstance(data, dict) and ("active_id" in data):
-            return JSONResponse({"ok": False, "message": "active_id is not supported"}, status_code=422)
+            return JSONResponse(
+                {"ok": False, "message": "active_id is not supported"}, status_code=422
+            )
         # validate by type
         ok = True
         msg = "ok"
@@ -3664,7 +4041,9 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         try:
             _atomic_write(p, data)
         except Exception as exc:
-            return JSONResponse({"ok": False, "message": f"write failed: {exc}"}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "message": f"write failed: {exc}"}, status_code=500
+            )
         return {"ok": True}
 
     # Helper: list available story ids from config (container -> keys; single -> ['default'] or [])
@@ -3687,7 +4066,11 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
     async def api_stories(request: Request):  # type: ignore[no-redef]
         ids = _list_story_ids()
         st = _get_session(_parse_sid_from(request))
-        sel = st.selected_story_id if st.selected_story_id in ids else (ids[0] if ids else "")
+        sel = (
+            st.selected_story_id
+            if st.selected_story_id in ids
+            else (ids[0] if ids else "")
+        )
         return {"ok": True, "ids": ids, "selected": sel}
 
     @app.post("/api/select_story")
@@ -3695,10 +4078,14 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         try:
             sid = str(payload.get("id") or "").strip()
         except Exception:
-            return JSONResponse({"ok": False, "message": "invalid payload"}, status_code=400)
+            return JSONResponse(
+                {"ok": False, "message": "invalid payload"}, status_code=400
+            )
         ids = _list_story_ids()
         if not sid or sid not in ids:
-            return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
+            return JSONResponse(
+                {"ok": False, "message": "unknown story id"}, status_code=400
+            )
         st = _get_session(_parse_sid_from(request))
         st.selected_story_id = sid
         return {"ok": True, "selected": sid}
@@ -3713,7 +4100,9 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         # Resolve story id
         ids = _list_story_ids()
         if not ids:
-            return JSONResponse({"ok": False, "message": "no stories available"}, status_code=404)
+            return JSONResponse(
+                {"ok": False, "message": "no stories available"}, status_code=404
+            )
         sid = None
         try:
             sid = str(id or "").strip() or None
@@ -3726,13 +4115,17 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         if not sid:
             sid = ids[0]
         if sid not in ids:
-            return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
+            return JSONResponse(
+                {"ok": False, "message": "unknown story id"}, status_code=400
+            )
 
         # Build a fresh world snapshot mirroring server bootstrap logic, but without running the game loop
         try:
-            model_cfg, story_cfg, characters, weapons, world, log_ctx, root = _bootstrap_runtime(
-                for_server=True,
-                selected_story_id=sid,
+            model_cfg, story_cfg, characters, weapons, world, log_ctx, root = (
+                _bootstrap_runtime(
+                    for_server=True,
+                    selected_story_id=sid,
+                )
             )
             # Make weapon defs available to snapshot consumers
             try:
@@ -3749,17 +4142,23 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             # Ingest starting positions from story config (supports initial_positions/positions and initial.positions)
             story_positions: Dict[str, Tuple[int, int]] = {}
             try:
-                _parse_story_positions(story_cfg.get("initial_positions") or {}, story_positions)
+                _parse_story_positions(
+                    story_cfg.get("initial_positions") or {}, story_positions
+                )
             except Exception:
                 pass
             try:
-                _parse_story_positions(story_cfg.get("positions") or {}, story_positions)
+                _parse_story_positions(
+                    story_cfg.get("positions") or {}, story_positions
+                )
             except Exception:
                 pass
             try:
                 initial_section = story_cfg.get("initial")
                 if isinstance(initial_section, dict):
-                    _parse_story_positions(initial_section.get("positions") or {}, story_positions)
+                    _parse_story_positions(
+                        initial_section.get("positions") or {}, story_positions
+                    )
             except Exception:
                 pass
             for nm, (x, y) in story_positions.items():
@@ -3775,17 +4174,42 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
 
             # Apply scene fields (name/objectives/details/weather/time)
             try:
-                scene_cfg = story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
-                scene_name, scene_objectives, scene_details, scene_weather, scene_time_min = normalize_scene_cfg(scene_cfg)
-                if any([scene_name, scene_objectives, scene_details, scene_weather, scene_time_min is not None]):
-                    apply_scene_to_world(world, scene_name, scene_objectives, scene_details, scene_weather, scene_time_min)
+                scene_cfg = (
+                    story_cfg.get("scene") if isinstance(story_cfg, dict) else {}
+                )
+                (
+                    scene_name,
+                    scene_objectives,
+                    scene_details,
+                    scene_weather,
+                    scene_time_min,
+                ) = normalize_scene_cfg(scene_cfg)
+                if any(
+                    [
+                        scene_name,
+                        scene_objectives,
+                        scene_details,
+                        scene_weather,
+                        scene_time_min is not None,
+                    ]
+                ):
+                    apply_scene_to_world(
+                        world,
+                        scene_name,
+                        scene_objectives,
+                        scene_details,
+                        scene_weather,
+                        scene_time_min,
+                    )
             except Exception:
                 pass
 
             snap = world.snapshot()
             return {"ok": True, "selected": sid, "state": snap}
         except Exception as exc:
-            return JSONResponse({"ok": False, "message": f"preview failed: {exc}"}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "message": f"preview failed: {exc}"}, status_code=500
+            )
 
     @app.post("/api/start")
     async def api_start(payload: dict | None = None, request: Request = None):  # type: ignore[no-redef]
@@ -3795,8 +4219,12 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             try:
                 await st.pause_gate.resume()
             except Exception:
-                return JSONResponse({"ok": False, "message": "resume failed"}, status_code=500)
-            return JSONResponse({"ok": True, "message": "resumed", "session_id": st.session_id})
+                return JSONResponse(
+                    {"ok": False, "message": "resume failed"}, status_code=500
+                )
+            return JSONResponse(
+                {"ok": True, "message": "resumed", "session_id": st.session_id}
+            )
         # Otherwise, normal start semantics
         sid = None
         try:
@@ -3806,11 +4234,17 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         if sid:
             ids = _list_story_ids()
             if sid not in ids:
-                return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
+                return JSONResponse(
+                    {"ok": False, "message": "unknown story id"}, status_code=400
+                )
             st.selected_story_id = sid
-        ok, msg = await _start_game_for(st, selected_story_id=st.selected_story_id or None)
+        ok, msg = await _start_game_for(
+            st, selected_story_id=st.selected_story_id or None
+        )
         code = 200 if ok else 409
-        return JSONResponse({"ok": ok, "message": msg, "session_id": st.session_id}, status_code=code)
+        return JSONResponse(
+            {"ok": ok, "message": msg, "session_id": st.session_id}, status_code=code
+        )
 
     @app.post("/api/stop")
     async def api_stop(request: Request):  # type: ignore[no-redef]
@@ -3823,9 +4257,13 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
                 st.pause_gate.request()
             except Exception:
                 pass
-            return JSONResponse({"ok": True, "message": "pausing", "session_id": st.session_id})
+            return JSONResponse(
+                {"ok": True, "message": "pausing", "session_id": st.session_id}
+            )
         # Not running -> keep idempotent success
-        return JSONResponse({"ok": True, "message": "not running", "session_id": st.session_id})
+        return JSONResponse(
+            {"ok": True, "message": "not running", "session_id": st.session_id}
+        )
 
     @app.post("/api/restart")
     async def api_restart(payload: dict | None = None, request: Request = None):  # type: ignore[no-redef]
@@ -3854,11 +4292,17 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         if sid:
             ids = _list_story_ids()
             if sid not in ids:
-                return JSONResponse({"ok": False, "message": "unknown story id"}, status_code=400)
+                return JSONResponse(
+                    {"ok": False, "message": "unknown story id"}, status_code=400
+                )
             st.selected_story_id = sid
-        ok, msg = await _start_game_for(st, selected_story_id=st.selected_story_id or None)
+        ok, msg = await _start_game_for(
+            st, selected_story_id=st.selected_story_id or None
+        )
         code = 200 if ok else 400
-        return JSONResponse({"ok": ok, "message": msg, "session_id": st.session_id}, status_code=code)
+        return JSONResponse(
+            {"ok": ok, "message": msg, "session_id": st.session_id}, status_code=code
+        )
 
     @app.get("/api/state")
     async def api_state(request: Request):  # type: ignore[no-redef]
@@ -3879,18 +4323,26 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
         """
         st = _get_session(_parse_sid_from(request))
         if not st.is_running():
-            return JSONResponse({"ok": False, "message": "game not running"}, status_code=400)
+            return JSONResponse(
+                {"ok": False, "message": "game not running"}, status_code=400
+            )
         try:
             name = str(payload.get("name") or "").strip()
             text = str(payload.get("text") or "").strip()
         except Exception:
-            return JSONResponse({"ok": False, "message": "invalid payload"}, status_code=400)
+            return JSONResponse(
+                {"ok": False, "message": "invalid payload"}, status_code=400
+            )
         if not name or not text:
-            return JSONResponse({"ok": False, "message": "name/text required"}, status_code=400)
+            return JSONResponse(
+                {"ok": False, "message": "name/text required"}, status_code=400
+            )
         try:
             await st.get_player_queue(name).put(text)
         except Exception as exc:
-            return JSONResponse({"ok": False, "message": f"queue error: {exc}"}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "message": f"queue error: {exc}"}, status_code=500
+            )
         return JSONResponse({"ok": True})
 
     @app.websocket("/ws/events")
@@ -3906,13 +4358,15 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
             except Exception:
                 since = 0
             # hello + replay
-            await ws.send_json({
-                "type": "hello",
-                "last_sequence": st.bridge.last_sequence,
-                "state": st.last_snapshot,
-                "session_id": st.session_id,
-                "paused": bool(st.pause_gate.paused) if st.pause_gate else False,
-            })
+            await ws.send_json(
+                {
+                    "type": "hello",
+                    "last_sequence": st.bridge.last_sequence,
+                    "state": st.last_snapshot,
+                    "session_id": st.session_id,
+                    "paused": bool(st.pause_gate.paused) if st.pause_gate else False,
+                }
+            )
             for ev in st.bridge.replay_since(since):
                 try:
                     await ws.send_json({"type": "event", "event": ev})
@@ -3936,7 +4390,13 @@ def _make_app(web_dir: Optional[Path], *, allow_cors_from: Optional[list[str]] =
     return app
 
 
-def _run_server(host: str, port: int, web_dir: Optional[str], *, allow_cors_from: Optional[list[str]] = None) -> None:
+def _run_server(
+    host: str,
+    port: int,
+    web_dir: Optional[str],
+    *,
+    allow_cors_from: Optional[list[str]] = None,
+) -> None:
     wd = Path(web_dir) if web_dir else (project_root() / "web")
     app = _make_app(wd, allow_cors_from=allow_cors_from)
     uvicorn.run(app, host=host, port=port, reload=False, log_level="info")
@@ -3949,11 +4409,23 @@ def main_once() -> None:
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="NPC Talk Demo server/CLI")
-    p.add_argument("--once", action="store_true", help="Run one game in CLI mode and exit")
-    p.add_argument("--host", default="127.0.0.1", help="Server host (default 127.0.0.1)")
+    p.add_argument(
+        "--once", action="store_true", help="Run one game in CLI mode and exit"
+    )
+    p.add_argument(
+        "--host", default="127.0.0.1", help="Server host (default 127.0.0.1)"
+    )
     p.add_argument("--port", type=int, default=8000, help="Server port (default 8000)")
-    p.add_argument("--web-dir", default=str(project_root() / "web"), help="Directory to serve as frontend (default ./web)")
-    p.add_argument("--cors", default="", help="Comma separated origins to allow CORS (empty means disabled)")
+    p.add_argument(
+        "--web-dir",
+        default=str(project_root() / "web"),
+        help="Directory to serve as frontend (default ./web)",
+    )
+    p.add_argument(
+        "--cors",
+        default="",
+        help="Comma separated origins to allow CORS (empty means disabled)",
+    )
     return p.parse_args(argv)
 
 
@@ -3963,7 +4435,9 @@ if __name__ == "__main__":
         main_once()
     else:
         if FastAPI is None or uvicorn is None:
-            print("FastAPI/uvicorn is required for server mode. Install with: pip install fastapi 'uvicorn[standard]'")
+            print(
+                "FastAPI/uvicorn is required for server mode. Install with: pip install fastapi 'uvicorn[standard]'"
+            )
             sys.exit(2)
         allow_origins = [o.strip() for o in args.cors.split(",") if o.strip()] or None
         _run_server(args.host, args.port, args.web_dir, allow_cors_from=allow_origins)

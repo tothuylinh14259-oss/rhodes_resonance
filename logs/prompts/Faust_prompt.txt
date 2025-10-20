@@ -4,8 +4,6 @@
 外观特征：暗蓝短发与绿瞳，面颊带伤痕，穿着沉色披风和轻便装具，手持巨型弩与可折叠弩炮组件。
 常用语气/台词：我希望哪怕是一个人，你也要活下去。 / 目标确认——浮士德狙击开始。
 当前立场提示（仅你视角）：Mephisto:+80（挚友）；Doctor:-80（死敌）；Amiya:-85（死敌）
-可用武器：faust_crossbow(触及12步, 1d8)
-可用术式：MP 10/10；无
 对话要求：
 - 先用中文说1-2句对白/想法/微动作，符合人设。
 - 明确指令优先：若本回合的私有提示中出现“优先处理对白”，你应当首先回应，不能忽略或转移话题。
@@ -47,49 +45,9 @@ CALL_TOOL advance_position({"name": "Texas", "target": [1, 1], "steps": 1, "reas
 环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
 环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
 目标：冲突终结(pending)
-坐标：Amiya(0, 1); Doctor(4, 0); Faust(7, 2); Mephisto(4, -1)
-角色：Doctor(HP 7/11); Amiya(HP 10/10); Mephisto(HP 8/11); Faust(HP 12/12)
-
---- [recap] ---
-系统回顾（供 Faust 决策）
-最近播报：
-- Mephisto: 白发少年微微侧头，指尖轻敲手杖，薄唇勾起病态的弧度。
-
-“……心跳？呵，那就让我的乐章为你数拍子。”
-
-)
-- Mephisto[tool]: 对抗：Mephisto(Arts_Control)[hard] vs Doctor(Dodge)[fail] -> Mephisto 胜
-伤害：1d6 -> 1
-Doctor 受到 1 伤害，HP 7/11
-- Amiya: 阿米娅瞳孔微缩，耳尖轻颤，声音压得极低却带着不容置疑的坚定：“博士……别再硬撑了。”
-
-她指尖亮起淡金源石辉光，一步踏前，将束缚术式直接锁向Mephisto——那是此刻对博士威胁最大的敌人。  
-)
-- Amiya[tool]: 对抗：Amiya(Arts_Control)[regular] vs Mephisto(Arts_Resist)[regular] -> Mephisto 胜
-- Doctor: （我压低兜帽，指节因过度用力而发白，声音冷得像冰渣）  
-“……阿米娅，别浪费术式了。把路让开——我来解决他。”  
-
-)
-- Doctor[tool]: 对抗：Doctor(Fighting_Blade)[fail] vs Mephisto(Dodge)[fail] -> Mephisto 胜
+坐标：Amiya(0, 1); Doctor(0, 0); Faust(12, 2); Mephisto(7, -1)
+角色：Doctor(HP 11/11); Amiya(HP 10/10); Mephisto(HP 11/11); Faust(HP 12/12)
 
 --- [reach_preview] ---
 作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。
-可及武器+目标（faust_crossbow，触及 12步）：Doctor(5步), Mephisto(6步), Amiya(8步)
-
---- [private] ---
-优先处理对白（仅你可见）：
-- 说话者：Doctor
-- 内容：（我压低兜帽，指节因过度用力而发白，声音冷得像冰渣）  
-“……阿米娅，别浪费术式了。把路让开——我来解决他。”  
-
-)
-- 你对该角色的关系：-80（死敌）
-回合资源（仅你可见）：
-- 移动：6/6 步
-- 动作：可用；附赠动作：可用；反应：可用
-作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。
-有效行动要求：存在敌对关系时，每回合必须进行一次有效行动；对超出触及范围的 perform_attack 视为无效。
-距离提示（仅你可见）：
-- Doctor：5步
-- Mephisto：6步
-- Amiya：8步
+可及武器+目标（faust_crossbow，触及 12步）：Mephisto(8步)
