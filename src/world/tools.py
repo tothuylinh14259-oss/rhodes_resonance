@@ -1772,9 +1772,11 @@ def attack_with_weapon(
     except Exception:
         reach_steps = int(DEFAULT_REACH_STEPS)
 
-    # Branch A: legacy schema (damage_expr/ability/skill)
-    legacy = ("damage_expr" in w) or ("ability" in w) or ("skill" in w)
-    if legacy:
+    # Choose schema: prefer extended when extended keys present
+    is_extended = ("damage" in w) or ("defense_skill" in w) or ("damage_type" in w)
+    # legacy if classic fields exist AND not extended
+    is_legacy = ("damage_expr" in w) or ("ability" in w)
+    if is_legacy and not is_extended:
         ability = str(w.get("ability", "STR")).upper()
         # damage_expr is now required for legacy weapons; no implicit default.
         if not str(w.get("damage_expr") or "").strip():
