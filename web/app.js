@@ -1563,8 +1563,8 @@
     } else {
       if ((cfg.weapons||{})[id]) { alert('已存在同名武器 ID'); return; }
     }
-    // Default damage no longer includes attribute bonus; use plain dice only
-    (cfg.weapons||(cfg.weapons={}))[id] = { label:'', reach_steps:1, ability:'STR', damage_expr:'1d4' };
+    // 新增武器不再自动填充伤害表达式；留空以提示用户必填
+    (cfg.weapons||(cfg.weapons={}))[id] = { label:'', reach_steps:1, ability:'STR', damage_expr:'' };
     renderWeaponsForm(cfg.weapons); markDirty('weapons');
   };
 })();

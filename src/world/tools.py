@@ -1776,8 +1776,13 @@ def attack_with_weapon(
     legacy = ("damage_expr" in w) or ("ability" in w) or ("skill" in w)
     if legacy:
         ability = str(w.get("ability", "STR")).upper()
-        # Default damage no longer includes attribute bonus; use plain dice only
-        damage_expr = str(w.get("damage_expr", "1d4"))
+        # damage_expr is now required for legacy weapons; no implicit default.
+        if not str(w.get("damage_expr") or "").strip():
+            return ToolResponse(
+                content=[TextBlock(type="text", text=f"武器缺少伤害表达式 damage_expr: {weapon}")],
+                metadata={"ok": False, "error_type": "weapon_damage_expr_missing", "weapon_id": weapon},
+            )
+        damage_expr = str(w.get("damage_expr"))
         base_mod = _coc_ability_mod_for(attacker, ability)
         # Distance string helper
         def _fmt_distance(steps: Optional[int]) -> str:
