@@ -115,7 +115,7 @@ DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具：\n"
     "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；仅能对“可及目标”使用。攻击不会自动靠近；若距离不足必须先调用 advance_position，否则视为违规。\n"
     "- cast_arts(attacker, art, target, reason)：施放源石技艺；命中/效果基于术式的 cast_skill（如 Arts_Control/Arts_Offense）对目标的 Arts_Resist 进行对抗；仅能对 reach_preview 中“可及术式+目标”使用；无需提供 MP 数值（表达式不依赖 MP/POW），系统按术式规则自动结算。带 line-of-sight 的术式需要视线。\n"
-    "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
+    "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；target 必须为 [x,y] 数组；必须提供行动理由。\n"
     "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
     "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
     "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
@@ -126,7 +126,7 @@ DEFAULT_PROMPT_TOOL_GUIDE = (
 DEFAULT_PROMPT_EXAMPLE = (
     "输出示例：\n"
     "阿米娅压低声音：'靠近目标位置。'\n"
-    'CALL_TOOL advance_position({{"name": "Amiya", "target": {{"x": 1, "y": 1}}, "steps": 2, "reason": "接近掩体"}})\n'
+    'CALL_TOOL advance_position({{"name": "Amiya", "target": [1, 1], "steps": 2, "reason": "接近掩体"}})\n'
 )
 
 DEFAULT_PROMPT_GUARD_GUIDE = (
@@ -142,7 +142,7 @@ DEFAULT_PROMPT_GUARD_EXAMPLE = (
     "德克萨斯侧身一步：'我来护你。'\n"
     'CALL_TOOL set_protection({{"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"}})\n'
     "德克萨斯快步靠近：\n"
-    'CALL_TOOL advance_position({{"name": "Texas", "target": {{"x": 1, "y": 1}}, "steps": 1, "reason": "保持相邻以便拦截"}})\n'
+    'CALL_TOOL advance_position({{"name": "Texas", "target": [1, 1], "steps": 1, "reason": "保持相邻以便拦截"}})\n'
 )
 
 DEFAULT_PROMPT_TEMPLATE = (

@@ -2614,16 +2614,6 @@ def _coerce_nonneg_int(v: Any) -> Optional[int]:
 
 def _normalize_params_for(tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
     p = dict(params or {})
-    # advance_position: target may be dict {x,y}
-    if tool == "advance_position":
-        tgt = p.get("target")
-        if isinstance(tgt, dict):
-            x = tgt.get("x")
-            y = tgt.get("y")
-            try:
-                p["target"] = (int(x), int(y))
-            except Exception:
-                pass
     # cast_arts: ignore any provided mp_spent (统一由系统自动结算，防止模型传入该参数)
     if tool == "cast_arts":
         if "mp_spent" in p:
@@ -2654,10 +2644,29 @@ def _validated_call(tool_name: str, fn, params: Dict[str, Any]) -> ToolResponse:
                 return ToolResponse(content=[TextBlock(type="text", text=f"参数需为非负整数：{k}")], metadata={"ok": False, "error_type": "invalid_type", "param": k})
             p[k] = iv
 
-    # 3) actor_keys to str
+    # 3) extra validation per tool
+    # 3.1) actor_keys to str
     for k in spec.actor_keys:
         if k in p and p[k] is not None:
             p[k] = str(p[k])
+
+    # 3.2) strict type for advance_position.target: must be array [x,y]
+    if tool_name == "advance_position":
+        tgt = p.get("target")
+        # only accept list/tuple of length >= 2; explicitly reject dict/object
+        if not (isinstance(tgt, (list, tuple)) and len(tgt) >= 2):
+            return ToolResponse(
+                content=[TextBlock(type="text", text="参数错误：advance_position.target 必须为 [x,y] 数组")],
+                metadata={"ok": False, "error_type": "invalid_type", "param": "target"},
+            )
+        try:
+            tx, ty = int(tgt[0]), int(tgt[1])
+            p["target"] = (tx, ty)
+        except Exception:
+            return ToolResponse(
+                content=[TextBlock(type="text", text="参数错误：target 元素必须为整数，如 [1, 1]")],
+                metadata={"ok": False, "error_type": "invalid_type", "param": "target"},
+            )
 
     # 4) participants policy
     if WORLD.participants:

@@ -29,7 +29,7 @@ Prompt 组合
 
 工具外观（actions/npc.py）
 - perform_attack(attacker, defender, weapon, reason)
-- advance_position(name, target[x,y], steps, reason)
+- advance_position(name, target:[x,y], steps, reason)  // target 必须为 [x,y]
 - adjust_relation(a, b, value, reason)
 - transfer_item(target, item, n, reason)
 - set_protection(guardian, protectee, reason)

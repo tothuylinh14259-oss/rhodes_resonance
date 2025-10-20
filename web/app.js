@@ -683,8 +683,9 @@
               return `${a} -> ${d} 使用 ${w}`;
             }
             if (tool === 'advance_position') {
-              const n = params.name || actor; const tgt = params.target || {}; const steps = params.steps != null ? params.steps : '';
-              const xy = (tgt && typeof tgt === 'object') ? `(${tgt.x},${tgt.y})` : String(tgt || '');
+              const n = params.name || actor; const tgt = params.target; const steps = params.steps != null ? params.steps : '';
+              // Enforce [x,y] array for display; fall back to raw string if malformed
+              const xy = (Array.isArray(tgt) && tgt.length >= 2) ? `(${tgt[0]},${tgt[1]})` : String(tgt || '');
               return `${n} 向 ${xy} 前进 ${steps} 步`;
             }
             if (tool === 'adjust_relation') {
