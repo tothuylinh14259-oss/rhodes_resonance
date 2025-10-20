@@ -105,18 +105,19 @@ DEFAULT_PROMPT_RULES = (
     "- 明确指令优先：若本回合的私有提示中出现“优先处理对白”，你应当首先回应，不能忽略或转移话题。\n"
     '- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({{"key": "value"}}))。\n'
     "- 作战规则（硬性）：只能对reach_preview里的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先用 advance_position 进入触及范围后再发动攻击。\n"
-    "- 有效行动要求：当存在敌对关系（关系<=-10）时，每回合至少进行一次有效行动（advance_position/perform_attack/transfer_item/set_protection/clear_protection）。对超出触及范围的 perform_attack 视为无效行动。\n"
+    "- 有效行动要求：当存在敌对关系（关系<=-10）时，每回合至少进行一次有效行动。\n"
     "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
     "- 若必须违背既定关系行事或违反作战硬规则，请在对白中说明充分理由，并拒绝执行，同时给出更稳妥的替代行动。\n"
     '- 不要输出任何"系统提示"或括号内的系统旁白；只输出对白与 CALL_TOOL。\n'
+    '- 没有generate_response 这个工具，千万不能用。'
     "- 参与者名称（仅可用）：{allowed_names}\n"
 )
 
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具（必须提供行动理由）：\n"
     "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击，仅能对“可及目标”使用。\n"
-    "- cast_arts(attacker, art, target, reason)：施放源石技艺，仅能对“可及目标”使用。。"
-    "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；target 必须为 [x,y] 数组。\n"
+    "- cast_arts(attacker, art, target, reason)：施放源石技艺，仅能对“可及目标”使用。"
+    "- advance_position(name, target:[x,y], reason)：朝指定坐标接近（自动使用剩余移动力）；target 必须为 [x,y] 数组。\n"
     "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值。\n"
     "- transfer_item(target, item, n=1, reason)：移交或分配物资。\n"
     "- set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。\n"
@@ -127,7 +128,7 @@ DEFAULT_PROMPT_TOOL_GUIDE = (
 DEFAULT_PROMPT_EXAMPLE = (
     "输出示例：\n"
     "阿米娅压低声音：'靠近目标位置。'\n"
-    'CALL_TOOL advance_position({{"name": "Amiya", "target": [1, 1], "steps": 2, "reason": "接近掩体"}})\n'
+    'CALL_TOOL advance_position({{"name": "Amiya", "target": [1, 1], "reason": "接近掩体"}})\n'
 )
 
 DEFAULT_PROMPT_GUARD_GUIDE = (
@@ -143,7 +144,7 @@ DEFAULT_PROMPT_GUARD_EXAMPLE = (
     "德克萨斯侧身一步：'我来护你。'\n"
     'CALL_TOOL set_protection({{"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"}})\n'
     "德克萨斯快步靠近：\n"
-    'CALL_TOOL advance_position({{"name": "Texas", "target": [1, 1], "steps": 1, "reason": "保持相邻以便拦截"}})\n'
+    'CALL_TOOL advance_position({{"name": "Texas", "target": [1, 1], "reason": "保持相邻以便拦截"}})\n'
 )
 
 DEFAULT_PROMPT_TEMPLATE = (
@@ -537,9 +538,14 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         )
         return resp
 
-    def advance_position(name, target, steps, reason: str = ""):
+    def advance_position(name, target, reason: str = ""):
+        """Move towards target using available movement; no `steps` parameter exposed.
+
+        - Delegates to world.move_towards(name, target) which auto-uses remaining
+          movement and accounts for per-turn tokens.
+        """
         fn = _VALIDATED.get("advance_position") or (lambda **p: world.move_towards(**p))
-        resp = fn(name=name, target=target, steps=steps)
+        resp = fn(name=name, target=target)
         meta = resp.metadata or {}
         reason_text = str(reason).strip() or "未提供"
         try:
@@ -550,7 +556,7 @@ def make_npc_actions(*, world: Any) -> Tuple[List[object], Dict[str, object]]:
         except Exception:
             pass
         _log_action(
-            f"move {name} -> {target} steps={steps} moved={meta.get('moved')} remaining={meta.get('remaining')} reason={reason_text}"
+            f"move {name} -> {target} steps=auto moved={meta.get('moved')} remaining={meta.get('remaining')} reason={reason_text}"
         )
         return resp
 

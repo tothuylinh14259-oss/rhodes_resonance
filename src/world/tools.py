@@ -539,8 +539,15 @@ def get_reach_steps(name: str) -> int:
     return max(1, int(DEFAULT_REACH_STEPS))
 
 
-def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse:
-    """Move an actor toward target grid up to `steps` 4-way steps."""
+def move_towards(name: str, target: Tuple[int, int], steps: Optional[int] = None) -> ToolResponse:
+    """Move an actor toward target grid using available movement.
+
+    - If `steps` is None, use remaining movement this turn (turn_state.move_left);
+      if not initialized for this actor, fall back to their move speed steps.
+    - Movement cannot exceed the available movement for this call; leftover
+      movement for the turn is reduced accordingly.
+    - Voluntary movement is blocked for dying/dead actors (unchanged behavior).
+    """
     if WORLD.participants and str(name) not in WORLD.participants:
         pos = WORLD.positions.get(str(name)) or (0, 0)
         return ToolResponse(
@@ -557,7 +564,26 @@ def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse
             content=[TextBlock(type="text", text=f"{name} 处于濒死/倒地，无法移动。")],
             metadata={"ok": False, "moved": 0, "position": list(pos), "blocked": True},
         )
-    steps = max(0, int(steps))
+    # Determine how many steps are allowed for this move
+    nm = str(name)
+    ts = WORLD.turn_state.setdefault(nm, {})
+    try:
+        default_steps = int(WORLD.speeds.get(nm, _default_move_steps()))
+    except Exception:
+        default_steps = _default_move_steps()
+    try:
+        left = int(ts.get("move_left", default_steps))
+    except Exception:
+        left = default_steps
+
+    if steps is None:
+        steps_eff = left
+    else:
+        try:
+            steps_eff = int(steps)
+        except Exception:
+            steps_eff = 0
+    steps = max(0, int(min(max(0, steps_eff), max(0, left))))
     if steps == 0:
         pos = WORLD.positions.get(str(name)) or (0, 0)
         return ToolResponse(
@@ -577,6 +603,13 @@ def move_towards(name: str, target: Tuple[int, int], steps: int) -> ToolResponse
             y += 1 if ty > y else -1
         moved += 1
     WORLD.positions[str(name)] = (x, y)
+    # Deduct movement for this turn
+    try:
+        st_left = int(ts.get("move_left", default_steps))
+        ts["move_left"] = max(0, st_left - int(moved))
+    except Exception:
+        # Be defensive; do not fail movement due to token accounting
+        ts["move_left"] = max(0, int(default_steps) - int(moved))
     remaining = _grid_distance((x, y), (tx, ty))
     reached = (x, y) == (tx, ty)
     text = (
@@ -2564,9 +2597,9 @@ TOOL_SPECS: Dict[str, ToolSpec] = {
         participants_policy="both",
     ),
     "advance_position": ToolSpec(
-        required={"name", "target", "steps"},
+        required={"name", "target"},
         actor_keys={"name"},
-        numeric_min0={"steps"},
+        numeric_min0=set(),
         participants_policy="source",
         source_param="name",
     ),
@@ -2694,9 +2727,15 @@ def validated_tool_dispatch() -> Dict[str, Any]:
 
     These names are expected by the LLM prompt (perform_attack, advance_position, ...).
     """
+    def _adv_no_steps(**p):
+        # Drop any external 'steps' parameter to enforce auto-movement only
+        if "steps" in p:
+            p = {k: v for k, v in p.items() if k != "steps"}
+        return _validated_call("advance_position", move_towards, p)
+
     return {
         "perform_attack": lambda **p: _validated_call("perform_attack", attack_with_weapon, p),
-        "advance_position": lambda **p: _validated_call("advance_position", move_towards, p),
+        "advance_position": _adv_no_steps,
         "adjust_relation": lambda **p: _validated_call("adjust_relation", set_relation, p),
         "transfer_item": lambda **p: _validated_call("transfer_item", grant_item, p),
         "set_protection": lambda **p: _validated_call("set_protection", set_guard, p),

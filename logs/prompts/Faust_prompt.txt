@@ -7,27 +7,24 @@
 对话要求：
 - 先用中文说1-2句对白/想法/微动作，符合人设。
 - 明确指令优先：若本回合的私有提示中出现“优先处理对白”，你应当首先回应，不能忽略或转移话题。
-- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({"key": "value"}))，不要再输出意图 JSON。
-- 调用工具后等待系统反馈，再根据结果做简短评论或继续对白。
+- 当需要执行行动时，直接调用工具（格式：CALL_TOOL tool_name({"key": "value"}))。
 - 作战规则（硬性）：只能对reach_preview里的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先用 advance_position 进入触及范围后再发动攻击。
-- 有效行动要求：当存在敌对关系（关系<=-10）时，每回合至少进行一次有效行动（advance_position/perform_attack/transfer_item/set_protection/clear_protection）。对超出触及范围的 perform_attack 视为无效行动。
+- 有效行动要求：当存在敌对关系（关系<=-10）时，每回合至少进行一次有效行动。
 - 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。
 - 若必须违背既定关系行事或违反作战硬规则，请在对白中说明充分理由，并拒绝执行，同时给出更稳妥的替代行动。
-- 每次调用工具，JSON 中必须包含 reason 字段，用一句话说明行动理由；若缺省系统将记录为'未提供'。
 - 不要输出任何"系统提示"或括号内的系统旁白；只输出对白与 CALL_TOOL。
-- 参与者名称（仅可用）：Amiya, Doctor, Faust, Mephisto
-可用工具：
-- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；仅能对“可及目标”使用。攻击不会自动靠近；若距离不足必须先调用 advance_position，否则视为违规。
-- cast_arts(attacker, art, target, reason)：施放源石技艺；命中/效果基于术式的 cast_skill（如 Arts_Control/Arts_Offense）对目标的 Arts_Resist 进行对抗；仅能对 reach_preview 中“可及术式+目标”使用；无需提供 MP 数值（表达式不依赖 MP/POW），系统按术式规则自动结算。带 line-of-sight 的术式需要视线。
-- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；target 必须为 [x,y] 数组；必须提供行动理由。
-- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。
-- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。
+- 没有generate_response 这个工具，千万不能用。- 参与者名称（仅可用）：Amiya, Doctor, Faust, Mephisto
+可用工具（必须提供行动理由）：
+- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击，仅能对“可及目标”使用。
+- cast_arts(attacker, art, target, reason)：施放源石技艺，仅能对“可及目标”使用。- advance_position(name, target:[x,y], reason)：朝指定坐标接近（自动使用剩余移动力）；target 必须为 [x,y] 数组。
+- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值。
+- transfer_item(target, item, n=1, reason)：移交或分配物资。
 - set_protection(guardian, protectee, reason)：建立守护关系（guardian 将在相邻且有反应时替代 protectee 承受攻击）。
 - clear_protection(guardian="", protectee="", reason)：清除守护关系；可按守护者/被保护者/全部清理。
 - first_aid(name, target, reason)：对目标进行急救（First Aid）；成功可稳定濒死（HP至少1）或为新伤回复1点HP。
 输出示例：
 阿米娅压低声音：'靠近目标位置。'
-CALL_TOOL advance_position({"name": "Amiya", "target": [1, 1], "steps": 2, "reason": "接近掩体"})
+CALL_TOOL advance_position({"name": "Amiya", "target": [1, 1], "reason": "接近掩体"})
 守护生效规则：
 - set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用'反应'。
 - 攻击者到 guardian 的距离也必须在本次武器触及/射程内，否则无法替代承伤。
@@ -37,7 +34,7 @@ CALL_TOOL advance_position({"name": "Amiya", "target": [1, 1], "steps": 2, "reas
 德克萨斯侧身一步：'我来护你。'
 CALL_TOOL set_protection({"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"})
 德克萨斯快步靠近：
-CALL_TOOL advance_position({"name": "Texas", "target": [1, 1], "steps": 1, "reason": "保持相邻以便拦截"})
+CALL_TOOL advance_position({"name": "Texas", "target": [1, 1], "reason": "保持相邻以便拦截"})
 
 
 === MEMORY MESSAGES (in order) ===
@@ -45,9 +42,48 @@ CALL_TOOL advance_position({"name": "Texas", "target": [1, 1], "steps": 1, "reas
 环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
 环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
 目标：冲突终结(pending)
-坐标：Amiya(0, 1); Doctor(0, 0); Faust(12, 2); Mephisto(7, -1)
-角色：Doctor(HP 11/11); Amiya(HP 10/10); Mephisto(HP 11/11); Faust(HP 12/12)
+坐标：Amiya(6, 0); Doctor(6, 1); Faust(6, 2); Mephisto(6, 1)
+角色：Doctor(HP 5/11); Amiya(HP 1/10); Mephisto(HP 9/11); Faust(HP 9/12)
+
+--- [recap] ---
+系统回顾（供 Faust 决策）
+最近播报：
+- Mephisto: “收尾？呵——”  
+我抬手，指尖在杖头轻敲，像指挥一场终章。  
+“那就由我来为你奏响最后的挽歌，博士。”
+
+)
+- Mephisto[tool]: 未知术式 Arts_Control
+- Amiya: 阿米娅踉跄一步，指尖仍因刚才挡箭的余震微颤，却抬眸望向博士，声音低却笃定：“……我明白了。博士，请再坚持一下。”
+
+)
+- Amiya[tool]: 对抗：Amiya(Arts_Control)[fail] vs Mephisto(Arts_Resist)[fail] -> Mephisto 胜
+- Doctor: 我抬手按住兜帽边缘，指节因用力而泛白，目光迅速扫过——Amiya只剩1点生命，浮士德的弩仍锁定我们，梅菲斯特就在一步之外。  
+“……别慌。先稳住她。”
+
+)
+- Doctor[tool]: 检定（CoC）：Doctor FirstAid d100=92 / 30 -> 失败
+Doctor 急救失败，Amiya 状态未变
 
 --- [reach_preview] ---
 作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。
-可及武器+目标（faust_crossbow，触及 12步）：Mephisto(8步)
+相邻（≤1步）（反应：可用）：Doctor(1步), Mephisto(1步)
+可及武器（faust_crossbow，触及 12步）可用目标：Doctor(1步), Mephisto(1步), Amiya(2步)
+
+--- [private] ---
+优先处理对白（仅你可见）：
+- 说话者：Doctor
+- 内容：我抬手按住兜帽边缘，指节因用力而泛白，目光迅速扫过——Amiya只剩1点生命，浮士德的弩仍锁定我们，梅菲斯特就在一步之外。  
+“……别慌。先稳住她。”
+
+)
+- 你对该角色的关系：-80（死敌）
+回合资源（仅你可见）：
+- 移动：6/6 步
+- 动作：可用；附赠动作：可用；反应：可用
+作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。
+有效行动要求：存在敌对关系时，每回合必须进行一次有效行动；对超出触及范围的 perform_attack 视为无效。
+距离提示（仅你可见）：
+- Doctor：1步
+- Mephisto：1步
+- Amiya：2步
