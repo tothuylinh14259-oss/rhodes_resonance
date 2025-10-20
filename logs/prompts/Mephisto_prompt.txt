@@ -20,7 +20,7 @@
 - 参与者名称（仅可用）：Amiya, Doctor, Faust, Mephisto
 可用工具：
 - perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；仅能对“可及目标”使用。攻击不会自动靠近；若距离不足必须先调用 advance_position，否则视为违规。
-- cast_arts(attacker, art, target, reason)：施放源石技艺；命中/效果基于术式的 cast_skill（如 Arts_Control/Arts_Offense）对目标的 Arts_Resist/POW 进行对抗；仅能对 reach_preview 中“可及术式+目标”使用；无需提供 MP 数值，系统按术式规则自动结算（可变术式按基础消耗施放）。带 line-of-sight 的术式需要视线。
+- cast_arts(attacker, art, target, reason)：施放源石技艺；命中/效果基于术式的 cast_skill（如 Arts_Control/Arts_Offense）对目标的 Arts_Resist 进行对抗；仅能对 reach_preview 中“可及术式+目标”使用；无需提供 MP 数值（表达式不依赖 MP/POW），系统按术式规则自动结算。带 line-of-sight 的术式需要视线。
 - advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。
 - adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。
 - transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。
@@ -47,5 +47,49 @@ CALL_TOOL advance_position({"name": "Texas", "target": {"x": 1, "y": 1}, "steps"
 环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
 环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
 目标：冲突终结(pending)
-坐标：Amiya(0, 1); Doctor(0, 0); Faust(12, 2); Mephisto(7, -1)
+坐标：Amiya(6, 1); Doctor(7, 0); Faust(7, 2); Mephisto(7, -1)
 角色：Doctor(HP 11/11); Amiya(HP 10/10); Mephisto(HP 11/11); Faust(HP 12/12)
+
+--- [recap] ---
+系统回顾（供 Mephisto 决策）
+最近播报：
+- Amiya: 阿米娅微微颔首，兔耳轻颤：“博士，我同步切入——先锁住梅菲斯特。”  
+)
+- Amiya[tool]: 对抗：Amiya(Arts_Control)[fail] vs Mephisto(Arts_Resist)[fail] -> Mephisto 胜
+- Doctor: “……”  
+我抬手压住兜帽边缘，指节因用力微白，却迅速把情绪压回胸腔。  
+“收到。优先处理梅菲斯特。”
+
+)
+- Doctor[tool]: 对抗：Doctor(Fighting_Blade)[regular] vs Mephisto(Dodge)[fail] -> Doctor 胜
+武器伤害表达式不被支持：1d4+STR
+- Faust: 浮士德微微侧头，弩弦绷紧如死寂的心跳。  
+“……目标确认——浮士德狙击开始。”
+
+)
+- Faust[tool]: 对抗：Faust(Firearms_Rifle_Crossbow)[regular] vs Doctor(Dodge)[fail] -> Faust 胜
+武器伤害表达式不被支持：1d4+STR
+
+--- [reach_preview] ---
+作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。
+相邻（≤1步）（反应：可用）：Doctor(1步)
+可及武器+目标（mephisto_cane，触及 4步）：Doctor(1步), Amiya(3步), Faust(3步)
+
+--- [private] ---
+优先处理对白（仅你可见）：
+- 说话者：Doctor
+- 内容：“……”  
+我抬手压住兜帽边缘，指节因用力微白，却迅速把情绪压回胸腔。  
+“收到。优先处理梅菲斯特。”
+
+)
+- 你对该角色的关系：-85（死敌）
+回合资源（仅你可见）：
+- 移动：6/6 步
+- 动作：可用；附赠动作：可用；反应：可用
+作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。
+有效行动要求：存在敌对关系时，每回合必须进行一次有效行动；对超出触及范围的 perform_attack 视为无效。
+距离提示（仅你可见）：
+- Doctor：1步
+- Amiya：3步
+- Faust：3步

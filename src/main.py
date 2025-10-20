@@ -114,7 +114,7 @@ DEFAULT_PROMPT_RULES = (
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具：\n"
     "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击（触及范围与伤害来自武器定义）；仅能对“可及目标”使用。攻击不会自动靠近；若距离不足必须先调用 advance_position，否则视为违规。\n"
-    "- cast_arts(attacker, art, target, reason)：施放源石技艺；命中/效果基于术式的 cast_skill（如 Arts_Control/Arts_Offense）对目标的 Arts_Resist/POW 进行对抗；仅能对 reach_preview 中“可及术式+目标”使用；无需提供 MP 数值，系统按术式规则自动结算（可变术式按基础消耗施放）。带 line-of-sight 的术式需要视线。\n"
+    "- cast_arts(attacker, art, target, reason)：施放源石技艺；命中/效果基于术式的 cast_skill（如 Arts_Control/Arts_Offense）对目标的 Arts_Resist 进行对抗；仅能对 reach_preview 中“可及术式+目标”使用；无需提供 MP 数值（表达式不依赖 MP/POW），系统按术式规则自动结算。带 line-of-sight 的术式需要视线。\n"
     "- advance_position(name, target:[x,y], steps:int, reason)：朝指定坐标逐步接近；必须提供行动理由。\n"
     "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值（已内置理由记录）。\n"
     "- transfer_item(target, item, n=1, reason)：移交或分配物资；必须提供行动理由。\n"
