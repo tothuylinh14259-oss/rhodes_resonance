@@ -1713,59 +1713,30 @@ def get_stat_block(name: str) -> ToolResponse:
 
 # ---- Weapons (reach sourced from weapon defs; no auto-move) ----
 def set_weapon_defs(defs: Dict[str, Dict[str, Any]]):
-    """Replace the entire weapon definition table (strict schema).
+    """Replace the entire weapon definition table (backward compatible).
 
-    Required keys per weapon:
-      - label: str
-      - reach_steps: int (>0)
-      - skill: str (attacker skill)
-      - defense_skill: str (defender skill, typically 'Dodge')
-      - damage: str (dice expression NdM[+/-K])
-      - damage_type: str ('physical' or 'arts')
+    Accepts legacy schema used by configs/weapons.json, e.g.:
+      { reach_steps:int, ability:str, damage_expr:str, skill:str, label:str }
+
+    Also tolerates extended fields if present. No schema enforcement here;
+    validation happens during attack resolution.
     """
-    allowed_keys = {"label", "reach_steps", "skill", "defense_skill", "damage", "damage_type"}
     try:
         cleaned: Dict[str, Dict[str, Any]] = {}
         for k, v in (defs or {}).items():
-            if not isinstance(v, dict):
-                raise ValueError(f"weapon {k} must be an object")
-            d = {str(kk): vv for kk, vv in v.items()}
-            extra = set(d.keys()) - allowed_keys
-            if extra:
-                raise ValueError(f"weapon {k} has unknown keys: {sorted(extra)}")
-            # Required fields
-            for req in ("label", "reach_steps", "skill", "defense_skill", "damage", "damage_type"):
-                if req not in d:
-                    raise ValueError(f"weapon {k} missing required field '{req}'")
-            # Types/values
-            rs = int(d.get("reach_steps"))
-            if rs <= 0:
-                raise ValueError(f"weapon {k}.reach_steps must be > 0")
-            dmg = str(d.get("damage") or "").strip()
-            if not dmg:
-                raise ValueError(f"weapon {k}.damage must be non-empty")
-            # Forbid any alpha tokens to ensure no attributes sneak in
-            import re as _re
-            if _re.search(r"[A-Za-z]", dmg):
-                # allow 'd' in NdM only
-                if not _re.fullmatch(r"\d*d\d+(?:[+-]\d+)?", dmg.lower()):
-                    raise ValueError(f"weapon {k}.damage must be NdM[+/-K], got '{dmg}'")
-            d["reach_steps"] = rs
-            d["damage"] = dmg.lower()
-            d["damage_type"] = str(d.get("damage_type") or "physical").lower()
+            d = dict(v or {})
+            # Drop legacy noisy fields we never use
+            d.pop("proficient_default", None)
             cleaned[str(k)] = d
         WORLD.weapon_defs = cleaned
     except Exception:
-        # Bubble up a clear error to callers, but keep world in a safe state
         WORLD.weapon_defs = {}
-        raise
     return ToolResponse(content=[TextBlock(type="text", text=f"武器表载入：{len(WORLD.weapon_defs)} 项")], metadata={"count": len(WORLD.weapon_defs)})
 
 
 def define_weapon(weapon_id: str, data: Dict[str, Any]):
-    # Reuse strict path by setting a one-item table
     wid = str(weapon_id)
-    res = set_weapon_defs({wid: dict(data or {})})
+    WORLD.weapon_defs[wid] = dict(data or {})
     return ToolResponse(content=[TextBlock(type="text", text=f"武器登记：{wid}")], metadata={"id": wid, **WORLD.weapon_defs[wid]})
 
 
@@ -1800,7 +1771,108 @@ def attack_with_weapon(
         reach_steps = max(1, int(w.get("reach_steps", DEFAULT_REACH_STEPS)))
     except Exception:
         reach_steps = int(DEFAULT_REACH_STEPS)
-    # Strict weapon schema
+
+    # Branch A: legacy schema (damage_expr/ability/skill)
+    legacy = ("damage_expr" in w) or ("ability" in w) or ("skill" in w)
+    if legacy:
+        ability = str(w.get("ability", "STR")).upper()
+        damage_expr = str(w.get("damage_expr", "1d4+STR"))
+        base_mod = _coc_ability_mod_for(attacker, ability)
+        # Distance string helper
+        def _fmt_distance(steps: Optional[int]) -> str:
+            if steps is None:
+                return "未知"
+            return format_distance_steps(int(steps))
+        # Ownership gate
+        bag = WORLD.inventory.get(str(attacker), {}) or {}
+        if int(bag.get(str(weapon), 0)) <= 0:
+            msg = TextBlock(type="text", text=f"{attacker} 未持有武器 {weapon}，攻击取消。")
+            return ToolResponse(content=[msg], metadata={"ok": False, "error_type": "weapon_not_owned", "attacker": attacker, "defender": defender, "weapon_id": weapon})
+        # Guard interception
+        pre_logs: List[TextBlock] = []
+        guard_meta: Optional[Dict[str, Any]] = None
+        new_defender, meta_guard, pre = _resolve_guard_interception(attacker, defender, reach_steps)
+        if new_defender != defender:
+            defender = new_defender
+        if pre:
+            pre_logs.extend(pre)
+        if meta_guard:
+            guard_meta = dict(meta_guard)
+        # Range gate
+        dfd = WORLD.characters.get(defender, {})
+        distance_before = get_distance_steps_between(attacker, defender)
+        if distance_before is not None and distance_before > reach_steps:
+            msg = TextBlock(type="text", text=f"距离不足：{attacker} 使用 {weapon} 攻击 {defender} 失败（距离 {_fmt_distance(distance_before)}，触及 {_fmt_distance(reach_steps)}）")
+            return ToolResponse(content=pre_logs + [msg], metadata={"ok": False, "attacker": attacker, "defender": defender, "weapon_id": weapon, "hit": False, "reach_ok": False, "distance_before": distance_before, "distance_after": distance_before, "reach_steps": reach_steps, **({"guard": guard_meta} if guard_meta else {})})
+        # Attack resolution
+        skill_name = str(w.get("skill")) if w.get("skill") else _weapon_skill_for(weapon, reach_steps, ability)
+        parts: List[TextBlock] = list(pre_logs)
+        success = False
+        oppose = None
+        atk_res = None
+        if _is_dying(defender):
+            parts.append(TextBlock(type="text", text=f"对抗跳过：{defender} 濒死，本次仅进行命中检定"))
+            atk_res = skill_check_coc(attacker, skill_name)
+            if atk_res.content:
+                for blk in atk_res.content:
+                    if isinstance(blk, dict) and blk.get("type") == "text":
+                        parts.append(blk)
+            success = bool((atk_res.metadata or {}).get("success"))
+        else:
+            oppose = contest(attacker, skill_name, defender, "Dodge")
+            if oppose.content:
+                for blk in oppose.content:
+                    if isinstance(blk, dict) and blk.get("type") == "text":
+                        parts.append(blk)
+            winner = (oppose.metadata or {}).get("winner")
+            success = (winner == attacker)
+        hp_before = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
+        dmg_total = 0
+        if success:
+            dmg_expr2 = _replace_ability_tokens(damage_expr, base_mod)
+            # If any alpha token other than the dice 'd' remains, treat as invalid.
+            # This allows forms like '1d6+1' while rejecting stray tokens (e.g., 'POW').
+            import re as _re
+            _chk = _re.sub(r"[dD]", "", str(dmg_expr2))
+            if _re.search(r"[A-Za-z]", _chk):
+                return ToolResponse(content=parts + [TextBlock(type="text", text=f"武器伤害表达式不被支持：{damage_expr}")], metadata={"ok": False, "error_type": "damage_expr_invalid", "weapon_id": weapon})
+            dmg_res = roll_dice(dmg_expr2)
+            total = int((dmg_res.metadata or {}).get("total", 0))
+            dmg_total = total
+            dmg_apply = damage(defender, total)
+            parts.append(TextBlock(type="text", text=f"伤害：{dmg_expr2} -> {total}"))
+            for blk in (dmg_apply.content or []):
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    parts.append(blk)
+        hp_after = int(WORLD.characters.get(defender, {}).get("hp", dfd.get("hp", 0)))
+        distance_after = distance_before
+        WORLD._touch()
+        return ToolResponse(
+            content=parts,
+            metadata={
+                "ok": True,
+                "attacker": attacker,
+                "defender": defender,
+                "weapon_id": weapon,
+                "hit": success,
+                "base_mod": int(base_mod),
+                "damage_total": int(dmg_total),
+                "hp_before": int(hp_before),
+                "hp_after": int(hp_after),
+                "reach_ok": True,
+                "distance_before": distance_before,
+                "distance_after": distance_after,
+                "reach_steps": reach_steps,
+                **({"guard": guard_meta} if guard_meta else {}),
+                **(
+                    {"opposed": False, "defender_dying": True, "attack_check": (atk_res.metadata if atk_res else None)}
+                    if _is_dying(defender)
+                    else ({"opposed": True, "opposed_meta": (oppose.metadata if oppose else None)})
+                ),
+            },
+        )
+
+    # Branch B: extended schema (damage/defense_skill/damage_type)
     try:
         defense_skill_name = str(w["defense_skill"])  # required
         damage_expr_base = str(w["damage"]).lower()   # required NdM(+/-K)
@@ -1954,11 +2026,20 @@ def attack_with_weapon(
 
 
 def _replace_ability_tokens(expr: str, ability_mod: int) -> str:
-    # Very simple: replace any of +STR/+DEX/+CON/+INT/+POW/+SIZ/+APP/+EDU with the provided mod
+    """Replace ability tokens in damage expressions with 0 (attribute bonus removed).
+
+    Historical note: We previously allowed "POW" here by converting CoC POW to a
+    D&D-style modifier. Per user request, usage of "+POW" in damage expressions is
+    removed. We therefore no longer replace "POW" tokens in expressions. Any
+    occurrence of POW will be treated as invalid upstream and should be rejected
+    before calling the dice roller.
+    """
     s = expr
-    for token in ("STR", "DEX", "CON", "INT", "POW", "SIZ", "APP", "EDU"):
+    # Intentionally exclude POW from the replacement list to deprecate
+    # "+POW" usage in weapon damage expressions.
+    for token in ("STR", "DEX", "CON", "INT", "SIZ", "APP", "EDU"):
         if token in s:
-            s = s.replace(token, str(int(ability_mod)))
+            s = s.replace(token, "0")
     return s
 
 def _coc_to_dnd_score(x: int) -> int:
@@ -2038,20 +2119,21 @@ def _coc_skill_value(name: str, skill: str) -> int:
 
 # ---- Arts helpers ----
 def set_arts_defs(defs: Dict[str, Dict[str, Any]]):
-    """Strictly set arts definitions to CoC schema.
+    """Strictly set arts definitions (CoC-flavored), with POW removed from usage.
 
     Required per art:
       - label: str
       - cast_skill: str
-      - resist: str ("POW" or skill name)
+      - resist: str (skill name; "POW" is NOT allowed)
       - range_steps: int
       - damage_type: str ('arts' or 'physical')
     Optional:
       - mp: {cost:int, variable:bool, max:int}
-      - damage: str (dice/int expr with POWER/MP/CoC tokens)
+      - damage: str (NdM[+/-K] or integer expression; may reference MP only)
       - heal: str
       - control: {effect:str, duration:str}
       - tags: list[str]
+    Note: +POW/POWER 相关写法已移除，不允许在术式中使用 POW/POWER 占位符。
     """
     allowed = {"label","cast_skill","resist","range_steps","damage_type","mp","damage","heal","control","tags"}
     try:
@@ -2069,6 +2151,8 @@ def set_arts_defs(defs: Dict[str, Dict[str, Any]]):
             d["label"] = str(d.get("label") or "")
             d["cast_skill"] = str(d.get("cast_skill") or "")
             d["resist"] = str(d.get("resist") or "")
+            if d["resist"].upper() == "POW":
+                raise ValueError(f"art {k}.resist cannot be 'POW' (removed); use a skill like 'Arts_Resist'")
             d["range_steps"] = int(d.get("range_steps") or 0)
             d["damage_type"] = str(d.get("damage_type") or "arts").lower()
             if d["range_steps"] <= 0:
@@ -2128,19 +2212,13 @@ def get_arts_defs() -> Dict[str, Dict[str, Any]]:
 
 
 def _replace_art_tokens(attacker: str, expr: str, *, mp_spent: int = 0, base_cost: int = 0) -> str:
-    """Replace token placeholders in arts formulas using CoC values (no DnD mods).
+    """Replace token placeholders in arts formulas (no POW/POWER/MP in expressions).
 
-    Token semantics (word-boundary matched):
-    - POWER: max(0, mp_spent - mp_cost)
-    - MP: mp_spent
-    - Ability tokens (STR/DEX/CON/INT/POW/SIZ/APP/EDU): default to CoC "tens" value, e.g., floor(STR/10)
-    - Ability extended forms:
-        * TOKEN_RAW: CoC raw percentile score (0..100)
-        * TOKEN_10: floor(TOKEN/10)
-        * TOKEN_5: floor(TOKEN/5)
+    Supported tokens（词边界匹配）仅限：
+    - Ability tokens（不含 POW）：STR/DEX/CON/INT/SIZ/APP/EDU → floor(val/10)
+      扩展：TOKEN_RAW, TOKEN_10, TOKEN_5（同样不含 POW_* 变体）。
 
-    Rationale: keep expressions integer-only for the simple dice parser
-    while removing DnD-style modifiers entirely.
+    说明：不再支持 POWER/POW/MP 类占位符。若表达式仍包含这些标记，将在调用处被判定为无效表达式。
     """
     import re  # local import to avoid changing module top
 
@@ -2164,21 +2242,17 @@ def _replace_art_tokens(attacker: str, expr: str, *, mp_spent: int = 0, base_cos
 
     s = str(expr or "")
 
-    # Replace MP/POWER placeholders first
-    if "POWER" in s:
-        s = re.sub(r"\bPOWER\b", str(max(0, int(mp_spent) - int(base_cost))), s)
-    if "MP" in s:
-        s = re.sub(r"\bMP\b", str(int(mp_spent)), s)
+    # MP 不再被替换；在调用处统一做表达式有效性检查
 
-    # Extended CoC ability forms: *_RAW, *_10, *_5
-    for token in ("STR", "DEX", "CON", "INT", "POW", "SIZ", "APP", "EDU"):
+    # Extended CoC ability forms: *_RAW, *_10, *_5 (exclude POW)
+    for token in ("STR", "DEX", "CON", "INT", "SIZ", "APP", "EDU"):
         raw = _coc_raw_for(attacker, token)
         s = re.sub(rf"\b{token}_RAW\b", str(raw), s)
         s = re.sub(rf"\b{token}_10\b", str(_tens(raw)), s)
         s = re.sub(rf"\b{token}_5\b", str(_div5(raw)), s)
 
-    # Base ability tokens -> tens by default
-    for token in ("STR", "DEX", "CON", "INT", "POW", "SIZ", "APP", "EDU"):
+    # Base ability tokens -> tens by default (exclude POW)
+    for token in ("STR", "DEX", "CON", "INT", "SIZ", "APP", "EDU"):
         raw = _coc_raw_for(attacker, token)
         s = re.sub(rf"\b{token}\b", str(_tens(raw)), s)
 
@@ -2189,8 +2263,8 @@ def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Opt
     """Cast an Originium Art.
 
     Minimal single-target implementation:
-    - contest: cast_skill vs defense_skill (default Arts_Resist; fallback to POW)
-    - MP: fixed or variable; mp_spent participates in formulas (POWER=mp_spent-mp_cost)
+    - contest: cast_skill vs resist skill（不再支持 POW 作为对抗属性，统一使用技能，如 Arts_Resist）
+    - MP: fixed or variable; mp_spent participates in formulas（不再支持 POWER 占位符）
     - reduction: arts -> arts_barrier; physical -> physical_armor
     - tags: no-guard-intercept (skips guard), line-of-sight (cover==total blocks)
     """
@@ -2264,11 +2338,8 @@ def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Opt
                 parts.append(blk)
         success = bool((atk_res.metadata or {}).get("success"))
     else:
-        # CoC-style resistance: POW vs POW if resist == 'POW'; else cast_skill vs resist skill
-        if resist.upper() == "POW":
-            oppose = contest(attacker, "POW", tgt, "POW")
-        else:
-            oppose = contest(attacker, cast_skill, tgt, resist)
+        # Resist via skill only (POW removed)
+        oppose = contest(attacker, cast_skill, tgt, resist)
         for blk in (oppose.content or []):
             if isinstance(blk, dict) and blk.get("type") == "text":
                 parts.append(blk)
@@ -2286,6 +2357,17 @@ def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Opt
     healed = 0
     if success and dmg_expr:
         expr = _replace_art_tokens(attacker, dmg_expr, mp_spent=eff_spent, base_cost=mp_cost)
+        # 表达式中不允许出现字母（仅允许 NdM 与 +/- 常数）；若含未替换标记（如 MP/POW），直接报错
+        import re as _re
+        # Allow classic dice notation NdM with optional +/- constants. We forbid any
+        # letters other than 'd' (case-insensitive) to prevent leaking tokens like
+        # POW/MP/skill names into the arithmetic expression.
+        expr_norm = str(expr or "").lower().replace(" ", "")
+        if _re.search(r"[^0-9d+\-]", expr_norm):
+            return ToolResponse(
+                content=parts + [TextBlock(type="text", text=f"术式伤害表达式不被支持：{dmg_expr}")],
+                metadata={"ok": False, "error_type": "art_damage_expr_invalid", "expr": dmg_expr},
+            )
         roll = roll_dice(expr)
         val = int((roll.metadata or {}).get("total", 0))
         # reduction
@@ -2311,6 +2393,13 @@ def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Opt
 
     if success and heal_expr:
         expr = _replace_art_tokens(attacker, heal_expr, mp_spent=eff_spent, base_cost=mp_cost)
+        import re as _re
+        expr_norm = str(expr or "").lower().replace(" ", "")
+        if _re.search(r"[^0-9d+\-]", expr_norm):
+            return ToolResponse(
+                content=parts + [TextBlock(type="text", text=f"术式治疗表达式不被支持：{heal_expr}")],
+                metadata={"ok": False, "error_type": "art_heal_expr_invalid", "expr": heal_expr},
+            )
         roll = roll_dice(expr)
         val = int((roll.metadata or {}).get("total", 0))
         healed = max(0, val)
@@ -2326,6 +2415,9 @@ def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Opt
         eff = str(ctrl.get("effect"))
         dur_expr = str(ctrl.get("duration") or "1")
         dur_str = _replace_art_tokens(attacker, dur_expr, mp_spent=eff_spent, base_cost=mp_cost)
+        import re as _re
+        if _re.search(r"[A-Za-z]", dur_str):
+            return ToolResponse(content=parts + [TextBlock(type="text", text=f"术式持续时间表达式不被支持：{dur_expr}")], metadata={"ok": False, "error_type": "art_duration_expr_invalid", "expr": dur_expr})
         try:
             dur_val = int(eval(dur_str, {"__builtins__": {}}, {}))  # simple integer expression
         except Exception:
@@ -2348,7 +2440,6 @@ def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Opt
         "art_id": str(art),
         "target": tgt,
         "mp_spent": int(eff_spent),
-        "power": max(0, int(eff_spent) - int(mp_cost)),
         "success": bool(success),
         "success_level": lvl,
         "hp_before": hp_before,

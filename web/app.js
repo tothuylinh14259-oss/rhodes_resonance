@@ -1209,7 +1209,12 @@
       const selAb = document.createElement('select'); abilities.forEach(ab=>{ const opt=document.createElement('option'); opt.value=ab; opt.textContent=ab; selAb.appendChild(opt); }); selAb.value=(String(item.ability||'STR').toUpperCase()); selAb.addEventListener('change',()=>{ (cfg.weapons[id]||(cfg.weapons[id]={})).ability = selAb.value; markDirty('weapons'); }); tdAb.appendChild(selAb);
       // damage expr
       const tdDmg = document.createElement('td');
-      const inDmg = document.createElement('input'); inDmg.type='text'; inDmg.value=(item.damage_expr||''); inDmg.addEventListener('input',()=>{ (cfg.weapons[id]||(cfg.weapons[id]={})).damage_expr=inDmg.value; markDirty('weapons'); }); tdDmg.appendChild(inDmg);
+      const inDmg = document.createElement('input');
+      inDmg.type='text';
+      inDmg.placeholder='例如 1d6（不含属性加成）';
+      inDmg.value=(item.damage_expr||'');
+      inDmg.addEventListener('input',()=>{ (cfg.weapons[id]||(cfg.weapons[id]={})).damage_expr=inDmg.value; markDirty('weapons'); });
+      tdDmg.appendChild(inDmg);
       // ops
       const tdOps = document.createElement('td');
       const btnDel = document.createElement('button'); btnDel.className='sm'; btnDel.textContent='删除'; btnDel.onclick=()=>{ delete cfg.weapons[id]; renderWeaponsForm(cfg.weapons); markDirty('weapons'); };
@@ -1558,7 +1563,8 @@
     } else {
       if ((cfg.weapons||{})[id]) { alert('已存在同名武器 ID'); return; }
     }
-    (cfg.weapons||(cfg.weapons={}))[id] = { label:'', reach_steps:1, ability:'STR', damage_expr:'1d4+STR' };
+    // Default damage no longer includes attribute bonus; use plain dice only
+    (cfg.weapons||(cfg.weapons={}))[id] = { label:'', reach_steps:1, ability:'STR', damage_expr:'1d4' };
     renderWeaponsForm(cfg.weapons); markDirty('weapons');
   };
 })();
