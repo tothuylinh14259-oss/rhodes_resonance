@@ -126,7 +126,8 @@
           "physical_armor": 0,
           "arts_barrier": 1
         }
-      }
+      },
+      "arts_known": ["mephisto_resonance", "mephisto_lullaby", "mephisto_pain"]
     },
     "inventory": {
       "mephisto_cane": 1

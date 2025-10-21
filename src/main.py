@@ -130,32 +130,18 @@ DEFAULT_PROMPT_EXAMPLE = (
     'CALL_TOOL advance_position({{"name": "Amiya", "target": [1, 1], "reason": "接近掩体"}})\n'
 )
 
-DEFAULT_PROMPT_GUARD_GUIDE = (
-    "守护生效规则：\n"
-    "- set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用'反应'。\n"
-    "- 建议建立守护后使用 advance_position 贴身到被保护者旁并保持相邻，以确保拦截能生效。\n"
-)
-
-DEFAULT_PROMPT_GUARD_EXAMPLE = (
-    "守护使用示例：\n"
-    "德克萨斯侧身一步：'我来护你。'\n"
-    'CALL_TOOL set_protection({{"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"}})\n'
-    "德克萨斯快步靠近：\n"
-    'CALL_TOOL advance_position({{"name": "Texas", "target": [1, 1], "reason": "保持相邻以便拦截"}})\n'
-)
+## Removed guard guide/example blocks per request
 
 DEFAULT_PROMPT_TEMPLATE = (
     DEFAULT_PROMPT_HEADER
     + DEFAULT_PROMPT_RULES
     + DEFAULT_PROMPT_TOOL_GUIDE
     + DEFAULT_PROMPT_EXAMPLE
-    + DEFAULT_PROMPT_GUARD_GUIDE
-    + DEFAULT_PROMPT_GUARD_EXAMPLE
 )
 
 # World summary templates (rendered text; not called "系统提示"避免联想)
 WORLD_SUMMARY_HEADER = (
-    "环境概要：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}"
+    "现在：地点 {location}；时间 {hh:02d}:{mm:02d}；天气 {weather}"
 )
 WORLD_SUMMARY_DETAILS = "环境细节：{details}"
 WORLD_SUMMARY_OBJECTIVES = "目标：{objectives}"
@@ -163,8 +149,8 @@ WORLD_SUMMARY_POSITIONS = "坐标：{positions}"
 WORLD_SUMMARY_CHARACTERS = "角色：{chars}"
 
 # Recap
-RECAP_TITLE = "系统回顾（供 {name} 决策）"
-RECAP_SECTION_RECENT = "最近播报："
+RECAP_TITLE = "回顾"
+RECAP_SECTION_RECENT = "刚才...："
 RECAP_CLIP_CHARS = 160
 
 # Reach preview & hard rule line
@@ -174,7 +160,7 @@ REACH_LABEL_TARGETS = "可及武器（{weapon}，触及 {steps}步）可用目�
 REACH_LABEL_ARTS = "可及术式（{art}，触及 {steps}步）可用目标："
 
 # Player/private tips
-PLAYER_CTRL_TITLE = "玩家控制提示（仅你可见）："
+PLAYER_CTRL_TITLE = "玩家控制提示（仅你可见）：" 
 PLAYER_CTRL_LINE = "- 你是玩家操控的角色，请严格执行玩家的意图：{text}"
 PRIV_SPEECH_TITLE = "优先处理对白（仅你可见）："
 PRIV_SPEECH_SPEAKER = "- 说话者：{who}"
@@ -1010,6 +996,10 @@ class _WorldPort:
     attack_with_weapon = staticmethod(world_impl.attack_with_weapon)
     cast_arts = staticmethod(world_impl.cast_arts)
     first_aid = staticmethod(world_impl.first_aid)
+    # movement helpers
+    get_move_speed_steps = staticmethod(world_impl.get_move_speed_steps)
+    derive_move_speed_steps = staticmethod(world_impl.derive_move_speed_steps)
+    derive_all_speeds_from_stats = staticmethod(world_impl.derive_all_speeds_from_stats)
     # dying helpers
     tick_dying_for = staticmethod(world_impl.tick_dying_for)
     # tools that actions need directly
@@ -2740,7 +2730,7 @@ async def run_demo(
                     except Exception:
                         mv_left = 0
                     try:
-                        mv_max = int(ch.get("move_speed_steps", mv_left))
+                        mv_max = int(world.get_move_speed_steps(name))
                     except Exception:
                         mv_max = mv_left
                     action_used = bool(ts.get("action_used", False))
@@ -2893,14 +2883,11 @@ async def run_demo(
                     except Exception:
                         pass
 
-                # End-of-turn: if actor is in dying state, decrement their own dying timer now
+                # End-of-turn: tick per-actor status timers and dying countdown
+                # Note: world.tick_dying_for() also decrements CONTROL statuses even when not dying.
+                # Calling it unconditionally ensures statuses like "silenced/rooted" expire correctly.
                 try:
-                    ch2 = (world.snapshot().get("characters") or {}).get(name, {}) or {}
-                    if (
-                        int(ch2.get("hp", 0)) <= 0
-                        and ch2.get("dying_turns_left") is not None
-                    ):
-                        world.tick_dying_for(name)
+                    world.tick_dying_for(name)
                 except Exception:
                     pass
 

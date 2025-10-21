@@ -547,14 +547,84 @@ def _band_for_steps(steps: int) -> str:
 
 
 def get_move_speed_steps(name: str) -> int:
-    sheet = WORLD.characters.get(name, {})
+    """Return walking speed (steps/turn), derived from CoC if missing in cache.
+
+    - Ignores any sheet-level `move_speed_steps` field (已废弃显式指定)。
+    - If not cached, derive from CoC characteristics on demand.
+    - Falls back to global default only when无法派生（无 CoC 面板）。
+    """
+    # If not cached, try derive from CoC on the fly (无其他规则/回退)
+    if name not in WORLD.speeds:
+        st = WORLD.characters.get(name, {})
+        if isinstance(st.get("coc"), dict):
+            try:
+                derive_move_speed_steps(name)
+            except Exception:
+                pass
+    return int(WORLD.speeds.get(name, _default_move_steps()))
+
+
+def derive_move_speed_steps(name: str) -> ToolResponse:
+    """按 CoC 7e 规则从角色数值派生移动力（步/回合），并写入缓存。
+
+    只保留 CoC 方案：
+    - 基础 MOV=8；若 DEX>SIZ 且 STR>SIZ → 9；若 DEX<SIZ 且 STR<SIZ → 7；否则 8。
+    - 步数 = round(MOV/1.5)，并限制在 [3,10]。
+    - 将 {MOV, move_steps, move_rule='coc7e'} 写回到 coc.derived。
+    - 已移除“显式指定移动力”的优先级，始终以派生为准（除非外部直接修改 WORLD.speeds）。
+    """
+    nm = str(name)
+    st = WORLD.characters.setdefault(nm, {})
+    coc = dict(st.get("coc") or {})
+    ch = {k.upper(): int(v) for k, v in (coc.get("characteristics") or {}).items()}
+    if not ch:
+        # 无 CoC 面板时不做其他回退，直接报错信息
+        return ToolResponse(
+            content=[TextBlock(type="text", text=f"速度派生失败：{nm} 缺少 CoC 特性（characteristics）")],
+            metadata={"ok": False, "name": nm, "error": "no_coc_characteristics"},
+        )
+    dex = int(ch.get("DEX", 50))
+    str_v = int(ch.get("STR", 50))
+    siz = int(ch.get("SIZ", 50))
+    mov = 8
+    if dex > siz and str_v > siz:
+        mov = 9
+    elif dex < siz and str_v < siz:
+        mov = 7
+    steps_calc = int(round(float(mov) / 1.5))
+    steps = max(3, min(10, steps_calc))
+    # Persist into CoC derived block for transparency
     try:
-        val = sheet.get("move_speed_steps")
-        if val is not None:
-            return int(val)
+        derived = dict((coc.get("derived") or {}))
+        derived.update({"MOV": int(mov), "move_steps": int(steps), "move_rule": "coc7e"})
+        coc["derived"] = derived
+        st["coc"] = coc
     except Exception:
         pass
-    return int(WORLD.speeds.get(name, _default_move_steps()))
+    WORLD.speeds[nm] = int(steps)
+    WORLD._touch()
+    note = f"{nm} MOV {mov} => {steps}步/回合"
+    return ToolResponse(
+        content=[TextBlock(type="text", text=f"速度派生：{note}")],
+        metadata={"ok": True, "name": nm, "speed_steps": int(steps), "rule": "coc"},
+    )
+
+
+def derive_all_speeds_from_stats() -> ToolResponse:
+    """按 CoC 方案为所有已知角色重算并缓存步数，返回汇总。"""
+    content: List[TextBlock] = []
+    out_map: Dict[str, int] = {}
+    for nm in list(WORLD.characters.keys()):
+        try:
+            res = derive_move_speed_steps(nm)
+            if res and isinstance(res.metadata, dict):
+                out_map[nm] = int(res.metadata.get("speed_steps", get_move_speed_steps(nm)))
+            if res and res.content:
+                # keep individual lines concise
+                content.extend(res.content)
+        except Exception:
+            pass
+    return ToolResponse(content=content, metadata={"ok": True, "speeds": out_map, "rule": "coc"})
 
 
 def get_reach_steps(name: str) -> int:
@@ -755,31 +825,14 @@ def _coc_dex_of(name: str) -> int:
 
 
 def set_speed(name: str, value: float = DEFAULT_MOVE_SPEED_STEPS, unit: str = "steps"):
-    """Set walking speed for an actor (steps only by default).
+    """(禁用显式设定) 移动力现由 CoC 数值自动派生，禁止手动设定。
 
-    Args:
-        name: Actor identifier.
-        value: Numeric speed value.
-        unit: 'steps' (default) or 'feet'.
+    保留函数以保持 API 兼容，但不再修改 WORLD.speeds。
+    返回 ok=False 与提示信息。
     """
-
-    unit_norm = (unit or "steps").lower()
-    if unit_norm not in {"steps", "feet"}:
-        unit_norm = "steps"
-
-    if unit_norm == "feet":
-        # Assume standard 5ft per grid step
-        steps = max(0, int(math.ceil(float(value) / 5.0)))
-    else:
-        steps = max(0, int(round(float(value))))
-
-    if steps == 0 and value > 0:
-        steps = 1
-    WORLD.speeds[str(name)] = steps
-    WORLD._touch()
     return ToolResponse(
-        content=[TextBlock(type="text", text=f"速度设定：{name} {format_distance_steps(steps)}")],
-        metadata={"ok": True, "name": name, "speed_steps": steps},
+        content=[TextBlock(type="text", text=f"速度设定被禁用：{name} 的移动力由 CoC 派生，仅可通过数值变动间接影响。")],
+        metadata={"ok": False, "name": str(name), "reason": "speed_derived_from_coc"},
     )
 
 
@@ -1373,6 +1426,11 @@ def set_coc_character(
         pass
     # Clear any dying flag when creating a fresh sheet
     sheet.pop("dying_turns_left", None)
+    # Derive default walking speed from CoC stats（显式指定已废弃，始终派生）
+    try:
+        derive_move_speed_steps(nm)
+    except Exception:
+        pass
     WORLD._touch()
     return ToolResponse(
         content=[
@@ -1470,6 +1528,11 @@ def set_coc_character_from_config(name: str, coc: Dict[str, Any]) -> ToolRespons
             coc_st[k] = v
         st["coc"] = coc_st
         WORLD._touch()
+    # Derive default walking speed after ingesting full CoC block（始终派生）
+    try:
+        derive_move_speed_steps(str(name))
+    except Exception:
+        pass
     return res
 
 

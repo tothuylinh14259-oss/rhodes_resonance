@@ -26,68 +26,68 @@
 输出示例：
 阿米娅压低声音：'靠近目标位置。'
 CALL_TOOL advance_position({"name": "Amiya", "target": [1, 1], "reason": "接近掩体"})
-守护生效规则：
-- set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用'反应'。
-- 建议建立守护后使用 advance_position 贴身到被保护者旁并保持相邻，以确保拦截能生效。
-守护使用示例：
-德克萨斯侧身一步：'我来护你。'
-CALL_TOOL set_protection({"guardian": "Texas", "protectee": "Amiya", "reason": "建立守护"})
-德克萨斯快步靠近：
-CALL_TOOL advance_position({"name": "Texas", "target": [1, 1], "reason": "保持相邻以便拦截"})
 
 
 === MEMORY MESSAGES (in order) ===
 --- [env] ---
-环境概要：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
+现在：地点 旧城区·北侧仓棚；时间 08:00；天气 overcast
 环境细节：仓棚顶板破损，几缕晨光穿透尘埃；木箱凌乱堆叠，角落潮湿有拖拽痕迹；远处传来金属碰撞与杂音；旧城区·北侧仓棚。铁梁回声震耳。
 目标：冲突终结(pending)
-坐标：Amiya(6, 1); Doctor(5, 1); Faust(12, 2); Mephisto(6, 1)
+坐标：Amiya(0, 1); Doctor(0, 0); Faust(12, 2); Mephisto(7, -1)
 角色：Doctor(HP 10/11); Amiya(HP 10/10); Mephisto(HP 8/11); Faust(HP 12/12)
 
 --- [recap] ---
-系统回顾（供 Faust 决策）
-最近播报：
-- Mephisto: 梅菲斯特微微侧头，白发垂落，绿瞳里映出Doctor兜帽下的冷光。  
-他轻笑，嗓音带着少年特有的清亮与癫狂：“……切断我的节奏？呵，先让你的心跳停一拍吧。”
+回顾
+刚才...：
+- Mephisto: “拉开距离？呵……你以为逃得掉吗，博士？”  
+我舔了舔唇角，指尖在扩音装置上轻轻一拨，童谣的余音骤然扭曲成尖锐的共振。  
 
 )
-- Mephisto[tool]: 对抗：Mephisto(Arts_Control)[regular] vs Doctor(Dodge)[hard] -> Doctor 胜
-- Amiya: 阿米娅抬眸，目光在兜帽下与博士短暂相接，声音轻却笃定：
-“我在这里，博士。……别担心，我不会让他再靠近您。”
-)
-- Amiya[tool]: 对抗：Amiya(Arts_Control)[fail] vs Mephisto(Arts_Resist)[fail] -> Mephisto 胜
-- Doctor: “阿宿舍啊阿三阿……”我低声重复，语调里带着一丝困惑，像是在咀嚼某种暗号。兜帽下的灰瞳微微眯起，迅速扫过战场——Amiya就在身侧，Mephisto近在咫尺，而Faust在远处冷箭已发。  
+- Mephisto[tool]: 对抗：Mephisto(Arts_Control)[fail] vs Doctor(Arts_Resist)[hard] -> Doctor 胜
+- Amiya: 阿米娅微微抬眸，目光越过尘埃，落在博士腕间那抹暗红上，语气轻却带着不容拒绝的坚定：“博士，我不会丢下您。”
 
-这不是犹豫的时候。  
-
-我压低声音，对Amiya道：“别动，我来处理。”  
+她指尖微光一闪，源石技艺的纹路在空气中悄然勾勒。
 
 )
-- Doctor[tool]: 对抗：Doctor(Fighting_Blade)[extreme] vs Mephisto(Dodge)[fail] -> Doctor 胜
-伤害：1d4 -> 3
-Mephisto 受到 3 伤害，HP 8/11
+- Amiya[tool]: 对抗：Amiya(Arts_Control)[regular] vs Doctor(Arts_Resist)[fail] -> Amiya 胜
+术式伤害：1d4 -> 1
+Doctor 受到 1 伤害，HP 10/11
+控制：restrained（持续 1 轮）
+状态：Doctor +restrained（1轮）
+- Doctor: （兜帽下，我猛地吸了一口冷气，腕骨像被细线勒住，动弹不得。）
+
+“……Amiya，你瞄准的是我？”
+
+我压低嗓音，目光掠过她仍泛着源石碎光的指尖，再扫向远处那两道黑影——梅菲斯特在笑，浮士德的弩弦还在颤。现在不是质问的时候，可身体被她的术式锁在原地，一步都挪不开。
+
+优先处理对白：我操，Amiya你打我干嘛啊——...
+- Doctor[tool]: 未知术式 Arts_Resist
 
 --- [reach_preview] ---
 作战规则：只能对reach_preview的“可及目标”使用 perform_attack。
-可及武器（faust_crossbow，触及 12步）可用目标：Amiya(7步), Mephisto(7步), Doctor(8步)
+可及武器（faust_crossbow，触及 12步）可用目标：Mephisto(8步)
 
 --- [private] ---
 优先处理对白（仅你可见）：
 - 说话者：Doctor
-- 内容：“阿宿舍啊阿三阿……”我低声重复，语调里带着一丝困惑，像是在咀嚼某种暗号。兜帽下的灰瞳微微眯起，迅速扫过战场——Amiya就在身侧，Mephisto近在咫尺，而Faust在远处冷箭已发。  
+- 内容：（兜帽下，我猛地吸了一口冷气，腕骨像被细线勒住，动弹不得。）
 
-这不是犹豫的时候。  
+“……Amiya，你瞄准的是我？”
 
-我压低声音，对Amiya道：“别动，我来处理。”  
+我压低嗓音，目光掠过她仍泛着源石碎光的指尖，再扫向远处那两道黑影——梅菲斯特在笑，浮士德的弩弦还在颤。现在不是质问的时候，可身体被她的术式锁在原地，一步都挪不开。
+
+优先处理对白：我操，Amiya你打我干嘛啊——她不可能无缘无故把束缚扔到我身上，除非……她把我当成了被操控的突破口。
+
+“先别管原因，把锁链解开！我还不能倒在这里。”
 
 )
 - 你对该角色的关系：-80（死敌）
 回合资源（仅你可见）：
-- 移动：6/6 步
+- 移动：5/5 步
 - 动作：可用；附赠动作：可用；反应：可用
 作战规则：只能对reach_preview的“可及目标”使用 perform_attack。
 有效行动要求：存在敌对关系时，每回合必须进行一次有效行动；对超出触及范围的 perform_attack 视为无效。
 距离提示（仅你可见）：
-- Amiya：7步
-- Mephisto：7步
-- Doctor：8步
+- Mephisto：8步
+- Amiya：13步
+- Doctor：14步
