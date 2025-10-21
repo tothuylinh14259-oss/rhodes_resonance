@@ -92,7 +92,7 @@ DEFAULT_TOOLS_TEXT = "perform_attack(), cast_arts(), advance_position(), adjust_
 
 # --- Default system prompt templates ---
 DEFAULT_PROMPT_HEADER = (
-    "你是游戏中的NPC：{name}.\n"
+    "你是：{name}.\n"
     "人设：{persona}\n"
     "外观特征：{appearance}\n"
     "常用语气/台词：{quotes}\n"
@@ -109,14 +109,13 @@ DEFAULT_PROMPT_RULES = (
     "- 行动前对照上方立场提示：≥40 视为亲密同伴（避免攻击、优先支援），≥10 为盟友（若要伤害需先说明理由），≤-10 才视为敌方目标，其余保持谨慎中立。\n"
     "- 若必须违背既定关系行事或违反作战硬规则，请在对白中说明充分理由，并拒绝执行，同时给出更稳妥的替代行动。\n"
     '- 不要输出任何"系统提示"或括号内的系统旁白；只输出对白与 CALL_TOOL。\n'
-    '- 没有generate_response 这个工具，千万不能用。'
     "- 参与者名称（仅可用）：{allowed_names}\n"
 )
 
 DEFAULT_PROMPT_TOOL_GUIDE = (
     "可用工具（必须提供行动理由）：\n"
     "- perform_attack(attacker, defender, weapon, reason)：使用指定武器发起攻击，仅能对“可及目标”使用。\n"
-    "- cast_arts(attacker, art, target, reason)：施放源石技艺，仅能对“可及目标”使用。"
+    "- cast_arts(attacker, art, target, reason)：施放源石技艺，仅能对“可及目标”使用。\n"
     "- advance_position(name, target:[x,y], reason)：朝指定坐标接近（自动使用剩余移动力）；target 必须为 [x,y] 数组。\n"
     "- adjust_relation(a, b, value, reason)：在合适情境下将关系直接设为目标值。\n"
     "- transfer_item(target, item, n=1, reason)：移交或分配物资。\n"
@@ -134,8 +133,6 @@ DEFAULT_PROMPT_EXAMPLE = (
 DEFAULT_PROMPT_GUARD_GUIDE = (
     "守护生效规则：\n"
     "- set_protection 仅建立关系；要触发拦截，guardian 必须与 protectee 相邻（≤1步），且 guardian 本轮有可用'反应'。\n"
-    "- 攻击者到 guardian 的距离也必须在本次武器触及/射程内，否则无法替代承伤。\n"
-    "- 多名守护者同时满足时，系统选择距离攻击者最近者（同距按登记顺序）。\n"
     "- 建议建立守护后使用 advance_position 贴身到被保护者旁并保持相邻，以确保拦截能生效。\n"
 )
 
@@ -171,7 +168,7 @@ RECAP_SECTION_RECENT = "最近播报："
 RECAP_CLIP_CHARS = 160
 
 # Reach preview & hard rule line
-REACH_RULE_LINE = "作战规则：只能对reach_preview的“可及目标”使用 perform_attack；若目标不在“可及目标”，必须先调用 advance_position 进入触及后再攻击。"
+REACH_RULE_LINE = "作战规则：只能对reach_preview的“可及目标”使用 perform_attack。"
 REACH_LABEL_ADJ = "相邻（≤1步）{tail}："
 REACH_LABEL_TARGETS = "可及武器（{weapon}，触及 {steps}步）可用目标："
 REACH_LABEL_ARTS = "可及术式（{art}，触及 {steps}步）可用目标："
@@ -189,14 +186,24 @@ PRIV_DIST_LINE = "- {who}：{dist}步"
 PRIV_DIST_UNKNOWN_LINE = "- {who}：未记录"
 PRIV_DIST_CANNOT_COMPUTE = "- 无法计算：未记录你的坐标"
 PRIV_VALID_ACTION_RULE_LINE = "有效行动要求：存在敌对关系时，每回合必须进行一次有效行动；对超出触及范围的 perform_attack 视为无效。"
-PRIV_DYING_TITLE = "状态提示（仅你可见）——你处于濒死状态（HP={hp})："
-PRIV_DYING_LINE_1 = (
-    "- 不能移动或攻击；调用 perform_attack/advance_position 将被系统拒绝。"
-)
-PRIV_DYING_LINE_2 = (
-    "- 你将在 {turns} 个属于你自己的回合后死亡；任何再次受到的伤害会立即致死。"
-)
-PRIV_DYING_LINE_3 = ""
+PRIV_STATUS_TITLE = "你现在...："
+# Lore-style, per-status private prompts (one line per status). Keys are lower-case.
+# Use {duration} for "剩余 N 回合"或"持续"，{turns}为整数回合数，{hp}可用于濒死。
+PRIV_STATUS_LORE = {
+    # 系统类
+    "dying": "- 濒死：生命体征极度衰弱（HP={hp}）；若无医疗干员介入，你将在 {turns} 回合后失去生命；再次受创将立即死亡。",
+    "dead": "- 死亡：心肺停搏，源石反应趋零（持续）。",
+    # 控制类（源石技艺/战术效果）
+    "silenced": "- 沉默：术式回路被扰动，无法引导源石技艺（{duration}，禁止施法）。",
+    "rooted": "- 定身：地形/拘束装置限制移动（{duration}，禁止移动）。",
+    "immobilized": "- 定身：肢体被制动，难以挪步（{duration}，禁止移动）。",
+    "restrained": "- 束缚：被网缚/钳制，行动受限（{duration}，禁止移动与攻击）。",
+    "stunned": "- 震慑：神经冲击导致短暂恍惚（{duration}，无法行动）。",
+    "paralyzed": "- 麻痹：神经传导受阻，肌体失去响应（{duration}，完全无法行动）。",
+    "sleep": "- 睡眠：意识离线，处于低反应阶段（{duration}，无法行动）。",
+    "frozen": "- 冻结：低温抑制导致全身僵直（{duration}，无法行动）。",
+}
+PRIV_STATUS_LORE_DEFAULT = "- {state}：效果生效中（{duration}）"
 
 # === End of Policy ===
 
@@ -1011,6 +1018,9 @@ class _WorldPort:
     grant_item = staticmethod(world_impl.grant_item)
     set_guard = staticmethod(world_impl.set_guard)
     clear_guard = staticmethod(world_impl.clear_guard)
+    # unified statuses
+    list_statuses = staticmethod(world_impl.list_statuses)
+    get_action_restrictions = staticmethod(world_impl.get_action_restrictions)
     # participants and character meta helpers
     set_participants = staticmethod(world_impl.set_participants)
     set_character_meta = staticmethod(world_impl.set_character_meta)
@@ -1689,6 +1699,69 @@ async def handle_tool_calls(ctx: TurnContext, origin: Msg, hub: MsgHub):
         return
     for tool_name, params in tool_calls:
         phase = f"tool:{tool_name}"
+        # Soft-accept a pseudo tool `generate_response` without exposing it in toolkit/prompt.
+        # We log it but by default do NOT broadcast its text to avoid duplicating the narrative
+        # already printed from the cleaned message. This keeps the tool usable without suggesting it.
+        if str(tool_name) == "generate_response":
+            # Extract optional text and reason
+            try:
+                t = ""
+                if isinstance(params, dict):
+                    t = str(
+                        params.get("response")
+                        or params.get("text")
+                        or params.get("message")
+                        or ""
+                    )
+            except Exception:
+                t = ""
+            try:
+                reason_text = str((params or {}).get("reason", "")).strip() or "未提供"
+            except Exception:
+                reason_text = "未提供"
+
+            # Emit a slim tool_call record (avoid logging full text body)
+            ctx.emit(
+                "tool_call",
+                actor=origin.name,
+                phase=phase,
+                data={"tool": tool_name, "params": {"text_len": len(t) if t else 0}},
+            )
+            try:
+                ctx.action_log.append(
+                    {
+                        "actor": origin.name,
+                        "tool": tool_name,
+                        "type": "call",
+                        "params": {"text_len": len(t) if t else 0, "reason": reason_text},
+                        "turn": ctx.current_round,
+                    }
+                )
+            except Exception:
+                pass
+
+            meta = {"ok": True, "call_reason": reason_text, "text_len": len(t) if t else 0}
+            ctx.emit(
+                "tool_result",
+                actor=origin.name,
+                phase=phase,
+                data={"tool": tool_name, "metadata": meta, "text": []},
+            )
+            try:
+                ctx.action_log.append(
+                    {
+                        "actor": origin.name,
+                        "tool": tool_name,
+                        "type": "result",
+                        "text": [],
+                        "meta": meta,
+                        "turn": ctx.current_round,
+                    }
+                )
+            except Exception:
+                pass
+            # Do not broadcast content from this pseudo tool by default.
+            continue
         func = ctx.tool_dispatch.get(tool_name)
         if not func:
             ctx.emit(
@@ -2681,14 +2754,38 @@ async def run_demo(
                     # Hard combat rules to avoid invalid attacks
                     lines_priv.append(REACH_RULE_LINE)
                     lines_priv.append(PRIV_VALID_ACTION_RULE_LINE)
-                    # 濒死状态提示
+                    # 异常状态提示（统一：一个标题 + 每个状态一行）
+                    try:
+                        sts = world.list_statuses(name) if hasattr(world, "list_statuses") else {}
+                    except Exception:
+                        sts = {}
+                    statuses_lines: List[str] = []
+                    # 如果统一状态表为空，但存在濒死倒计时字段，兜底构造一条 dying
                     dt = ch.get("dying_turns_left", None)
+                    if not sts and dt is not None:
+                        sts = {"dying": {"remaining": int(dt), "kind": "system"}}
                     hpv = ch.get("hp", None)
-                    if dt is not None:
-                        lines_priv.append(PRIV_DYING_TITLE.format(hp=hpv))
-                        lines_priv.append(PRIV_DYING_LINE_1)
-                        lines_priv.append(PRIV_DYING_LINE_2.format(turns=int(dt)))
-                        lines_priv.append(PRIV_DYING_LINE_3)
+                    for k, info in (sts or {}).items():
+                        key = str(k).lower()
+                        try:
+                            rem = info.get("remaining")
+                            turns = (int(rem) if rem is not None else None)
+                            duration_txt = (f"剩余 {turns} 回合" if turns is not None else "持续")
+                        except Exception:
+                            turns = None
+                            duration_txt = "持续"
+                        tmpl = PRIV_STATUS_LORE.get(key, PRIV_STATUS_LORE_DEFAULT)
+                        # Format with safe fallbacks
+                        line = tmpl.format(
+                            state=str(k),
+                            duration=duration_txt,
+                            turns=(turns if turns is not None else 0),
+                            hp=(hpv if hpv is not None else "?")
+                        )
+                        statuses_lines.append(line)
+                    if statuses_lines:
+                        lines_priv.append(PRIV_STATUS_TITLE)
+                        lines_priv.extend(statuses_lines)
 
                     # 距离提示（仅当前行动者私有）：列出与场上所有单位的曼哈顿距离（步）
                     try:

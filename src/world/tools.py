@@ -27,6 +27,36 @@ DEFAULT_REACH_STEPS = 1       # default melee reach in steps
 # dies after N of their own turns (or immediately upon taking damage again).
 DYING_TURNS_DEFAULT = 3
 
+# Action restriction rules for control/system statuses
+# Keys are lower-case effect names expected from arts_defs.control.effect
+CONTROL_STATUS_RULES: Dict[str, Dict[str, Any]] = {
+    # Hard disables
+    "stunned": {"blocks": {"all"}},
+    "paralyzed": {"blocks": {"all"}},
+    "sleep": {"blocks": {"all"}},
+    "frozen": {"blocks": {"all"}},
+    # Partial
+    "silenced": {"blocks": {"cast"}},
+    "rooted": {"blocks": {"move"}},
+    "immobilized": {"blocks": {"move"}},
+    "restrained": {"blocks": {"move", "attack"}},
+}
+
+# Human-readable labels for actions
+_ACTION_LABEL = {
+    "move": "移动",
+    "attack": "发动攻击",
+    "cast": "施放术式",
+    "dash": "冲刺",
+    "disengage": "脱离接触",
+    "help": "协助",
+    "first_aid": "急救",
+    "set_protection": "建立守护",
+    "clear_protection": "清除守护",
+    "transfer_item": "交付物品",
+    "action": "进行该行动",
+}
+
 
 def format_distance_steps(steps: int) -> str:
     """Format a grid distance for narration in steps, e.g., "6步"."""
@@ -87,7 +117,8 @@ class World:
     speeds: Dict[str, int] = field(default_factory=dict)
     # simple cover levels per character
     cover: Dict[str, str] = field(default_factory=dict)
-    # conditions per character (hidden/prone/grappled/restrained/readying/...)
+    # conditions container retained for compatibility, but only 'dying' is kept in logic now.
+    # Other states like hidden/prone/grappled/etc. are removed.
     conditions: Dict[str, Set[str]] = field(default_factory=dict)
     # lightweight triggers queue (ready/opportunity_attack, etc.)
     triggers: List[Dict[str, Any]] = field(default_factory=list)
@@ -324,6 +355,9 @@ def set_guard(guardian: str, protectee: str) -> ToolResponse:
     - Interception rules are enforced at attack time.
     """
     g = str(guardian)
+    blocked, msg = _blocked_action(g, "action")
+    if blocked:
+        return ToolResponse(content=[TextBlock(type="text", text=msg)], metadata={"ok": False})
     p = str(protectee)
     lst = WORLD.guardians.setdefault(p, [])
     if g not in lst:
@@ -554,14 +588,12 @@ def move_towards(name: str, target: Tuple[int, int], steps: Optional[int] = None
             content=[TextBlock(type="text", text=f"参与者限制：仅当前场景参与者可主动移动。")],
             metadata={"ok": False, "moved": 0, "position": list(pos), "error_type": "not_participant"},
         )
-    # Gate voluntary movement if the actor is down/dying/dead
-    st = WORLD.characters.get(str(name), {})
-    hp_now = int(st.get("hp", 0)) if st else 0
-    if hp_now <= 0 or st.get("dying_turns_left") is not None:
-        # Keep position unchanged; this is voluntary move, blocked by dying/death.
-        pos = WORLD.positions.get(str(name)) or (0, 0)
+    # Gate voluntary movement by system/control statuses
+    pos = WORLD.positions.get(str(name)) or (0, 0)
+    blocked, msg = _blocked_action(str(name), "move")
+    if blocked:
         return ToolResponse(
-            content=[TextBlock(type="text", text=f"{name} 处于濒死/倒地，无法移动。")],
+            content=[TextBlock(type="text", text=msg)],
             metadata={"ok": False, "moved": 0, "position": list(pos), "blocked": True},
         )
     # Determine how many steps are allowed for this move
@@ -839,15 +871,10 @@ def _reset_turn_tokens_for(name: Optional[str]):
         "reaction_available": True,
         "move_left": spd,
         "disengage": False,
-        "dodge": False,
         "help_target": None,
         "ready": None,  # {trigger: str, action: dict}
     }
-    # clear short-lived conditions at the start of the actor's turn
-    try:
-        clear_condition(name, "dodge")
-    except Exception:
-        pass
+    # Note: legacy 'dodge' condition/token removed; no per-turn cleanup needed.
 
 
 def next_turn():
@@ -992,21 +1019,128 @@ def get_cover(name: str) -> str:
     return WORLD.cover.get(str(name), "none")
 
 
-def apply_condition(name: str, cond: str):
-    s = WORLD.conditions.setdefault(str(name), set())
-    s.add(str(cond))
-    return ToolResponse(content=[TextBlock(type="text", text=f"状态：{name} +{cond}")], metadata={"ok": True, "name": name, "cond": cond})
+# ---- Unified status management ----
+def _statuses_for(name: str) -> Dict[str, Dict[str, Any]]:
+    """Internal: return mutable status dict for a character.
+
+    Structure: { state_name: {"remaining": Optional[int], "kind": str, "source": Optional[str], "data": dict} }
+    - kind: 'system' | 'control'
+    - remaining: number of actor-turn ticks left; None means indefinite
+    """
+    # Reuse WORLD.conditions container for compatibility, but store structured entries.
+    d = WORLD.conditions.setdefault(str(name), set())
+    # If legacy set encountered, convert to empty dict (we no longer use string-sets)
+    if isinstance(d, set):
+        WORLD.conditions[str(name)] = {}
+    if not isinstance(WORLD.conditions.get(str(name)), dict):
+        WORLD.conditions[str(name)] = {}
+    return WORLD.conditions[str(name)]  # type: ignore[return-value]
 
 
-def clear_condition(name: str, cond: str):
-    s = WORLD.conditions.setdefault(str(name), set())
-    if cond in s:
-        s.remove(cond)
-    return ToolResponse(content=[TextBlock(type="text", text=f"状态：{name} -{cond}")], metadata={"ok": True, "name": name, "cond": cond})
+def add_status(name: str, state: str, *, duration_rounds: Optional[int] = None, kind: str = "control", source: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> ToolResponse:
+    st = _statuses_for(str(name))
+    st[str(state)] = {
+        "remaining": (int(duration_rounds) if duration_rounds is not None else None),
+        "kind": str(kind),
+        "source": (str(source) if source is not None else None),
+        "data": dict(data or {}),
+    }
+    return ToolResponse(content=[TextBlock(type="text", text=f"状态：{name} +{state}{f'（{duration_rounds}轮）' if duration_rounds else ''}")], metadata={"ok": True, "name": name, "state": state, "remaining": st[str(state)]["remaining"], "kind": kind})
 
 
-def has_condition(name: str, cond: str) -> bool:
-    return str(cond) in WORLD.conditions.get(str(name), set())
+def remove_status(name: str, state: str) -> ToolResponse:
+    st = _statuses_for(str(name))
+    if str(state) in st:
+        st.pop(str(state), None)
+    return ToolResponse(content=[TextBlock(type="text", text=f"状态：{name} -{state}")], metadata={"ok": True, "name": name, "state": state})
+
+
+def has_status(name: str, state: str) -> bool:
+    st = _statuses_for(str(name))
+    return str(state) in st
+
+
+def list_statuses(name: str) -> Dict[str, Dict[str, Any]]:
+    return dict(_statuses_for(str(name)))
+
+
+def _tick_control_statuses(name: str) -> List[TextBlock]:
+    """Decrement per-turn duration for control statuses of `name`; remove expired.
+
+    Returns a list of text blocks describing expirations.
+    """
+    out: List[TextBlock] = []
+    st = _statuses_for(str(name))
+    expired: List[str] = []
+    for k, info in list(st.items()):
+        try:
+            if str(info.get("kind")) != "control":
+                continue
+            rem = info.get("remaining")
+            if rem is None:
+                continue
+            rem2 = int(rem) - 1
+            info["remaining"] = rem2
+            if rem2 <= 0:
+                expired.append(k)
+        except Exception:
+            # be defensive: remove malformed entry
+            expired.append(k)
+    for k in expired:
+        st.pop(k, None)
+        out.append(TextBlock(type="text", text=f"状态结束：{name} -{k}"))
+    return out
+
+
+def _blocked_action(name: str, action: str) -> Tuple[bool, str]:
+    """Return (blocked, message) if `name` cannot perform `action`.
+
+    Actions: 'move' | 'attack' | 'cast' | 'dash' | 'disengage' | 'help' | 'first_aid' | 'action'
+    """
+    nm = str(name)
+    act = str(action)
+    # System gating: dying/dead
+    st = WORLD.characters.get(nm, {})
+    try:
+        hp_now = int(st.get("hp", 0)) if st else 0
+    except Exception:
+        hp_now = 0
+    if st.get("dying_turns_left") is not None:
+        # Block specific actions with tailored message
+        lab = _ACTION_LABEL.get(act, "行动")
+        # Dying: block move/attack/cast by design
+        if act in ("move", "attack", "cast", "dash", "disengage", "action"):
+            return True, f"{nm} 处于濒死状态，无法{lab}。"
+    if hp_now <= 0:
+        if act in ("move", "attack", "cast", "dash", "disengage", "action"):
+            lab = _ACTION_LABEL.get(act, "行动")
+            return True, f"{nm} 已倒地，无法{lab}。"
+    # Control gating: check unified statuses
+    try:
+        sts = list_statuses(nm)
+    except Exception:
+        sts = {}
+    for k, info in (sts or {}).items():
+        rule = CONTROL_STATUS_RULES.get(str(k).lower())
+        if not rule:
+            continue
+        blocks = set(rule.get("blocks", set()))
+        if "all" in blocks or act in blocks or (act != "move" and "action" in blocks):
+            lab = _ACTION_LABEL.get(act, "行动")
+            return True, f"{nm} 处于{k}状态，无法{lab}。"
+    return False, ""
+
+
+def get_action_restrictions(name: str) -> Dict[str, bool]:
+    """Return a dict of action -> blocked for the given actor.
+
+    Keys: move, attack, cast, action
+    """
+    out = {}
+    for act in ("move", "attack", "cast", "action"):
+        b, _ = _blocked_action(str(name), act)
+        out[act] = bool(b)
+    return out
 
 
 def queue_trigger(kind: str, payload: Optional[Dict[str, Any]] = None):
@@ -1040,27 +1174,19 @@ def cover_bonus(name: str) -> Tuple[int, bool]:
 
 
 def advantage_for_attack(attacker: str, defender: str) -> str:
-    """Compute net advantage from simple conditions.
-    +1: attacker hidden; +1: defender prone; -1: defender dodge.
-    Return 'advantage' | 'disadvantage' | 'none'.
+    """Advantage calculation simplified: state-based modifiers removed.
+    Always return 'none'.
     """
-    score = 0
-    if has_condition(attacker, "hidden"):
-        score += 1
-    if has_condition(defender, "prone"):
-        score += 1
-    if has_condition(defender, "dodge"):
-        score -= 1
-    if score > 0:
-        return "advantage"
-    if score < 0:
-        return "disadvantage"
     return "none"
 
 
 # ---- Standard actions (thin wrappers) ----
 def act_dash(name: str):
     nm = str(name)
+    # Gate by statuses (dash counts as moving this turn)
+    blocked, msg = _blocked_action(nm, "move")
+    if blocked:
+        return ToolResponse(content=[TextBlock(type="text", text=msg)], metadata={"ok": False})
     use_action(nm, "action")
     st = WORLD.turn_state.setdefault(nm, {})
     spd_steps = int(WORLD.speeds.get(nm, _default_move_steps()))
@@ -1073,22 +1199,25 @@ def act_dash(name: str):
 
 def act_disengage(name: str):
     nm = str(name)
+    # Gate by statuses (disengage is a movement-related action)
+    blocked, msg = _blocked_action(nm, "move")
+    if blocked:
+        return ToolResponse(content=[TextBlock(type="text", text=msg)], metadata={"ok": False})
     use_action(nm, "action")
     st = WORLD.turn_state.setdefault(nm, {})
     st["disengage"] = True
     return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 脱离接触（本回合移动不引发借机攻击）")], metadata={"ok": True})
 
 
-def act_dodge(name: str):
-    nm = str(name)
-    use_action(nm, "action")
-    st = WORLD.turn_state.setdefault(nm, {})
-    st["dodge"] = True
-    return ToolResponse(content=[TextBlock(type="text", text=f"{nm} 闪避架势（直到下回合开始，被攻击者判定处于不利）")], metadata={"ok": True})
+# Removed: explicit Dodge action. Dodge is no longer modeled as a state/token.
 
 
 def act_help(name: str, target: str):
     nm = str(name)
+    # Gate generic actions under control statuses
+    blocked, msg = _blocked_action(nm, "action")
+    if blocked:
+        return ToolResponse(content=[TextBlock(type="text", text=msg)], metadata={"ok": False})
     use_action(nm, "action")
     st = WORLD.turn_state.setdefault(nm, {})
     st["help_target"] = str(target)
@@ -1096,14 +1225,15 @@ def act_help(name: str, target: str):
 
 
 def act_hide(name: str, dc: int = 13):
-    # CoC: Perform Stealth check; ignore DC, use skill value
+    # CoC: Perform Stealth check; ignore DC, use skill value.
+    # State system trimmed: no longer applies 'hidden' condition.
     nm = str(name)
+    blocked, msg = _blocked_action(nm, "action")
+    if blocked:
+        return ToolResponse(content=[TextBlock(type="text", text=msg)], metadata={"ok": False})
     res = skill_check_coc(nm, "Stealth")
     success = bool((res.metadata or {}).get("success"))
     out = list(res.content or [])
-    if success:
-        tr = apply_condition(nm, "hidden")
-        out.extend(tr.content or [])
     return ToolResponse(content=out, metadata={"ok": success})
 
 
@@ -1148,12 +1278,10 @@ def contest(a: str, a_skill: str, b: str, b_skill: str) -> ToolResponse:
 
 
 def act_grapple(attacker: str, defender: str) -> ToolResponse:
+    # State system trimmed: contest still rolls, but no status applied on success.
     res = contest(attacker, "athletics", defender, "athletics")
     winner = res.metadata.get("winner") if res.metadata else None
     out = list(res.content or [])
-    if winner == attacker:
-        tr = apply_condition(defender, "grappled")
-        out.extend(tr.content or [])
     return ToolResponse(content=out, metadata={"ok": winner == attacker})
 
 
@@ -1368,9 +1496,9 @@ def _enter_dying(name: str, *, turns: int = DYING_TURNS_DEFAULT) -> ToolResponse
     st = WORLD.characters.setdefault(nm, {"hp": 0, "max_hp": 0})
     st["hp"] = 0
     st["dying_turns_left"] = int(max(0, turns))
-    # Also mark a condition for transparency; do not rely on it functionally.
+    # Also record a unified 'dying' status for visibility.
     try:
-        apply_condition(nm, "dying")
+        add_status(nm, "dying", duration_rounds=st["dying_turns_left"], kind="system")
     except Exception:
         pass
     note = TextBlock(type="text", text=f"{nm} 进入濒死（{st['dying_turns_left']}回合后死亡；再次受伤即死）")
@@ -1389,12 +1517,13 @@ def _die(name: str, *, reason: str = "wounds") -> ToolResponse:
             st.pop("dying_turns_left", None)
         except Exception:
             st["dying_turns_left"] = None
+    # Remove unified 'dying' status if present; add a persistent 'dead' status for visibility.
     try:
-        clear_condition(nm, "dying")
+        remove_status(nm, "dying")
     except Exception:
         pass
     try:
-        apply_condition(nm, "dead")
+        add_status(nm, "dead", duration_rounds=None, kind="system")
     except Exception:
         pass
     note = TextBlock(type="text", text=f"{nm} 死亡。")
@@ -1409,6 +1538,12 @@ def tick_dying_for(name: str) -> ToolResponse:
     - If reaches 0: die.
     """
     nm = str(name)
+    # Always tick control statuses for the actor at end of their own turn
+    notes: List[TextBlock] = []
+    try:
+        notes.extend(_tick_control_statuses(nm))
+    except Exception:
+        pass
     st = WORLD.characters.get(nm, {})
     if not st or st.get("dying_turns_left") is None:
         return ToolResponse(content=[], metadata={"ok": True, "name": nm, "affected": False})
@@ -1419,15 +1554,16 @@ def tick_dying_for(name: str) -> ToolResponse:
     # Already scheduled to die
     if left <= 0:
         res = _die(nm, reason="timeout")
-        return res
+        # Append any control-expiration notes before death
+        return ToolResponse(content=notes + (res.content or []), metadata=res.metadata)
     st["dying_turns_left"] = left - 1
     if st["dying_turns_left"] <= 0:
         res = _die(nm, reason="timeout")
-        return res
+        return ToolResponse(content=notes + (res.content or []), metadata=res.metadata)
     # Otherwise, report remaining
     note = TextBlock(type="text", text=f"{nm} 濒死剩余 {st['dying_turns_left']} 回合。")
     WORLD._touch()
-    return ToolResponse(content=[note], metadata={"ok": True, "name": nm, "turns_left": st["dying_turns_left"], "affected": True})
+    return ToolResponse(content=notes + [note], metadata={"ok": True, "name": nm, "turns_left": st["dying_turns_left"], "affected": True})
 
 
 def damage(name: str, amount: int):
@@ -1476,6 +1612,9 @@ def first_aid(name: str, target: str) -> ToolResponse:
     - We gate the per-injury 1 HP by `target.injury_id` and `target.first_aid_applied_on`.
     """
     rescuer = str(name)
+    blocked, msg = _blocked_action(rescuer, "action")
+    if blocked:
+        return ToolResponse(content=[TextBlock(type="text", text=msg)], metadata={"ok": False, "rescuer": rescuer, "target": str(target)})
     tgt = str(target)
     st = WORLD.characters.setdefault(tgt, {"hp": 0, "max_hp": 0})
     logs: List[TextBlock] = []
@@ -1494,7 +1633,7 @@ def first_aid(name: str, target: str) -> ToolResponse:
     if st.get("dying_turns_left") is not None:
         st["dying_turns_left"] = None
         try:
-            clear_condition(tgt, "dying")
+            remove_status(tgt, "dying")
         except Exception:
             pass
         # Raise HP to at least 1
@@ -1544,7 +1683,7 @@ def heal(name: str, amount: int):
         except Exception:
             st["dying_turns_left"] = None
         try:
-            clear_condition(nm, "dying")
+            remove_status(nm, "dying")
         except Exception:
             pass
         parts.append(TextBlock(type="text", text=f"{nm} 脱离濒死。"))
@@ -1791,14 +1930,11 @@ def attack_with_weapon(
                 content=[TextBlock(type="text", text=f"参与者限制：仅当前场景参与者可以进行/承受攻击。")],
                 metadata={"ok": False, "error_type": "not_participant", "attacker": attacker, "defender": defender},
             )
+    # Gate by system/control statuses
+    blocked, msg = _blocked_action(str(attacker), "attack")
+    if blocked:
+        return ToolResponse(content=[TextBlock(type="text", text=msg)], metadata={"attacker": attacker, "defender": defender, "weapon_id": weapon, "ok": False, "error_type": "attacker_unable"})
     atk = WORLD.characters.get(attacker, {})
-    # Voluntary attack is blocked if attacker is down/dying/dead (hp<=0 or dying bookkeeping exists)
-    try:
-        if int(atk.get("hp", 0)) <= 0 or atk.get("dying_turns_left") is not None:
-            msg = TextBlock(type="text", text=f"{attacker} 处于濒死/倒地，无法发动攻击。")
-            return ToolResponse(content=[msg], metadata={"attacker": attacker, "defender": defender, "weapon_id": weapon, "ok": False, "error_type": "attacker_unable"})
-    except Exception:
-        pass
     w = WORLD.weapon_defs.get(str(weapon), {})
     try:
         reach_steps = max(1, int(w.get("reach_steps", DEFAULT_REACH_STEPS)))
@@ -2309,6 +2445,10 @@ def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Opt
     - reduction: arts -> arts_barrier; physical -> physical_armor
     - tags: no-guard-intercept (skips guard), line-of-sight (cover==total blocks)
     """
+    # Gate by statuses (dying/control)
+    blocked, msg = _blocked_action(str(attacker), "cast")
+    if blocked:
+        return ToolResponse(content=[TextBlock(type="text", text=msg)], metadata={"ok": False, "attacker": attacker, "art_id": str(art), "error_type": "attacker_unable"})
     # participants gate
     if WORLD.participants:
         if str(attacker) not in WORLD.participants:
@@ -2451,7 +2591,7 @@ def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Opt
                 parts.append(blk)
         effects.append({"who": tgt, "heal": healed})
 
-    # Control effect
+    # Control effect (unified status management)
     if success and ctrl.get("effect"):
         eff = str(ctrl.get("effect"))
         dur_expr = str(ctrl.get("duration") or "1")
@@ -2465,13 +2605,13 @@ def cast_arts(attacker: str, art: str, target: Optional[str] = None, center: Opt
             dur_val = 1
         parts.append(TextBlock(type="text", text=f"控制：{eff}（持续 {dur_val} 轮）"))
         try:
-            cr = apply_condition(tgt, eff)
-            for blk in (cr.content or []):
+            sr = add_status(tgt, eff, duration_rounds=dur_val, kind="control", source=attacker)
+            for blk in (sr.content or []):
                 if isinstance(blk, dict) and blk.get("type") == "text":
                     parts.append(blk)
         except Exception:
             pass
-        effects.append({"who": tgt, "condition": eff, "duration_rounds": int(dur_val)})
+        effects.append({"who": tgt, "state": eff, "duration_rounds": int(dur_val)})
 
     hp_after = int(WORLD.characters.get(tgt, {}).get("hp", 0))
     WORLD._touch()
