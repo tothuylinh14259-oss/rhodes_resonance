@@ -95,7 +95,7 @@ repo/
 - `KIMI_BASE_URL`（可选，默认 `https://api.moonshot.cn/v1`）
 - `KIMI_MODEL`（可选，默认 `kimi-k2-turbo-preview`）
 
-注：也可通过 `configs/model.json` 调整 base_url/模型与温度/是否流式。
+注：base_url 与模型名通过环境变量配置（KIMI_BASE_URL, KIMI_MODEL）；`configs/model.json` 仅用于温度/是否流式等行为参数。
 
 ## 配置要点（configs）
 
