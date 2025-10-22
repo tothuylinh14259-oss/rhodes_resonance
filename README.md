@@ -12,9 +12,9 @@ conda activate npc-talk
 
 # 必填：Kimi API Key
 export MOONSHOT_API_KEY=你的Kimi密钥
-# 可选：自定义 Kimi 接口与模型（如需）
+# 可选：自定义 Kimi 接口与模型（如需）。建议选择支持 200k 上下文的模型。
 export KIMI_BASE_URL=https://api.moonshot.cn/v1
-export KIMI_MODEL=kimi-k2-turbo-preview
+export KIMI_MODEL=$YOUR_200K_CONTEXT_MODEL
 
 # 运行
 python src/main.py      # 入口（已内联引擎逻辑）
@@ -39,7 +39,7 @@ repo/
   configs/
     characters.json       # 角色配置（人设/D&D数值/关系）
     story.json            # 场景配置、初始位置、剧情节拍
-    model.json            # LLM 接入（base_url、npc 模型等）
+    model.json            # LLM 行为参数（如温度、是否流式），base_url/模型名请用环境变量
     prompts.json          # 可选：NPC 提示词模板（若缺省将使用内置默认模板）
     weapons.json          # 武器定义（reach_steps/ability/damage_expr）
   docs/
@@ -104,7 +104,7 @@ repo/
   - 武器与范围：不再从角色卡读取攻击距离。请在 `configs/weapons.json` 定义武器并给出 `reach_steps`（步）；在 `characters.json` 通过 `inventory` 声明角色初始拥有的武器（例如 `"inventory": {"amiya_focus": 1}`）。`perform_attack(attacker, defender, weapon, reason)` 会从武器表自动获取触及范围与伤害表达式，且只有“持有”的武器才允许使用；若距离不足不会自动靠近。
 - `story.json`：场景名称、胜利条件、初始坐标与剧情节拍（acts/beats）；参与者与出场顺序由 `initial_positions` 或 `positions` 的键顺序决定
 - `prompts.json`（可选）：玩家人设、名称映射、NPC/敌人提示词模板（示例见 `prompts.json.example`）
-- `model.json`：`base_url`、`npc` 模型名、温度、是否流式
+- `model.json`：温度、是否流式等行为参数（base_url/模型名请通过环境变量指定）
 - `time_rules.json`：各意图的时间消耗（分钟）
  - `relation_rules.json`：默认关系变更策略
 
