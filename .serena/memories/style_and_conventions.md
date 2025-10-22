@@ -1,0 +1,8 @@
+- Python 3.11, follow ruff and mypy settings in pyproject.toml; line length 100.
+- Avoid editing CI/deployment files unless requested.
+- Prefer explicit error handling; keep public APIs stable.
+- Maintain inline comments minimal; follow surrounding code style.
+- Tests may import modules without Agentscope installed; keep optional imports guarded and only fail at runtime on use.
+- JSON config loaders in main.py expect dicts; validate types.
+- World tools in src/world/tools.py are excluded from lint/mypy; leave as-is.
+- Environment variables override config where appropriate (for model/base_url/api_key).

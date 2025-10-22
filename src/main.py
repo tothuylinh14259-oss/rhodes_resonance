@@ -353,18 +353,39 @@ def make_kimi_npc(
     arts_brief: Optional[str] = None,
     tools: Optional[List[object]] = None,
 ) -> ReActAgent:
-    """Create an LLM-backed NPC using Kimi's OpenAI-compatible API."""
-    api_key = os.getenv("MOONSHOT_API_KEY", "").strip()
+    """Create an LLM-backed NPC using an OpenAI-compatible API.
+
+    优先读取环境变量中的 base_url、model、api_key；若未设置，则回退到配置文件与默认值。
+    支持的环境变量名（按优先级）：
+      - API Key: OPENAI_API_KEY, API_KEY, MOONSHOT_API_KEY
+      - Base URL: OPENAI_BASE_URL, BASE_URL, KIMI_BASE_URL
+      - Model: OPENAI_MODEL, MODEL, KIMI_MODEL
+    """
+    api_key = (
+        os.getenv("OPENAI_API_KEY")
+        or os.getenv("API_KEY")
+        or os.getenv("MOONSHOT_API_KEY")
+        or ""
+    ).strip()
     if not api_key:
         raise RuntimeError(
-            "MOONSHOT_API_KEY is not set. Please export MOONSHOT_API_KEY to use the Kimi API."
+            "No API key found. Please set one of OPENAI_API_KEY, API_KEY, or MOONSHOT_API_KEY."
         )
-    base_url = str(
-        model_cfg.get("base_url")
-        or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-    )
     sec = dict(model_cfg.get("npc") or {})
-    model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
+    base_url = str(
+        os.getenv("OPENAI_BASE_URL")
+        or os.getenv("BASE_URL")
+        or os.getenv("KIMI_BASE_URL")
+        or model_cfg.get("base_url")
+        or "https://api.moonshot.cn/v1"
+    )
+    model_name = (
+        os.getenv("OPENAI_MODEL")
+        or os.getenv("MODEL")
+        or os.getenv("KIMI_MODEL")
+        or sec.get("model")
+        or "kimi-k2-turbo-preview"
+    )
 
     tools_text = DEFAULT_TOOLS_TEXT
     tpl = _join_lines(prompt_template)
