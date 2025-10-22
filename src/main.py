@@ -359,12 +359,10 @@ def make_kimi_npc(
         raise RuntimeError(
             "MOONSHOT_API_KEY is not set. Please export MOONSHOT_API_KEY to use the Kimi API."
         )
-    base_url = str(
-        model_cfg.get("base_url")
-        or os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-    )
+    # Use environment variables for API base URL and model name
+    base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
     sec = dict(model_cfg.get("npc") or {})
-    model_name = sec.get("model") or os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
+    model_name = os.getenv("KIMI_MODEL", "kimi-k2-turbo-preview")
 
     tools_text = DEFAULT_TOOLS_TEXT
     tpl = _join_lines(prompt_template)
