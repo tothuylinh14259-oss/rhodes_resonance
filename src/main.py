@@ -357,30 +357,33 @@ def make_kimi_npc(
 
     优先读取环境变量中的 base_url、model、api_key；若未设置，则回退到配置文件与默认值。
     支持的环境变量名（按优先级）：
-      - API Key: OPENAI_API_KEY, API_KEY, MOONSHOT_API_KEY
-      - Base URL: OPENAI_BASE_URL, BASE_URL, KIMI_BASE_URL
-      - Model: OPENAI_MODEL, MODEL, KIMI_MODEL
+      - API Key: api_key, OPENAI_API_KEY, API_KEY, MOONSHOT_API_KEY
+      - Base URL: base_url, OPENAI_BASE_URL, BASE_URL, KIMI_BASE_URL
+      - Model: model, OPENAI_MODEL, MODEL, KIMI_MODEL
     """
     api_key = (
-        os.getenv("OPENAI_API_KEY")
+        os.getenv("api_key")
+        or os.getenv("OPENAI_API_KEY")
         or os.getenv("API_KEY")
         or os.getenv("MOONSHOT_API_KEY")
         or ""
     ).strip()
     if not api_key:
         raise RuntimeError(
-            "No API key found. Please set one of OPENAI_API_KEY, API_KEY, or MOONSHOT_API_KEY."
+            "No API key found. Please set api_key or one of OPENAI_API_KEY, API_KEY, or MOONSHOT_API_KEY."
         )
     sec = dict(model_cfg.get("npc") or {})
     base_url = str(
-        os.getenv("OPENAI_BASE_URL")
+        os.getenv("base_url")
+        or os.getenv("OPENAI_BASE_URL")
         or os.getenv("BASE_URL")
         or os.getenv("KIMI_BASE_URL")
         or model_cfg.get("base_url")
         or "https://api.moonshot.cn/v1"
     )
     model_name = (
-        os.getenv("OPENAI_MODEL")
+        os.getenv("model")
+        or os.getenv("OPENAI_MODEL")
         or os.getenv("MODEL")
         or os.getenv("KIMI_MODEL")
         or sec.get("model")

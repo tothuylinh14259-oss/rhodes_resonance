@@ -10,15 +10,17 @@ cd /Users/administrator/syncdisk/rhodes_resonance
 conda env create -f environment.yml
 conda activate npc-talk
 
-# 必填：Kimi API Key
-export MOONSHOT_API_KEY=你的Kimi密钥
+# 必填：Kimi API Key（新约定）
+export api_key=你的Kimi密钥
 # 可选：自定义 Kimi 接口与模型（如需）
-export KIMI_BASE_URL=https://api.moonshot.cn/v1
-export KIMI_MODEL=kimi-k2-turbo-preview
+export base_url=https://api.moonshot.cn/v1
+export model=kimi-k2-turbo-preview
 
 # 运行
 python src/main.py      # 入口（已内联引擎逻辑）
 ```
+
+注：为兼容已有部署，也支持 OPENAI_API_KEY/API_KEY/MOONSHOT_API_KEY、OPENAI_BASE_URL/BASE_URL/KIMI_BASE_URL、OPENAI_MODEL/MODEL/KIMI_MODEL 等旧变量名；若同时设置，优先使用小写的 api_key/base_url/model。
 
 ## 目录结构（当前）
 
@@ -91,9 +93,11 @@ repo/
 
 ## 必要环境变量
 
-- `MOONSHOT_API_KEY`（必填）：Kimi API Key
-- `KIMI_BASE_URL`（可选，默认 `https://api.moonshot.cn/v1`）
-- `KIMI_MODEL`（可选，默认 `kimi-k2-turbo-preview`）
+- `api_key`（必填）：Kimi API Key
+- `base_url`（可选，默认 `https://api.moonshot.cn/v1`）
+- `model`（可选，默认 `kimi-k2-turbo-preview`）
+
+兼容说明：也接受 OPENAI_API_KEY/API_KEY/MOONSHOT_API_KEY、OPENAI_BASE_URL/BASE_URL/KIMI_BASE_URL、OPENAI_MODEL/MODEL/KIMI_MODEL 等旧变量名；若同时设置，优先使用小写的 api_key/base_url/model。
 
 注：也可通过 `configs/model.json` 调整 base_url/模型与温度/是否流式。
 
@@ -130,7 +134,7 @@ repo/
 ## 常见问题
 
 - `ModuleNotFoundError: agentscope`：确认已在 `npc-talk` 环境中，并已按 `environment.yml` 安装。
-- Kimi 报错/无响应：检查 `MOONSHOT_API_KEY`、网络连通、`KIMI_BASE_URL` 与模型名。
+- Kimi 报错/无响应：检查 `api_key`、网络连通、`base_url` 与模型名（或使用兼容的 `MOONSHOT_API_KEY`/`KIMI_BASE_URL`/`KIMI_MODEL`）。
 
 ## 后续可做
 - 扩展剧情 JSON（configs/story.json），若未来恢复导演逻辑可用于触发事件
